@@ -1,12 +1,19 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import { AuditWriter, InMemoryAuditStore } from '@endo/audit';
+import {
+  AuditWriter,
+  InMemoryAuditStore,
+  PostgresAuditStore,
+  type AuditDatabase,
+  type AuditStore,
+} from '@endo/audit';
 import {
   Environment,
   assertClinicalReleaseReady,
   isDeployedEnvironment,
   loadConfig,
 } from '@endo/config';
+import { createDb, createPool } from '@endo/db';
 import { ServiceTokenVerifier } from '@endo/service-kit';
 import { buildApi } from './app.ts';
 
@@ -16,6 +23,8 @@ const Config = z.object({
   ENDO_CLINICAL_RULESET_PATH: z.string().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65535),
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(1200),
+  // Durable audit store (spec 2.6, 11.1). Required in staging and production.
+  API_AUDIT_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -37,9 +46,18 @@ async function main(): Promise<void> {
   const rulesetText = await readFile(config.ENDO_CLINICAL_RULESET_PATH, 'utf8');
   assertClinicalReleaseReady(config.ENDO_ENV, rulesetText);
 
-  // Spec 2.6: deployed environments need the durable Postgres audit store (M1). Fail closed until then.
-  if (isDeployedEnvironment(config.ENDO_ENV)) {
-    throw new Error('No durable audit store is configured for a deployed environment.');
+  // Spec 2.6: deployed environments must use the durable Postgres audit store. Fail closed.
+  let auditStore: AuditStore;
+  let closeAudit = (): Promise<void> => Promise.resolve();
+  if (config.API_AUDIT_DATABASE_URL) {
+    const pool = createPool(config.API_AUDIT_DATABASE_URL, { applicationName: 'endo-api-audit' });
+    const db = createDb<AuditDatabase>(pool);
+    auditStore = new PostgresAuditStore(db);
+    closeAudit = () => db.destroy();
+  } else if (isDeployedEnvironment(config.ENDO_ENV)) {
+    throw new Error('API_AUDIT_DATABASE_URL is required in staging and production.');
+  } else {
+    auditStore = new InMemoryAuditStore();
   }
 
   const app = await buildApi({
@@ -47,14 +65,14 @@ async function main(): Promise<void> {
     verifier: new ServiceTokenVerifier(config.API_SERVICE_TOKEN_PUBLIC_KEY_JWK, 'api', [
       'bff-patient',
     ]),
-    audit: new AuditWriter(new InMemoryAuditStore()),
+    audit: new AuditWriter(auditStore),
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => void app.close());
+    process.once(signal, () => void app.close().then(closeAudit));
   }
   await app.listen({ host: '127.0.0.1', port: config.API_PORT });
 }

@@ -17,6 +17,7 @@
     "@endo/audit": "workspace:*",
     "@endo/authz": "workspace:*",
     "@endo/config": "workspace:*",
+    "@endo/db": "workspace:*",
     "@endo/domain": "workspace:*",
     "@endo/service-kit": "workspace:*",
     "@fastify/rate-limit": "11.2.1",

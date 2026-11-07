@@ -20,6 +20,6 @@
 
 ## Current state (M0)
 
-- Audit store is in-memory; the service refuses to start in staging/production until the Postgres store lands (M1).
+- Audit store: PostgreSQL (`API_AUDIT_DATABASE_URL`, ADR-0013); required in staging and production, in-memory fallback in dev/test only. Run `pnpm --filter @endo/audit migrate` before starting.
 - Consent loader returns no consents (fail closed) until the consent service lands (M1).
 - `openapi.yaml` generation from Zod schemas starts with the first domain routes (M1).
