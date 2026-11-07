@@ -14,3 +14,10 @@ coverage/
 
 # Local dev data
 .data/
+
+# OpenTofu: state contains generated credentials; never commit it. Lock files ARE committed.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log

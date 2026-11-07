@@ -992,3 +992,5 @@ Add to this list rather than guessing.
 12. GitHub team handles for CODEOWNERS (security, clinical, platform, engineering). `.github/CODEOWNERS` uses placeholders `@GlucoCorp/endo-*`.
 13. Confirm the licence review of `lightningcss` (MPL-2.0, dev-only test tooling, never shipped) recorded in ADR-0010.
 14. Commit signing method for the team and for AI-assisted commits (SSH, GPG or Sigstore gitsign), so that the signed-commits branch rule (12.4) can be enabled.
+15. Section 17.3 names HashiCorp Vault and MinIO. Vault is now under the Business Source Licence and MinIO is AGPL without free community builds; both fall outside the 18.2 licence allowlist. ADR-0014 uses OpenBao (MPL-2.0, Vault-compatible) and defers object storage (SeaweedFS candidate, Apache-2.0). Confirm.
+16. Zero-budget hosting (ADR-0014): the always-on dev environment needs an Oracle Cloud Always Free account (card required for identity checks; never upgrade to pay-as-you-go). Who owns that account?

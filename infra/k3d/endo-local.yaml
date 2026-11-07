@@ -1,0 +1,33 @@
+# Local Kubernetes for development (ADR-0014): k3s in Docker via k3d. SYNTHETIC DATA ONLY.
+# Create:  k3d cluster create --config infra/k3d/endo-local.yaml
+# Delete:  k3d cluster delete endo-local
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: endo-local
+servers: 1
+agents: 0 # single node: the dev machine has ~3.7 GB for Docker
+image: rancher/k3s:v1.37.1-k3s1@sha256:ca7f37d993d82ef0dcdcfecb2e0e2618ea541dbaffc620c8cedebe01a82acd0d
+kubeAPI:
+  host: 127.0.0.1
+  hostIP: 127.0.0.1
+  hostPort: '6550'
+ports:
+  # Ingress (k3s bundled Traefik), bound to loopback only.
+  - port: 127.0.0.1:8443:443
+    nodeFilters: [loadbalancer]
+options:
+  k3d:
+    wait: true
+    timeout: 120s
+  k3s:
+    extraArgs:
+      # Not needed locally; saves memory.
+      - arg: --disable=metrics-server
+        nodeFilters: [server:*]
+      # Encrypt Kubernetes Secrets at rest in the k3s datastore.
+      - arg: --secrets-encryption
+        nodeFilters: [server:*]
+  kubeconfig:
+    updateDefaultKubeconfig: true
+    switchCurrentContext: false
