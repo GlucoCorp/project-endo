@@ -1,0 +1,37 @@
+{
+  "name": "project-endo",
+  "private": true,
+  "description": "Project Endo: measured treatment trials for endometriosis, adenomyosis and fibroids.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "packageManager": "pnpm@12.5.1",
+  "engines": {
+    "node": ">=24.22.0 <25",
+    "pnpm": ">=12.5.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint && eslint tools eslint.config.js --max-warnings 0",
+    "test": "turbo run test",
+    "test:coverage": "turbo run test:coverage",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "check:licences": "node tools/check-licences.mjs",
+    "check:clinical": "node tools/check-clinical-todos.mjs",
+    "check:readmes": "node tools/check-package-readmes.mjs",
+    "check:all": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm check:licences && pnpm check:readmes"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@vitest/coverage-v8": "4.1.12",
+    "eslint": "10.14.0",
+    "eslint-plugin-security": "4.2.1",
+    "fast-check": "4.10.2",
+    "prettier": "3.9.10",
+    "turbo": "2.11.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.72.1",
+    "vitest": "4.1.12"
+  }
+}

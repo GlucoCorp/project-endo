@@ -1,0 +1,23 @@
+packages:
+  - apps/*
+  - services/*
+  - packages/*
+  - tools/*
+
+# Supply-chain controls (spec 12.4, ADR-0003).
+# Do not publish-age-bypass or loosen these without a new ADR and security review.
+
+# Refuse dependency versions published less than 7 days ago (minutes).
+minimumReleaseAge: 10080
+
+# Fail if any dependency tries to run an install/build script that is not explicitly allowed.
+strictDepBuilds: true
+# Allowlist of packages permitted to run build scripts. Empty by design.
+onlyBuiltDependencies: []
+
+# Strict isolation: packages can only import what they declare.
+nodeLinker: isolated
+strictPeerDependencies: true
+autoInstallPeers: false
+engineStrict: true
+saveExact: true

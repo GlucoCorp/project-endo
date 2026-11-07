@@ -1,0 +1,5 @@
+pnpm-lock.yaml
+coverage/
+dist/
+.turbo/
+PROJECT_ENDO_BUILD_SPEC.md
