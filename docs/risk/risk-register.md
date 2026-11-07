@@ -10,6 +10,7 @@ ISO 14971 structure (spec 18.4). IDs are stable. Security risks are detailed in 
 | RISK-T01 | Altered rule set                    | TODO          | TODO          | threat model | TODO          | Clinical lead    |
 | RISK-T02 | Malicious dependency                | TODO          | TODO          | threat model | TODO          | Security lead    |
 | RISK-T03 | Ciphertext swapped between records  | TODO          | TODO          | threat model | TODO          | Security lead    |
+| RISK-T04 | Unreviewed code reaches main        | TODO          | TODO          | threat model | TODO          | Security lead    |
 | RISK-R01 | Disputed clinical decision          | TODO          | TODO          | threat model | TODO          | Security lead    |
 | RISK-I01 | Clinical DB exfiltration            | TODO          | TODO          | threat model | TODO          | Security lead    |
 | RISK-I02 | PHI in logs or errors               | TODO          | TODO          | threat model | TODO          | Security lead    |

@@ -57,6 +57,8 @@ GitHub Code Security (paid) is not enabled. The free set-up gives equivalent blo
 
 GitHub Free gives 2,000 private-repo Actions minutes a month; each push uses roughly 5 to 6.
 
-## Repository settings to apply on GitHub (spec 12.4, 18.1)
+## Repository settings (spec 12.4, 18.1)
 
-Branch protection on `main`: two approvals, CODEOWNER review, signed commits, required status checks (`ci`, `codeql`), squash merge only, no force pushes.
+- Applied: squash-merge only, branches deleted after merge.
+- **Not available on GitHub Free for private repos:** branch protection and rulesets (required reviews, required checks, signed commits, no force pushes). Compensating control: the `main-guard` workflow flags any commit on `main` that did not come from a merged PR (RISK-T04). Always merge through a PR with green checks.
+- When the plan allows: protect `main` with required checks (`typecheck, lint, tests, coverage, licences`, `security scans …`, `analyze`), two approvals, CODEOWNER review, signed commits, no force pushes.
