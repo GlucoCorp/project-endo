@@ -20,7 +20,10 @@
     "check:licences": "node tools/check-licences.mjs",
     "check:clinical": "node tools/check-clinical-todos.mjs",
     "check:readmes": "node tools/check-package-readmes.mjs",
-    "check:all": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm check:licences && pnpm check:readmes"
+    "check:all": "pnpm format:check && pnpm typecheck && pnpm lint && pnpm test:coverage && pnpm check:licences && pnpm check:readmes && pnpm check:inventory",
+    "db:test:up": "docker run -d --rm --name endo-test-db -p 127.0.0.1:55499:5432 -e POSTGRES_USER=endo_test -e POSTGRES_PASSWORD=endo_test -e POSTGRES_DB=endo_test postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395",
+    "db:test:down": "docker stop endo-test-db",
+    "check:inventory": "node tools/check-data-inventory.mjs"
   },
   "devDependencies": {
     "@types/node": "24.19.2",
