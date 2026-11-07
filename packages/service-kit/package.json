@@ -1,0 +1,21 @@
+{
+  "name": "@endo/service-kit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@endo/domain": "workspace:*",
+    "fastify": "5.12.7",
+    "jose": "6.2.14",
+    "zod": "4.6.7"
+  }
+}
