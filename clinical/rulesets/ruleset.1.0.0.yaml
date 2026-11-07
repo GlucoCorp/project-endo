@@ -1,0 +1,20 @@
+# Verdict rule set (spec 7.3). OWNED BY THE CLINICAL LEAD.
+# Transcribed from the spec draft. Every value below is unapproved. Services refuse to start in
+# staging or production while any TODO_CLINICAL remains (packages/config clinical gate).
+# Changes require: clinical lead approval, updated rationale, regenerated golden results,
+# and a signed rule set (spec 18.5). Do not edit values without that process.
+version: 1.0.0
+approved_by: TODO_CLINICAL # name and role of clinical lead
+approved_on: TODO_CLINICAL
+evidence: docs/clinical/ruleset-1.0.0-rationale.md
+thresholds:
+  min_checkins: TODO_CLINICAL # draft: 8 of 12 weeks
+  adherence_threshold: TODO_CLINICAL # draft: 0.8
+  intolerance_weeks: TODO_CLINICAL # draft: 2 weeks rated "unbearable"
+  baseline_window_weeks: TODO_CLINICAL
+  recent_window_weeks: TODO_CLINICAL
+  meaningful_improvement: TODO_CLINICAL # draft: 30% reduction in worst pain or 2 points
+  minimal_change: TODO_CLINICAL
+  goal_met_threshold: TODO_CLINICAL
+guideline_options: # per verdict and treatment class, with source citations
+  TODO_CLINICAL
