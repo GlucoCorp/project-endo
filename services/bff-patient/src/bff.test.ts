@@ -170,11 +170,52 @@ describe('upstream handling (spec 12.3)', () => {
   });
 });
 
+describe('RISK-D01 rate limiting (spec 12.3)', () => {
+  it('limits per client IP before session lookup and answers with a problem', async () => {
+    let lookups = 0;
+    const sessions = {
+      resolve: () => {
+        lookups++;
+        return Promise.resolve(null);
+      },
+      revoke: () => Promise.resolve(),
+    };
+    const d = {
+      ...(await deps(() => Promise.resolve(json(200, {})))),
+      sessions,
+      rateLimitPerMinute: 2,
+    };
+    const app = await buildBff(d);
+    const cookie = `${SESSION_COOKIE}=${'a'.repeat(43)}`;
+    const codes: number[] = [];
+    for (let i = 0; i < 3; i++)
+      codes.push((await app.inject({ url: '/v1/hello', headers: { cookie } })).statusCode);
+    expect(codes).toEqual([401, 401, 429]);
+    expect(lookups).toBe(2);
+    const res = await app.inject({ url: '/v1/hello', headers: { cookie } });
+    expect(res.json()).toMatchObject({
+      type: 'https://errors.glucorp.health/rate_limited',
+      status: 429,
+    });
+    // Throttled responses still carry the spec 12.2 headers.
+    expect(res.headers['content-security-policy']).toContain("frame-ancestors 'none'");
+  });
+
+  it('does not limit liveness probes', async () => {
+    const app = await buildBff({
+      ...(await deps(() => Promise.resolve(json(200, {})))),
+      rateLimitPerMinute: 1,
+    });
+    for (let i = 0; i < 3; i++)
+      expect((await app.inject({ url: '/healthz' })).statusCode).toBe(200);
+  });
+});
+
 describe('route declarations (spec 2.5)', () => {
   it.each([undefined, { kind: 'public', reason: 'x' }, { kind: 'nope' }, 'session'])(
     'rejects auth %j',
     async (auth) => {
-      const app = createBffInstance(await deps(() => Promise.resolve(json(200, {}))));
+      const app = await createBffInstance(await deps(() => Promise.resolve(json(200, {}))));
       expect(() => app.get('/v1/x', { config: { auth } as never }, () => 'x')).toThrow(
         RouteDeclarationError,
       );

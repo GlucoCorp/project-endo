@@ -1,4 +1,5 @@
 import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import {
   can,
   isAction,
@@ -15,6 +16,7 @@ import {
   ServiceTokenError,
   enforceRouteDeclarations,
   loggerOptions,
+  rateLimitedError,
   registerProblemHandlers,
   requestIdFrom,
   type ServiceTokenVerifier,
@@ -65,11 +67,16 @@ export interface ApiDeps {
   /** Loads the current consent state for a patient. M1 replaces the default with the consent service. */
   readonly loadConsents: (patientId: string | null) => Promise<ReadonlySet<ConsentPurpose>>;
   readonly logStream?: { write(msg: string): void };
+  /**
+   * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
+   * backstop; per-IP and per-account limits are enforced in the BFFs.
+   */
+  readonly rateLimitPerMinute?: number;
 }
 
 /** Core domain API (spec 8.2). Internal only: reachable from BFFs and jobs, never from browsers. */
 export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
-  const app = createApiInstance(deps);
+  const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
   await app.ready();
@@ -77,7 +84,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
 }
 
 /** The hardened instance with hooks but no routes. Exported so tests can prove the guards hold. */
-export function createApiInstance(deps: ApiDeps): FastifyInstance {
+export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: loggerOptions('api', deps.logLevel, deps.logStream),
     bodyLimit: 100 * 1024, // spec 12.3
@@ -93,8 +100,27 @@ export function createApiInstance(deps: ApiDeps): FastifyInstance {
   enforceRouteDeclarations(app, 'policy', isRoutePolicy);
   registerProblemHandlers(app);
 
+  // Security headers and request id first, so every response (including 429s) carries them.
   app.addHook('onRequest', async (request, reply) => {
     void reply.headers({ ...API_SECURITY_HEADERS, 'x-request-id': request.id });
+  });
+
+  // Registered (and awaited) before the auth hook so floods are rejected before any token work.
+  // In-memory per instance; a shared store arrives with the infrastructure slice (ADR-0012).
+  // App-level hook (not the plugin's per-route hooks, which Fastify runs after app-level ones), so
+  // it runs after the headers hook and before authentication. Liveness routes are exempt.
+  await app.register(rateLimit, { global: false });
+  const limit = app.rateLimit({
+    max: deps.rateLimitPerMinute ?? 1200,
+    timeWindow: 60_000,
+    errorResponseBuilder: () => rateLimitedError(),
+  });
+  app.addHook('onRequest', async function (request, reply) {
+    if (request.routeOptions.config.policy?.kind === 'public') return;
+    await limit.call(this, request, reply);
+  });
+
+  app.addHook('onRequest', async (request) => {
     const policy = request.routeOptions.config.policy;
     // Unmatched routes (404) carry no policy; the not-found handler answers them.
     if (!policy || policy.kind === 'public') return;

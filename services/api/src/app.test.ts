@@ -125,6 +125,26 @@ describe('GET /v1/hello (M0 walking skeleton, spec 2.5, 2.6)', () => {
 });
 
 describe('platform routes', () => {
+  it('RISK-D01 rate-limits callers before authentication, with a problem response', async () => {
+    const { app, events } = await setup({ rateLimitPerMinute: 2 });
+    const codes: number[] = [];
+    for (let i = 0; i < 3; i++) codes.push((await app.inject({ url: '/v1/hello' })).statusCode);
+    expect(codes).toEqual([401, 401, 429]);
+    const limited = await app.inject({ url: '/v1/hello' });
+    expect(limited.headers['content-type']).toContain('application/problem+json');
+    expect(limited.json()).toMatchObject({ type: 'https://errors.glucorp.health/rate_limited' });
+    expect(limited.headers['retry-after']).toBeDefined();
+    expect(limited.headers['cache-control']).toBe('no-store');
+    // Throttled requests never reach token verification, so they add no audit events.
+    expect(await events()).toHaveLength(2);
+  });
+
+  it('does not rate-limit liveness probes', async () => {
+    const { app } = await setup({ rateLimitPerMinute: 1 });
+    for (let i = 0; i < 3; i++)
+      expect((await app.inject({ url: '/healthz' })).statusCode).toBe(200);
+  });
+
   it('healthz is public and writes no audit event', async () => {
     const { app, events } = await setup();
     const res = await app.inject({ url: '/healthz' });

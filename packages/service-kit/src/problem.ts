@@ -26,6 +26,11 @@ export class ProblemError extends Error {
   }
 }
 
+/** Thrown by the rate limiter (spec 12.3). Generic text; never mentions the key or limit. */
+export function rateLimitedError(): ProblemError {
+  return new ProblemError(429, 'rate_limited', 'Too many requests. Wait a moment and try again.');
+}
+
 export function problemBody(
   status: number,
   code: string,
@@ -58,6 +63,10 @@ export function registerProblemHandlers(app: FastifyInstance): void {
       status = 400;
       code = 'validation';
       title = 'The request was not valid.';
+    } else if (error.statusCode === 429) {
+      status = 429;
+      code = 'rate_limited';
+      title = 'Too many requests. Wait a moment and try again.';
     } else if (error.statusCode === 413) {
       status = 413;
       code = 'too_large';

@@ -15,6 +15,7 @@ const Config = z.object({
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   ENDO_CLINICAL_RULESET_PATH: z.string().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65535),
+  API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(1200),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     audit: new AuditWriter(new InMemoryAuditStore()),
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
+    rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

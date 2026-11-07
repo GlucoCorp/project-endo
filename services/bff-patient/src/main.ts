@@ -9,6 +9,7 @@ const Config = z.object({
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   BFF_PATIENT_PORT: z.coerce.number().int().min(1).max(65535),
+  BFF_PATIENT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(120),
   BFF_PATIENT_API_BASE_URL: z.url({ protocol: /^https?$/ }),
   BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK: z.string().transform((s, ctx) => {
     try {
@@ -45,6 +46,7 @@ async function main(): Promise<void> {
     signer: new ServiceTokenSigner(config.BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK, 'bff-patient'),
     apiBaseUrl: config.BFF_PATIENT_API_BASE_URL,
     fetch,
+    rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

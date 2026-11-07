@@ -1,10 +1,12 @@
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { z } from 'zod';
 import {
   ProblemError,
   WEB_SECURITY_HEADERS,
   enforceRouteDeclarations,
   loggerOptions,
+  rateLimitedError,
   registerProblemHandlers,
   requestIdFrom,
   type ServiceClaims,
@@ -39,6 +41,11 @@ export interface BffDeps {
   readonly fetch: typeof fetch;
   readonly upstreamTimeoutMs?: number;
   readonly logStream?: { write(msg: string): void };
+  /**
+   * Requests per minute per client IP (spec 12.3; RISK-D01). Per-session and per-account limits,
+   * and stricter limits on sign-in endpoints, arrive with real sessions in M1.
+   */
+  readonly rateLimitPerMinute?: number;
 }
 
 const HelloResponse = z.strictObject({
@@ -51,7 +58,7 @@ const HelloResponse = z.strictObject({
  * Backend-for-frontend for the patient PWA (spec 8.2, 8.4). The browser holds only an HttpOnly
  * session cookie; service tokens are minted here per call and never reach the browser.
  */
-export function createBffInstance(deps: BffDeps): FastifyInstance {
+export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance> {
   const app = Fastify({
     logger: loggerOptions('bff-patient', deps.logLevel, deps.logStream),
     bodyLimit: 100 * 1024,
@@ -67,8 +74,27 @@ export function createBffInstance(deps: BffDeps): FastifyInstance {
   enforceRouteDeclarations(app, 'auth', isBffAuth);
   registerProblemHandlers(app);
 
-  app.addHook('onRequest', async (request, reply) => {
+  // Security headers first, so every response (including 429s) carries them.
+  app.addHook('onRequest', async (_request, reply) => {
     void reply.headers(WEB_SECURITY_HEADERS);
+  });
+
+  // Registered (and awaited) before the session hook so floods are rejected before session lookups.
+  // Keyed by client IP; `trustProxy` is set per deployment behind the load balancer (ADR-0012).
+  // App-level hook (not the plugin's per-route hooks, which Fastify runs after app-level ones), so
+  // it runs after the headers hook and before authentication. Liveness routes are exempt.
+  await app.register(rateLimit, { global: false });
+  const limit = app.rateLimit({
+    max: deps.rateLimitPerMinute ?? 120,
+    timeWindow: 60_000,
+    errorResponseBuilder: () => rateLimitedError(),
+  });
+  app.addHook('onRequest', async function (request, reply) {
+    if (request.routeOptions.config.auth?.kind === 'public') return;
+    await limit.call(this, request, reply);
+  });
+
+  app.addHook('onRequest', async (request) => {
     const auth = request.routeOptions.config.auth;
     if (!auth || auth.kind === 'public') return;
     const token = readCookie(request.headers.cookie, SESSION_COOKIE);
@@ -91,7 +117,7 @@ export function createBffInstance(deps: BffDeps): FastifyInstance {
 }
 
 export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
-  const app = createBffInstance(deps);
+  const app = await createBffInstance(deps);
   const timeoutMs = deps.upstreamTimeoutMs ?? 5000;
 
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
