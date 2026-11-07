@@ -27,5 +27,13 @@
       "automerge": false,
       "addLabels": ["security-review"]
     }
-  ]
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "security-review"],
+    "prPriority": 10,
+    "schedule": ["at any time"],
+    "minimumReleaseAge": "7 days"
+  },
+  "osvVulnerabilityAlerts": true
 }

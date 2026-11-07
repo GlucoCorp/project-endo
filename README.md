@@ -25,6 +25,12 @@ pnpm check:all          # format, typecheck, lint (0 warnings), tests + coverage
 pnpm check:clinical     # list unfinished clinical, licence and legal content
 ```
 
+## One-time setup per clone
+
+```sh
+git config core.hooksPath .githooks   # gitleaks secret scan before each commit (uses gitleaks or Docker)
+```
+
 ## Run the walking skeleton locally
 
 ```sh
@@ -37,6 +43,19 @@ curl -H "cookie: __Host-endo_session=<token>" http://127.0.0.1:4100/v1/hello
 ```
 
 In `staging` or `production` the API refuses to start while the rule set contains `TODO_CLINICAL`.
+
+## Security scanning on a free GitHub plan
+
+GitHub Code Security (paid) is not enabled. The free set-up gives equivalent blocking checks:
+
+| Need                    | Free mechanism                                                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Code scanning           | CodeQL + Semgrep in CI; findings become inline PR annotations and a job-summary table via `tools/sarif-report.mjs`; any finding fails the build |
+| Vulnerable dependencies | OSV-Scanner + Trivy on every PR and weekly on `main`; Dependabot alerts (free, enabled); Renovate opens fix PRs                                 |
+| Secrets                 | gitleaks in CI (full history) and as a pre-commit hook                                                                                          |
+| SBOM                    | CycloneDX artefact on every CI run                                                                                                              |
+
+GitHub Free gives 2,000 private-repo Actions minutes a month; each push uses roughly 5 to 6.
 
 ## Repository settings to apply on GitHub (spec 12.4, 18.1)
 

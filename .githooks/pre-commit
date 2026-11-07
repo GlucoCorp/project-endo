@@ -1,0 +1,21 @@
+#!/bin/sh
+# Pre-commit secret scan (spec 12.4: gitleaks "also as pre-commit hook"). Free, runs locally.
+# Enable once per clone:   git config core.hooksPath .githooks
+#
+# Uses a local `gitleaks` binary if installed, otherwise the same digest-pinned Docker image CI uses.
+# If neither is available it warns and allows the commit: CI still blocks secrets on every PR.
+IMAGE="zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f"
+
+if command -v gitleaks >/dev/null 2>&1; then
+  exec gitleaks git --pre-commit --staged --redact --verbose .
+fi
+
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  # Git Bash on Windows: give Docker a Windows path and stop MSYS rewriting /repo.
+  repo=$(pwd -W 2>/dev/null || pwd)
+  MSYS_NO_PATHCONV=1 exec docker run --rm -v "$repo:/repo" -w /repo "$IMAGE" \
+    git --pre-commit --staged --redact --verbose .
+fi
+
+echo "pre-commit: gitleaks not run (install gitleaks or start Docker). CI will still scan for secrets." >&2
+exit 0

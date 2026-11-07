@@ -1,9 +1,9 @@
 # CodeQL (spec 12.4, 18.2). Actions pinned to full commit SHAs.
 #
-# GitHub Code Security is not enabled on this private repository, so results cannot be uploaded
-# to code scanning. Until it is, the analysis runs with `upload: never` and this job FAILS on any
-# finding, so the check stays blocking. Once Code Security is enabled, set `upload: always` and
-# keep the gate step.
+# GitHub Code Security (paid) is not enabled on this private repository, so results cannot be
+# uploaded to code scanning. Free substitute: the analysis runs with `upload: never`;
+# tools/sarif-report.mjs turns findings into inline PR annotations and a job-summary table, and
+# FAILS the job on any finding, so the check stays blocking.
 name: codeql
 
 on:
@@ -36,12 +36,8 @@ jobs:
         with:
           upload: never
           output: codeql-results
-      - name: Fail on any CodeQL finding
-        run: |
-          count=$(jq '[.runs[].results[]] | length' codeql-results/*.sarif)
-          jq -r '.runs[].results[] | "\(.ruleId): \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine) \(.message.text)"' codeql-results/*.sarif
-          echo "CodeQL findings: $count"
-          test "$count" -eq 0
+      - name: Fail on any CodeQL finding (annotations + summary)
+        run: node tools/sarif-report.mjs CodeQL codeql-results/*.sarif
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
