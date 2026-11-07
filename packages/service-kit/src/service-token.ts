@@ -12,6 +12,9 @@ import { ROLES, uuidv7 } from '@endo/domain';
 
 export type ServiceName = 'bff-patient' | 'bff-clinic' | 'jobs' | 'integration' | 'api';
 
+/** Key type as jose returns it; avoids depending on the global WebCrypto `CryptoKey` type. */
+type JoseKey = Awaited<ReturnType<typeof importJWK>>;
+
 const ALG = 'EdDSA';
 export const SERVICE_TOKEN_TTL_SECONDS = 60;
 const CLOCK_TOLERANCE_SECONDS = 5;
@@ -49,7 +52,7 @@ export async function generateServiceKeyPair(): Promise<{ privateJwk: JWK; publi
 }
 
 export class ServiceTokenSigner {
-  readonly #key: Promise<CryptoKey | Uint8Array>;
+  readonly #key: Promise<JoseKey>;
   readonly #issuer: ServiceName;
   readonly #clock: () => Date;
 
@@ -75,7 +78,7 @@ export class ServiceTokenSigner {
 }
 
 export class ServiceTokenVerifier {
-  readonly #key: Promise<CryptoKey | Uint8Array>;
+  readonly #key: Promise<JoseKey>;
   readonly #audience: ServiceName;
   readonly #issuers: readonly ServiceName[];
   readonly #clock: () => Date;
