@@ -70,7 +70,7 @@ export class FieldCipher {
     const key = await this.#dataKey(ctx.patientId, true);
     try {
       const iv = randomBytes(IV_BYTES);
-      const cipher = createCipheriv('aes-256-gcm', key, iv);
+      const cipher = createCipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
       cipher.setAAD(aad(ctx));
       const body = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
       const tag = cipher.getAuthTag();
@@ -92,7 +92,8 @@ export class FieldCipher {
 
     const key = await this.#dataKey(ctx.patientId, false);
     try {
-      const decipher = createDecipheriv('aes-256-gcm', key, iv);
+      // Pin the tag length so a truncated tag can never be accepted (Semgrep gcm-no-tag-length).
+      const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_BYTES });
       decipher.setAAD(aad(ctx));
       decipher.setAuthTag(tag);
       return Buffer.concat([

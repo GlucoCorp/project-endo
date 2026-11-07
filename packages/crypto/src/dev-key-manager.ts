@@ -34,7 +34,9 @@ export class DevKeyManager implements KeyManager {
   generateDataKey(keyRef: KeyRef): Promise<DataKey> {
     const plaintext = randomBytes(KEY_BYTES);
     const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv('aes-256-gcm', this.#master(keyRef), iv);
+    const cipher = createCipheriv('aes-256-gcm', this.#master(keyRef), iv, {
+      authTagLength: TAG_BYTES,
+    });
     cipher.setAAD(Buffer.from(keyRef, 'utf8'));
     const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const wrapped = Buffer.concat([iv, body, cipher.getAuthTag()]);
@@ -53,6 +55,8 @@ export class DevKeyManager implements KeyManager {
       'aes-256-gcm',
       this.#master(keyRef),
       buf.subarray(0, IV_BYTES),
+      // Pin the tag length so a truncated tag can never be accepted (Semgrep gcm-no-tag-length).
+      { authTagLength: TAG_BYTES },
     );
     decipher.setAAD(Buffer.from(keyRef, 'utf8'));
     decipher.setAuthTag(buf.subarray(IV_BYTES + KEY_BYTES));
