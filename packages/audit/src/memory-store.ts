@@ -1,5 +1,5 @@
 import type { AuditEvent } from './schema.ts';
-import type { AuditStore } from './writer.ts';
+import { AuditSequenceConflictError, type AuditStore } from './writer.ts';
 
 /** Dev and test store. Enforces the same append-only, contiguous-sequence contract as production. */
 export class InMemoryAuditStore implements AuditStore {
@@ -12,7 +12,7 @@ export class InMemoryAuditStore implements AuditStore {
   append(event: AuditEvent): Promise<void> {
     const expected = (this.#events.at(-1)?.sequence ?? 0) + 1;
     if (event.sequence !== expected) {
-      return Promise.reject(new Error('Audit sequence conflict'));
+      return Promise.reject(new AuditSequenceConflictError());
     }
     this.#events.push(Object.freeze(structuredClone(event)));
     return Promise.resolve();

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AuditSequenceConflictError,
   AuditWriter,
   GENESIS_HASH,
   InMemoryAuditStore,
@@ -133,5 +134,33 @@ describe('RISK-I02 no content in audit events', () => {
         }),
       ),
     ).resolves.toMatchObject({ outcome: 'denied' });
+  });
+});
+
+describe('cross-process sequence conflicts', () => {
+  function racingStore(conflicts: number) {
+    const store = new InMemoryAuditStore();
+    let remaining = conflicts;
+    return {
+      head: () => store.head(),
+      readRange: (a: number, b: number) => store.readRange(a, b),
+      append: (e: AuditEvent) =>
+        remaining-- > 0 ? Promise.reject(new AuditSequenceConflictError()) : store.append(e),
+      store,
+    };
+  }
+
+  it('rebuilds the event on the new head and retries', async () => {
+    const s = racingStore(2);
+    const event = await new AuditWriter(s).write(input());
+    expect(event.sequence).toBe(1);
+    expect(verifyChain(await s.store.readRange(1, 10)).ok).toBe(true);
+  });
+
+  it('gives up after repeated conflicts rather than looping forever', async () => {
+    const s = racingStore(100);
+    await expect(new AuditWriter(s).write(input())).rejects.toBeInstanceOf(
+      AuditSequenceConflictError,
+    );
   });
 });

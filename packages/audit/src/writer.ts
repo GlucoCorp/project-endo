@@ -19,6 +19,20 @@ export interface AuditStore {
 }
 
 /**
+ * Thrown by a store when another writer appended the same sequence first. The writer re-reads
+ * the head and retries; it never overwrites.
+ */
+export class AuditSequenceConflictError extends Error {
+  constructor() {
+    super('Audit sequence conflict');
+    this.name = 'AuditSequenceConflictError';
+  }
+}
+
+/** Attempts per event when other processes keep winning the race for the next sequence. */
+const MAX_APPEND_ATTEMPTS = 5;
+
+/**
  * Canonical hash input. The field order is fixed here, not taken from object key order, so the
  * hash is stable across runtimes and serialisers.
  */
@@ -65,22 +79,33 @@ export class AuditWriter {
     this.#clock = clock;
   }
 
-  /** Serialised within this process; the store's sequence check serialises across processes. */
+  /**
+   * Serialised within this process. Across processes the store rejects a duplicate sequence with
+   * AuditSequenceConflictError, and the event is rebuilt on the new head and retried.
+   */
   async write(input: AuditEventInputType): Promise<AuditEvent> {
     const parsed = AuditEventInput.parse(input);
     const run = this.#tail.then(async () => {
-      const head = await this.#store.head();
-      const now = this.#clock();
-      const base = {
-        ...parsed,
-        id: uuidv7(now.getTime()),
-        sequence: head ? head.sequence + 1 : 1,
-        occurred_at: now.toISOString(),
-        prev_hash: head ? head.hash : GENESIS_HASH,
-      };
-      const event: AuditEvent = { ...base, hash: hashEvent(base) };
-      await this.#store.append(event);
-      return event;
+      for (let attempt = 1; ; attempt++) {
+        const head = await this.#store.head();
+        const now = this.#clock();
+        const base = {
+          ...parsed,
+          id: uuidv7(now.getTime()),
+          sequence: head ? head.sequence + 1 : 1,
+          occurred_at: now.toISOString(),
+          prev_hash: head ? head.hash : GENESIS_HASH,
+        };
+        const event: AuditEvent = { ...base, hash: hashEvent(base) };
+        try {
+          await this.#store.append(event);
+          return event;
+        } catch (error) {
+          if (!(error instanceof AuditSequenceConflictError) || attempt >= MAX_APPEND_ATTEMPTS) {
+            throw error;
+          }
+        }
+      }
     });
     this.#tail = run.catch(() => undefined);
     return await run;
