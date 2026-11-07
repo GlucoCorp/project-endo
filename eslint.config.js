@@ -53,6 +53,8 @@ export default tseslint.config(
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       'security/detect-object-injection': 'off',
+      // Tests create temp files and fixtures at generated paths.
+      'security/detect-non-literal-fs-filename': 'off',
     },
   },
   {
