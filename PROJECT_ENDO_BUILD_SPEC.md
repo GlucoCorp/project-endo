@@ -987,3 +987,8 @@ Add to this list rather than guessing.
 7. Recovery time and recovery point objectives agreed with the first customer.
 8. Cloud provider confirmation and local hosting partners for Kenya and Rwanda.
 9. Languages for the first pilot beyond English.
+10. Section 3.2 "Create treatment episode: ✓ (own org, consented patient)": which consent purpose? Implemented for now as requiring `share_with_care_team`, the most restrictive reading (ADR-0007).
+11. Section 10.4 "care-team relationship": is it every clinician in the patient's organisation, or an explicit clinician–patient assignment? Implemented for now as same-organisation membership, as the matrix states (ADR-0007).
+12. GitHub team handles for CODEOWNERS (security, clinical, platform, engineering). `.github/CODEOWNERS` uses placeholders `@GlucoCorp/endo-*`.
+13. Confirm the licence review of `lightningcss` (MPL-2.0, dev-only test tooling, never shipped) recorded in ADR-0010.
+14. Commit signing method for the team and for AI-assisted commits (SSH, GPG or Sigstore gitsign), so that the signed-commits branch rule (12.4) can be enabled.
