@@ -1,0 +1,15 @@
+# Only what the image needs; never secrets, state, history or local tooling output.
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!.npmrc
+!packages/**
+!services/**
+!clinical/rulesets/**
+**/node_modules
+**/coverage
+**/dist
+**/*.test.ts
+**/vitest.config.ts
+**/.env*

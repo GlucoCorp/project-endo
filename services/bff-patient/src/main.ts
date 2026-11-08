@@ -9,6 +9,8 @@ const Config = z.object({
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   BFF_PATIENT_PORT: z.coerce.number().int().min(1).max(65535),
+  // Loopback by default; containers set 0.0.0.0 and rely on NetworkPolicy (ADR-0016).
+  BFF_PATIENT_HOST: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
   BFF_PATIENT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(120),
   BFF_PATIENT_API_BASE_URL: z.url({ protocol: /^https?$/ }),
   BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK: z.string().transform((s, ctx) => {
@@ -52,7 +54,7 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void app.close());
   }
-  await app.listen({ host: '127.0.0.1', port: config.BFF_PATIENT_PORT });
+  await app.listen({ host: config.BFF_PATIENT_HOST, port: config.BFF_PATIENT_PORT });
   // Dev only: a synthetic patient session for manual testing. Written to stdout, never the logger.
   process.stdout.write(`[dev] synthetic patient session cookie: ${SESSION_COOKIE}=${devToken}\n`);
 }
