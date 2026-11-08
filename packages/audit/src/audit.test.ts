@@ -164,3 +164,18 @@ describe('cross-process sequence conflicts', () => {
     );
   });
 });
+
+describe('spec 2.6 events relayed from an outbox keep their original time', () => {
+  it('records occurredAt, still chains, and refuses a future time', async () => {
+    const store = new InMemoryAuditStore();
+    const now = new Date('2026-11-08T12:00:00Z');
+    const writer = new AuditWriter(store, () => now);
+    const earlier = new Date('2026-11-08T11:00:00Z');
+    const e = await writer.write(input(), earlier);
+    expect(e.occurred_at).toBe(earlier.toISOString());
+    expect(verifyChain(await store.readRange(1, 10)).ok).toBe(true);
+    await expect(writer.write(input(), new Date('2026-11-08T13:00:00Z'))).rejects.toThrow(
+      RangeError,
+    );
+  });
+});

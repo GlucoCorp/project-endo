@@ -41,6 +41,9 @@ const Config = z.object({
   API_AUDIT_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   // Clinical store as a member of endo_clinical_app (ADR-0017). Required in staging and production.
   API_CLINICAL_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
+  // Audit outbox relay as a member of endo_clinical_relay: a separate credential, because the API
+  // role may only add events (ADR-0017). Required whenever the clinical store is configured.
+  API_AUDIT_RELAY_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -82,10 +85,10 @@ async function main(): Promise<void> {
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
   // Queued events carry their outbox id; the audit store assigns its own.
-  const publish = (queued: unknown): Promise<void> => {
+  const publish = (queued: unknown, occurredAt?: Date): Promise<void> => {
     const input: Record<string, unknown> = { ...(queued as Record<string, unknown>) };
     delete input['id'];
-    return auditWriter.write(AuditEventInput.parse(input)).then(() => undefined);
+    return auditWriter.write(AuditEventInput.parse(input), occurredAt).then(() => undefined);
   };
   let closeClinical = (): Promise<void> => Promise.resolve();
   if (config.API_CLINICAL_DATABASE_URL) {
@@ -95,9 +98,22 @@ async function main(): Promise<void> {
     const db = createDb<ClinicalDatabase>(pool);
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
-    relayOutbox = () => relayAuditOutbox(db, publish).then(() => undefined);
+    if (!config.API_AUDIT_RELAY_DATABASE_URL) {
+      throw new Error('API_AUDIT_RELAY_DATABASE_URL is required with API_CLINICAL_DATABASE_URL.');
+    }
+    const relayDb = createDb<ClinicalDatabase>(
+      createPool(config.API_AUDIT_RELAY_DATABASE_URL, {
+        applicationName: 'endo-api-relay',
+        max: 2,
+      }),
+    );
+    relayOutbox = async () => {
+      const r = await relayAuditOutbox(relayDb, publish);
+      if (r.failed > 0) process.stderr.write(`audit outbox: ${String(r.failed)} event(s) failed\n`);
+    };
     closeClinical = async () => {
       await db.destroy();
+      await relayDb.destroy();
     };
   } else if (isDeployedEnvironment(config.ENDO_ENV)) {
     throw new Error('API_CLINICAL_DATABASE_URL is required in staging and production.');
@@ -105,8 +121,16 @@ async function main(): Promise<void> {
     const store = new InMemoryIdempotentInvitationStore();
     invitations = store;
     memberships = new InMemoryMembershipStore();
-    relayOutbox = async () => {
-      for (const event of store.outbox.splice(0)) await publish(event);
+    // Serialised; an event leaves the queue only once it is published.
+    let running: Promise<void> = Promise.resolve();
+    relayOutbox = () => {
+      running = running.then(async () => {
+        while (store.outbox.length > 0) {
+          await publish(store.outbox[0]);
+          store.outbox.shift();
+        }
+      });
+      return running;
     };
   }
 
