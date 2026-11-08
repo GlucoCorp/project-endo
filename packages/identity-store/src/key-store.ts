@@ -7,8 +7,8 @@ import type { IdentityDatabase } from './schema.ts';
  * package's key-store contract, so `new FieldCipher(kms, store, 'kms/identity')` encrypts each
  * person's fields under their own key.
  *
- * `destroy` deletes the key row (not a soft delete) and records a tombstone in the same
- * transaction; the database then refuses any new key for that person.
+ * `destroy` records a tombstone; the database then deletes the key in the same transaction,
+ * serialised with key creation, and refuses any new key for that person (migration 0001).
  */
 export class PostgresPersonKeyStore implements PatientKeyStore {
   readonly #db: Kysely<IdentityDatabase>;
@@ -48,13 +48,10 @@ export class PostgresPersonKeyStore implements PatientKeyStore {
   }
 
   async destroy(personId: string): Promise<void> {
-    await this.#db.transaction().execute(async (trx) => {
-      await trx
-        .insertInto('person_key_shredded')
-        .values({ person_id: personId })
-        .onConflict((oc) => oc.column('person_id').doNothing())
-        .execute();
-      await trx.deleteFrom('person_key').where('person_id', '=', personId).execute();
-    });
+    await this.#db
+      .insertInto('person_key_shredded')
+      .values({ person_id: personId })
+      .onConflict((oc) => oc.column('person_id').doNothing())
+      .execute();
   }
 }

@@ -18,6 +18,7 @@ const SYNTHETIC_PHI_MARKER = 'SYNTHETIC_PHI_MARKER-identity-91c2';
 describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person keys', () => {
   let admin: pg.Pool;
   let appDb: Kysely<IdentityDatabase>;
+  let appPool: pg.Pool;
   let schema: string;
 
   const withSchema = (base: string, user: string, password: string) => {
@@ -74,11 +75,10 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
     }
     const base = new URL(url!);
     admin = new pg.Pool({ connectionString: withSchema(url!, base.username, base.password) });
-    appDb = createDb<IdentityDatabase>(
-      createPool(withSchema(url!, 'identity_api_test', appPw), {
-        applicationName: 'endo-test-identity',
-      }),
-    );
+    appPool = createPool(withSchema(url!, 'identity_api_test', appPw), {
+      applicationName: 'endo-test-identity',
+    });
+    appDb = createDb<IdentityDatabase>(appPool);
   });
 
   afterAll(async () => {
@@ -142,6 +142,62 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
     ]);
     expect(Buffer.from(a).equals(Buffer.from(b))).toBe(true);
     expect(await store.get(randomUUID())).toBeNull();
+  });
+
+  it('a key created at the moment of shredding cannot survive it', async () => {
+    const id = await newPerson();
+    const creator = await appPool.connect();
+    try {
+      await creator.query('BEGIN');
+      // Key insert takes the per-person lock and stays uncommitted ...
+      await creator.query(`INSERT INTO person_key (person_id, wrapped) VALUES ($1, $2)`, [
+        id,
+        randomBytes(40),
+      ]);
+      // ... so shredding waits for it, then deletes it.
+      const shredding = new PostgresPersonKeyStore(appDb).destroy(id);
+      await new Promise((r) => setTimeout(r, 200));
+      await creator.query('COMMIT');
+      await shredding;
+    } finally {
+      creator.release();
+    }
+    expect(
+      (await admin.query(`SELECT 1 FROM person_key WHERE person_id = $1`, [id])).rowCount,
+    ).toBe(0);
+    expect(await new PostgresPersonKeyStore(appDb).get(id)).toBe('destroyed');
+  });
+
+  it('cannot delete a key without shredding, and a tombstone always removes the key', async () => {
+    const store = new PostgresPersonKeyStore(appDb);
+    const id = await newPerson();
+    await store.putIfAbsent(id, randomBytes(40));
+    await expect(
+      appDb.deleteFrom('person_key').where('person_id', '=', id).execute(),
+    ).rejects.toThrow(/permission denied/);
+    await expect(admin.query(`DELETE FROM person_key WHERE person_id = $1`, [id])).rejects.toThrow(
+      /only by shredding/,
+    );
+    await appDb.insertInto('person_key_shredded').values({ person_id: id }).execute();
+    expect(
+      (await admin.query(`SELECT 1 FROM person_key WHERE person_id = $1`, [id])).rowCount,
+    ).toBe(0);
+  });
+
+  it('hard-deleting a linked person (erasure job, after the grace period) removes links and key', async () => {
+    const store = new PostgresPersonKeyStore(appDb);
+    const id = await newPerson();
+    await store.putIfAbsent(id, randomBytes(40));
+    await appDb
+      .insertInto('patient_link')
+      .values({ person_id: id, patient_record_id: randomUUID(), org_id: randomUUID() })
+      .execute();
+    await store.destroy(id);
+    await admin.query(`DELETE FROM person WHERE id = $1`, [id]);
+    expect(
+      (await admin.query(`SELECT 1 FROM patient_link WHERE person_id = $1`, [id])).rowCount,
+    ).toBe(0);
+    expect(await store.get(id)).toBe('destroyed');
   });
 
   it('gives the identity service no way to delete people or rewrite links', async () => {
