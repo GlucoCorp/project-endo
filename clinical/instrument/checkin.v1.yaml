@@ -1,0 +1,87 @@
+# Weekly check-in instrument v1 (spec 6). OWNED BY THE CLINICAL LEAD.
+# Structure and order are fixed by the spec. All wording and scales are the spec's DRAFTS and are
+# unapproved until clinical sign-off. Patient-facing strings are copied into packages/i18n only
+# after approval.
+instrument_version: 1.0.0
+approved_by: TODO_CLINICAL
+approved_on: TODO_CLINICAL
+
+weekly_questions: # order fixed (spec 6.1)
+  - id: Q1
+    domain: benefit
+    draft_text: 'On your worst day this week, how bad was the pain?'
+    answer_type: scale_0_10
+    anchors: { 0: 'no pain', 10: 'worst imaginable' }
+    status: TODO_CLINICAL
+  - id: Q2
+    domain: benefit
+    draft_text: 'Did pain or bleeding stop you doing what you planned?'
+    answer_type: single_choice
+    options: [none, some_days, most_days, every_day]
+    status: TODO_CLINICAL
+  - id: Q3
+    domain: benefit_goal
+    draft_text: 'This week, did you manage: {goal}?'
+    answer_type: single_choice
+    options: [yes, partly, no, did_not_apply]
+    status: TODO_CLINICAL
+  - id: Q4
+    domain: bleeding
+    shown_when: bleeding_toggled
+    draft_text: 'How heavy was your bleeding?'
+    answer_type: pictorial_scale
+    scale: TODO_CLINICAL # validated chart to be chosen
+    status: TODO_CLINICAL
+  - id: Q5
+    domain: side_effects
+    draft_text: 'Did you notice any side effects?'
+    answer_type: multi_select
+    options: TODO_CLINICAL # treatment-specific list + "other"
+    status: TODO_CLINICAL
+  - id: Q6
+    domain: side_effects
+    shown_when: Q5_any_selected
+    draft_text: 'How much did side effects bother you?'
+    answer_type: single_choice
+    options: [not_at_all, a_little, a_lot, unbearable]
+    status: TODO_CLINICAL
+  - id: Q7
+    domain: adherence
+    draft_text: 'On how many days did you take it as prescribed?'
+    answer_type: integer_0_7
+    variants: # coils/injections replace the question
+      device_or_injection: 'Is it still in place / did you get the injection?'
+    status: TODO_CLINICAL
+  - id: Q8
+    domain: barriers
+    draft_text: 'Did anything get in the way?'
+    answer_type: multi_select
+    options: [none, forgot, side_effects, cost, ran_out, could_not_get_to_clinic, other]
+    status: TODO_CLINICAL
+
+review_week_additions: # weeks 4, 8, 12 (spec 6.2)
+  weeks: [4, 8, 12]
+  ehp5:
+    licence: TODO_LICENCE
+    status: TODO_CLINICAL
+  global_impression_of_change:
+    draft_text: 'Compared with before this treatment, how are you?'
+    answer_type: scale_7_point
+    status: TODO_CLINICAL
+
+red_flags: # every check-in, cannot be skipped (spec 6.3)
+  final_list: TODO_CLINICAL
+  drafts:
+    - id: RF1
+      draft_text: 'Soaking through a pad or tampon in an hour or less, for two hours or more'
+    - id: RF2
+      draft_text: 'Fainting, or feeling faint and dizzy'
+    - id: RF3
+      draft_text: 'Sudden severe pain in the abdomen or pelvis'
+    - id: RF4
+      draft_text: 'Fever with pelvic pain'
+    - id: RF5
+      draft_text: 'Pain with a possible pregnancy'
+    - id: RF6
+      draft_text: 'Thoughts of harming yourself'
+      routes_to: local_crisis_support

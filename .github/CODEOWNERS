@@ -1,0 +1,15 @@
+# Spec 12.4 / 18.1: protected paths need a CODEOWNER approval.
+# Team handles are placeholders until confirmed (spec Section 24 item 12).
+
+*                       @GlucoCorp/endo-engineering
+
+/packages/authz/        @GlucoCorp/endo-security
+/packages/crypto/       @GlucoCorp/endo-security
+/packages/audit/        @GlucoCorp/endo-security
+/packages/service-kit/  @GlucoCorp/endo-security
+/packages/verdict/      @GlucoCorp/endo-security @GlucoCorp/endo-clinical
+/clinical/              @GlucoCorp/endo-clinical
+/infra/                 @GlucoCorp/endo-platform
+/.github/               @GlucoCorp/endo-security @GlucoCorp/endo-platform
+/pnpm-workspace.yaml    @GlucoCorp/endo-security
+/pnpm-lock.yaml         @GlucoCorp/endo-security

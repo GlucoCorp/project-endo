@@ -1,0 +1,27 @@
+{
+  "name": "@endo/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./app": "./src/app.ts"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@endo/audit": "workspace:*",
+    "@endo/authz": "workspace:*",
+    "@endo/config": "workspace:*",
+    "@endo/db": "workspace:*",
+    "@endo/domain": "workspace:*",
+    "@endo/service-kit": "workspace:*",
+    "@fastify/rate-limit": "11.2.1",
+    "fastify": "5.12.7",
+    "zod": "4.6.7"
+  }
+}

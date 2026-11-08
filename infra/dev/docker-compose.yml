@@ -1,0 +1,62 @@
+# Local development stack. SYNTHETIC DATA ONLY (spec 0 rule 2, 17.1).
+# Images pinned by digest. Ports bound to 127.0.0.1 only. No passwords in this file:
+# set them in your shell before `docker compose up` (spec 12.5). Example:
+#   export ENDO_DEV_DB_PASSWORD=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")
+#   export ENDO_DEV_KEYCLOAK_ADMIN_PASSWORD=$(node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))")
+#
+# Separate PostgreSQL instances for clinical, identity and audit data (spec 2.4, 11.1).
+name: endo-dev
+
+x-postgres: &postgres
+  image: postgres:18.6-alpine@sha256:123b17998ccaf47e53b502e8c6a1e79afd8f579c6f3eec83c563da026f957395
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp, /var/run/postgresql]
+  security_opt: [no-new-privileges:true]
+  healthcheck:
+    test: [CMD-SHELL, pg_isready -U endo]
+    interval: 5s
+    retries: 10
+
+services:
+  clinical-db:
+    <<: *postgres
+    environment:
+      POSTGRES_USER: endo
+      POSTGRES_DB: clinical
+      POSTGRES_PASSWORD: ${ENDO_DEV_DB_PASSWORD:?set ENDO_DEV_DB_PASSWORD}
+    ports: ['127.0.0.1:15432:5432']
+    volumes: [clinical-data:/var/lib/postgresql]
+
+  identity-db:
+    <<: *postgres
+    environment:
+      POSTGRES_USER: endo
+      POSTGRES_DB: identity
+      POSTGRES_PASSWORD: ${ENDO_DEV_DB_PASSWORD:?set ENDO_DEV_DB_PASSWORD}
+    ports: ['127.0.0.1:15433:5432']
+    volumes: [identity-data:/var/lib/postgresql]
+
+  audit-db:
+    <<: *postgres
+    environment:
+      POSTGRES_USER: endo
+      POSTGRES_DB: audit
+      POSTGRES_PASSWORD: ${ENDO_DEV_DB_PASSWORD:?set ENDO_DEV_DB_PASSWORD}
+    ports: ['127.0.0.1:15434:5432']
+    volumes: [audit-data:/var/lib/postgresql]
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332
+    command: [start-dev]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: endo-dev-admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${ENDO_DEV_KEYCLOAK_ADMIN_PASSWORD:?set ENDO_DEV_KEYCLOAK_ADMIN_PASSWORD}
+    ports: ['127.0.0.1:18080:8080']
+
+volumes:
+  clinical-data:
+  identity-data:
+  audit-data:

@@ -1,0 +1,321 @@
+{
+  "realm": "endo-dev",
+  "displayName": "Project Endo (development, synthetic data only)",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "registrationEmailAsUsername": false,
+  "rememberMe": false,
+  "verifyEmail": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": false,
+  "editUsernameAllowed": false,
+  "userManagedAccessAllowed": false,
+  "organizationsEnabled": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 10,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "quickLoginCheckMilliSeconds": 1000,
+  "minimumQuickLoginWaitSeconds": 60,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 43200,
+  "ssoSessionIdleTimeoutRememberMe": 0,
+  "ssoSessionMaxLifespanRememberMe": 0,
+  "offlineSessionIdleTimeout": 0,
+  "offlineSessionMaxLifespanEnabled": true,
+  "offlineSessionMaxLifespan": 1,
+  "accessTokenLifespan": 300,
+  "accessTokenLifespanForImplicitFlow": 0,
+  "accessCodeLifespan": 60,
+  "accessCodeLifespanLogin": 600,
+  "accessCodeLifespanUserAction": 300,
+  "actionTokenGeneratedByUserLifespan": 600,
+  "actionTokenGeneratedByAdminLifespan": 86400,
+  "revokeRefreshToken": true,
+  "refreshTokenMaxReuse": 0,
+  "eventsEnabled": true,
+  "eventsExpiration": 2592000,
+  "enabledEventTypes": [
+    "LOGIN",
+    "LOGIN_ERROR",
+    "LOGOUT",
+    "LOGOUT_ERROR",
+    "CODE_TO_TOKEN",
+    "CODE_TO_TOKEN_ERROR",
+    "REFRESH_TOKEN",
+    "REFRESH_TOKEN_ERROR",
+    "UPDATE_CREDENTIAL",
+    "REMOVE_CREDENTIAL",
+    "EXECUTE_ACTION_TOKEN",
+    "EXECUTE_ACTION_TOKEN_ERROR",
+    "USER_DISABLED_BY_TEMPORARY_LOCKOUT"
+  ],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": false,
+  "browserSecurityHeaders": {
+    "contentSecurityPolicy": "frame-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'self';",
+    "xFrameOptions": "DENY",
+    "xContentTypeOptions": "nosniff",
+    "xRobotsTag": "none",
+    "strictTransportSecurity": "max-age=31536000; includeSubDomains",
+    "referrerPolicy": "no-referrer"
+  },
+  "webAuthnPolicyPasswordlessRpEntityName": "Project Endo",
+  "webAuthnPolicyPasswordlessSignatureAlgorithms": ["ES256", "RS256"],
+  "webAuthnPolicyPasswordlessRpId": "",
+  "webAuthnPolicyPasswordlessAttestationConveyancePreference": "none",
+  "webAuthnPolicyPasswordlessAuthenticatorAttachment": "not specified",
+  "webAuthnPolicyPasswordlessResidentKey": "required",
+  "webAuthnPolicyPasswordlessUserVerificationRequirement": "required",
+  "webAuthnPolicyPasswordlessCreateTimeout": 0,
+  "webAuthnPolicyPasswordlessAvoidSameAuthenticatorRegister": true,
+  "webAuthnPolicyPasswordlessAcceptableAaguids": [],
+  "roles": {
+    "realm": [
+      {
+        "name": "patient",
+        "description": "Spec 3.1: the woman"
+      },
+      {
+        "name": "clinician",
+        "description": "Spec 3.1: clinician at a customer organisation"
+      },
+      {
+        "name": "org_admin",
+        "description": "Spec 3.1: clinic manager"
+      },
+      {
+        "name": "glucorp_support",
+        "description": "Spec 3.1: support staff, just-in-time only"
+      },
+      {
+        "name": "glucorp_platform_admin",
+        "description": "Spec 3.1: break-glass operators, two-person approval"
+      },
+      {
+        "name": "default-roles-endo-dev",
+        "description": "Granted to every user: deliberately empty. Roles are assigned explicitly at enrolment.",
+        "composite": false
+      },
+      {
+        "name": "offline_access",
+        "description": "Defined here so Keycloak does not grant it by default. No client may request offline tokens."
+      },
+      {
+        "name": "uma_authorization",
+        "description": "Defined here so Keycloak does not grant it by default. Unused."
+      }
+    ]
+  },
+  "browserFlow": "endo passkey browser",
+  "authenticationFlows": [
+    {
+      "alias": "endo passkey browser",
+      "description": "Spec 10.1/10.2: usernameless passkey sign-in with user verification. No password, no self-service passkey setup at login (enrolment sets the passkey).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "auth-cookie",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "webauthn-authenticator-passwordless",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "endo deny",
+      "description": "Always refuses. Bound to every flow we do not use: password grant, password reset, self-registration, and first broker login until hospital brokering is designed (M1).",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "deny-access-authenticator",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        }
+      ]
+    }
+  ],
+  "requiredActions": [
+    {
+      "alias": "webauthn-register-passwordless",
+      "name": "Webauthn Register Passwordless",
+      "providerId": "webauthn-register-passwordless",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 10,
+      "config": {
+        "max_auth_age": "0"
+      }
+    },
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 20,
+      "config": {}
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": false,
+      "defaultAction": false,
+      "priority": 30,
+      "config": {}
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "bff-patient",
+      "name": "Patient BFF",
+      "description": "Server-side confidential client for the patient app BFF (spec 8.4). Tokens never reach the browser.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${ENDO_BFF_PATIENT_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "consentRequired": false,
+      "redirectUris": ["${ENDO_BFF_PATIENT_REDIRECT_URI}"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${ENDO_BFF_PATIENT_POST_LOGOUT_URI}",
+        "use.refresh.tokens": "true",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "client.session.idle.timeout": "1800",
+        "client.session.max.lifespan": "43200"
+      },
+      "defaultClientScopes": ["basic", "roles", "acr"],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "bff-clinician",
+      "name": "Clinician BFF",
+      "description": "Server-side confidential client for the clinician portal BFF (spec 8.4, 10.2).",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "${ENDO_BFF_CLINICIAN_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": false,
+      "fullScopeAllowed": false,
+      "consentRequired": false,
+      "redirectUris": ["${ENDO_BFF_CLINICIAN_REDIRECT_URI}"],
+      "webOrigins": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${ENDO_BFF_CLINICIAN_POST_LOGOUT_URI}",
+        "use.refresh.tokens": "true",
+        "client_credentials.use_refresh_token": "false",
+        "oauth2.device.authorization.grant.enabled": "false",
+        "oidc.ciba.grant.enabled": "false",
+        "backchannel.logout.session.required": "true",
+        "client.session.idle.timeout": "900",
+        "client.session.max.lifespan": "43200"
+      },
+      "defaultClientScopes": ["basic", "roles", "acr"],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "account",
+      "name": "Disabled: users manage their account in our apps, where changes are audited",
+      "enabled": false,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": []
+    },
+    {
+      "clientId": "account-console",
+      "name": "Disabled: see account",
+      "enabled": false,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": []
+    },
+    {
+      "clientId": "admin-cli",
+      "name": "Disabled in this realm: administrators use the master realm",
+      "enabled": false,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": []
+    },
+    {
+      "clientId": "security-admin-console",
+      "name": "Disabled in this realm: administrators use the master realm console",
+      "enabled": false,
+      "publicClient": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [],
+      "webOrigins": []
+    }
+  ],
+  "defaultRole": {
+    "name": "default-roles-endo-dev",
+    "composite": false
+  },
+  "scopeMappings": [
+    {
+      "client": "bff-patient",
+      "roles": ["patient"]
+    },
+    {
+      "client": "bff-clinician",
+      "roles": ["clinician", "org_admin", "glucorp_support"]
+    }
+  ],
+  "directGrantFlow": "endo deny",
+  "resetCredentialsFlow": "endo deny",
+  "registrationFlow": "endo deny",
+  "firstBrokerLoginFlow": "endo deny",
+  "eventsListeners": [],
+  "identityProviders": []
+}

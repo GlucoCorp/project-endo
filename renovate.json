@@ -1,0 +1,39 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests", "docker:pinDigests"],
+  "schedule": ["before 6am on monday"],
+  "timezone": "UTC",
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "rangeStrategy": "pin",
+  "dependencyDashboard": true,
+  "labels": ["dependencies"],
+  "packageRules": [
+    {
+      "description": "Group weekly; never auto-merge runtime dependencies (spec 12.4).",
+      "matchDepTypes": ["dependencies"],
+      "groupName": "runtime dependencies",
+      "automerge": false,
+      "addLabels": ["security-review"]
+    },
+    {
+      "matchDepTypes": ["devDependencies"],
+      "groupName": "dev dependencies",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "automerge": false,
+      "addLabels": ["security-review"]
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["security", "security-review"],
+    "prPriority": 10,
+    "schedule": ["at any time"],
+    "minimumReleaseAge": "7 days"
+  },
+  "osvVulnerabilityAlerts": true
+}

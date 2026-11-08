@@ -1,0 +1,55 @@
+# Free compensating control for branch protection (paid on private repos under GitHub Free).
+# Every commit that lands on main must be the squash-merge of a merged pull request. A direct push
+# (by a person, a leaked token or a GitHub App) fails this workflow and opens an alert issue.
+# Detection, not prevention; see docs/threat-model.md RISK-T04.
+name: main-guard
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify-merged-pr:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+    steps:
+      - name: Check every pushed commit came from a merged PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+          PUSHER: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            shas="$AFTER"
+          else
+            shas=$(gh api "repos/$REPO/compare/$BEFORE...$AFTER" --jq '.commits[].sha')
+          fi
+          bad=""
+          for sha in $shas; do
+            merged=$(gh api "repos/$REPO/commits/$sha/pulls" \
+              --jq "[.[] | select(.merged_at != null and .merge_commit_sha == \"$sha\")] | length")
+            if [ "$merged" = "0" ]; then bad="$bad $sha"; fi
+          done
+          if [ -n "$bad" ]; then
+            echo "::error::Commits on main without a merged PR:$bad"
+            gh issue create --repo "$REPO" \
+              --title "Security alert: direct push to main" \
+              --label security-review \
+              --body "Commits landed on main without a merged pull request (pushed by \`$PUSHER\`):$(printf '\n- `%s`' $bad)
+
+          Investigate before further merges (RISK-T04). If unauthorised: revert via PR, rotate any exposed credentials, and review app and collaborator access." \
+              || gh issue create --repo "$REPO" --title "Security alert: direct push to main" \
+                   --body "Commits without a merged PR:$bad (pushed by $PUSHER). See RISK-T04."
+            exit 1
+          fi
+          echo "All commits on main came from merged pull requests."

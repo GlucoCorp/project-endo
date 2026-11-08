@@ -1,0 +1,22 @@
+{
+  "name": "@endo/audit",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "migrate": "node src/migrate-cli.ts"
+  },
+  "dependencies": {
+    "@endo/db": "workspace:*",
+    "@endo/domain": "workspace:*",
+    "kysely": "0.28.18",
+    "zod": "4.6.7"
+  }
+}
