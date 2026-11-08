@@ -20,15 +20,15 @@ tofu -chdir=infra/envs/local init
 tofu -chdir=infra/envs/local apply           # first Keycloak start takes 3–7 minutes
 
 # Reach a service from your machine (loopback only):
-kubectl --context k3d-endo-local -n endo-platform port-forward --address 127.0.0.1 svc/postgres-main 55432:5432
-kubectl --context k3d-endo-local -n endo-platform port-forward --address 127.0.0.1 svc/keycloak 58080:8080
+kubectl --context k3d-endo-local -n endo-platform port-forward --address 127.0.0.1 svc/postgres-main 15432:5432
+kubectl --context k3d-endo-local -n endo-platform port-forward --address 127.0.0.1 svc/keycloak 18080:8080
 
 # Credentials are generated and stored as Kubernetes Secrets, for example:
 kubectl --context k3d-endo-local -n endo-platform get secret db-audit-owner -o jsonpath='{.data.url}'   # base64
 
 # Apply the audit schema, then run the API against it as the least-privilege role:
-ENDO_AUDIT_MIGRATION_DATABASE_URL=<db-audit-owner url via 127.0.0.1:55432> pnpm --filter @endo/audit migrate
-API_AUDIT_DATABASE_URL=<db-audit-api url via 127.0.0.1:55432> ...
+ENDO_AUDIT_MIGRATION_DATABASE_URL=<db-audit-owner url via 127.0.0.1:15432> pnpm --filter @endo/audit migrate
+API_AUDIT_DATABASE_URL=<db-audit-api url via 127.0.0.1:15432> ...
 
 tofu -chdir=infra/envs/local destroy   # tear down
 k3d cluster delete endo-local
@@ -40,6 +40,16 @@ What the local profile enforces (verified):
 - Each database is owned by its own role and closed to PUBLIC. `clinical_owner` cannot connect to `audit`.
 - The API connects as `audit_api` (SELECT and INSERT only). It cannot delete audit rows, and fails closed (500) if the audit database is unreachable.
 - Containers run non-root with all capabilities dropped. Kubernetes Secrets are encrypted at rest.
+
+## Keycloak dev realm
+
+`modules/platform/realm/endo-dev.json` is imported on Keycloak's first start (ADR-0015): passkey-only sign-in with user verification, no passwords or self-registration, confidential BFF clients with PKCE and exact redirect URIs. `pnpm check:realm` guards these settings in CI.
+
+- Each BFF's client id, secret and issuer are in the Secret `oidc-bff-patient` / `oidc-bff-clinician`.
+- Admin console: `http://localhost:18080/admin/` after the port-forward above; the bootstrap admin password is in the Secret `keycloak` (`KC_BOOTSTRAP_ADMIN_PASSWORD`).
+- Import skips a realm that already exists. To apply realm file changes locally, delete the realm in the admin console (or `tofu destroy` and `apply`) and restart Keycloak: `kubectl --context k3d-endo-local -n endo-platform rollout restart deploy/keycloak`.
+
+Local ports are below 49152 on purpose: Windows reserves random blocks of the dynamic range (49152 and up) for Hyper-V and WSL, which makes port-forwards there fail after a reboot.
 
 ## Rules
 

@@ -1,13 +1,46 @@
 # Keycloak (spec 8.3, 10): identity provider. Its data lives on the identity Postgres instance.
-# Realm configuration (clients, WebAuthn policy, MFA) is applied separately (M1).
+# The dev realm (realm/endo-dev.json) is imported on first start: passkey-only browser flow,
+# confidential BFF clients with PKCE, brute-force protection, spec 10 session limits.
+# Import is skipped when the realm already exists; see infra/README.md to re-import.
 
 locals {
-  keycloak_pg = local.pg_host_of["keycloak"]
+  keycloak_pg         = local.pg_host_of["keycloak"]
+  keycloak_public_url = var.profile == "local" ? "http://localhost:18080" : "https://${var.keycloak_hostname}"
 }
 
 resource "random_password" "keycloak_admin" {
   length  = 32
   special = false
+}
+
+resource "random_password" "oidc_client" {
+  for_each = toset(["patient", "clinician"])
+  length   = 48
+  special  = false
+}
+
+resource "kubernetes_config_map_v1" "keycloak_realm" {
+  metadata {
+    name      = "keycloak-realm"
+    namespace = local.ns
+  }
+  data = {
+    "endo-dev.json" = file("${path.module}/realm/endo-dev.json")
+  }
+}
+
+# Client secrets for the BFFs; each BFF reads only its own (M1 wiring).
+resource "kubernetes_secret_v1" "oidc_client" {
+  for_each = random_password.oidc_client
+  metadata {
+    name      = "oidc-bff-${each.key}"
+    namespace = local.ns
+  }
+  data = {
+    client_id     = "bff-${each.key}"
+    client_secret = each.value.result
+    issuer        = "${local.keycloak_public_url}/realms/endo-dev"
+  }
 }
 
 resource "kubernetes_secret_v1" "keycloak" {
@@ -18,6 +51,13 @@ resource "kubernetes_secret_v1" "keycloak" {
   data = {
     KC_DB_PASSWORD              = random_password.db_owner["keycloak"].result
     KC_BOOTSTRAP_ADMIN_PASSWORD = random_password.keycloak_admin.result
+    # Placeholders resolved by Keycloak when importing realm/endo-dev.json.
+    ENDO_BFF_PATIENT_CLIENT_SECRET     = random_password.oidc_client["patient"].result
+    ENDO_BFF_CLINICIAN_CLIENT_SECRET   = random_password.oidc_client["clinician"].result
+    ENDO_BFF_PATIENT_REDIRECT_URI      = "${var.bff_base_urls.patient}/auth/callback"
+    ENDO_BFF_CLINICIAN_REDIRECT_URI    = "${var.bff_base_urls.clinician}/auth/callback"
+    ENDO_BFF_PATIENT_POST_LOGOUT_URI   = "${var.bff_base_urls.patient}/"
+    ENDO_BFF_CLINICIAN_POST_LOGOUT_URI = "${var.bff_base_urls.clinician}/"
   }
 }
 
@@ -54,7 +94,7 @@ resource "kubernetes_deployment_v1" "keycloak" {
           image             = var.images.keycloak
           image_pull_policy = "IfNotPresent"
           # start-dev locally (no TLS, relaxed hostname); production mode behind TLS ingress when shared.
-          args = var.profile == "local" ? ["start-dev"] : ["start"]
+          args = [var.profile == "local" ? "start-dev" : "start", "--import-realm"]
           env {
             name  = "KC_DB"
             value = "postgres"
@@ -81,7 +121,7 @@ resource "kubernetes_deployment_v1" "keycloak" {
           }
           env {
             name  = "KC_HOSTNAME"
-            value = var.profile == "local" ? "http://localhost:58080" : "https://${var.keycloak_hostname}"
+            value = local.keycloak_public_url
           }
           env {
             name  = "KC_PROXY_HEADERS"
@@ -99,6 +139,11 @@ resource "kubernetes_deployment_v1" "keycloak" {
             secret_ref {
               name = kubernetes_secret_v1.keycloak.metadata[0].name
             }
+          }
+          volume_mount {
+            name       = "realm"
+            mount_path = "/opt/keycloak/data/import"
+            read_only  = true
           }
           port {
             name           = "http"
@@ -142,6 +187,12 @@ resource "kubernetes_deployment_v1" "keycloak" {
             capabilities {
               drop = local.hardened.capabilities_drop
             }
+          }
+        }
+        volume {
+          name = "realm"
+          config_map {
+            name = kubernetes_config_map_v1.keycloak_realm.metadata[0].name
           }
         }
       }

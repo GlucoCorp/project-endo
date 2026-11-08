@@ -22,8 +22,8 @@
 ## Local integration tests
 
 ```sh
-pnpm db:test:up      # throwaway Postgres on 127.0.0.1:55499, synthetic data only
-export ENDO_TEST_DATABASE_URL=postgres://endo_test:endo_test@127.0.0.1:55499/endo_test
+pnpm db:test:up      # throwaway Postgres on 127.0.0.1:15499, synthetic data only
+export ENDO_TEST_DATABASE_URL=postgres://endo_test:endo_test@127.0.0.1:15499/endo_test
 pnpm test
 pnpm db:test:down
 ```

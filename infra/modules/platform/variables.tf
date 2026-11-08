@@ -37,3 +37,22 @@ variable "postgres_storage" {
   type    = string
   default = "2Gi"
 }
+
+variable "bff_base_urls" {
+  description = "Public base URLs of the BFFs, used for exact OIDC redirect URIs in the Keycloak realm (no wildcards)."
+  type = object({
+    patient   = string
+    clinician = string
+  })
+  default = {
+    patient   = "http://localhost:3001"
+    clinician = "http://localhost:3002"
+  }
+  validation {
+    condition = alltrue([
+      for u in values(var.bff_base_urls) :
+      can(regex("^(https://[a-z0-9.-]+|http://localhost:[0-9]+)$", u))
+    ])
+    error_message = "BFF base URLs must be https://host or http://localhost:port, with no path or trailing slash."
+  }
+}

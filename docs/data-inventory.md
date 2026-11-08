@@ -34,6 +34,17 @@ Legal basis per region: `TODO_LEGAL` (spec Section 24 item 4).
 | `schema_migrations.checksum`   | Detects edits to applied migrations         | as above                         | Life of database | S0          |
 | `schema_migrations.applied_at` | When it was applied                         | as above                         | Life of database | S0          |
 
+## Identity provider (Keycloak, `keycloak` database on the identity instance)
+
+Keycloak owns this schema; we configure it in `infra/modules/platform/realm/` (ADR-0015).
+
+| Data                                      | Purpose                                 | Legal basis                           | Retention                    | Sensitivity |
+| ----------------------------------------- | --------------------------------------- | ------------------------------------- | ---------------------------- | ----------- |
+| User account (id, username, email)        | Sign-in and enrolment                   | Contract / consent to use the service | Life of account              | S3          |
+| WebAuthn credential (public key, AAGUID)  | Passkey sign-in                         | as above                              | Life of credential           | S1          |
+| Login and credential events (user id, IP) | Security monitoring, brute-force checks | Legitimate interest (security)        | 30 days (`eventsExpiration`) | S3          |
+| Admin events (no representations)         | Who changed realm or user settings      | Legitimate interest (security)        | 30 days                      | S1          |
+
 ## Clinical, identity and other stores
 
 Not yet created. Entries are added in the same PR as each migration (spec 0 rule 9).

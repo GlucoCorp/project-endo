@@ -58,6 +58,7 @@ jobs:
       - run: pnpm check:licences
       - run: pnpm check:readmes
       - run: pnpm check:inventory
+      - run: pnpm check:realm
       - name: Audit migrations apply cleanly and are idempotent
         env:
           ENDO_AUDIT_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/endo_test
