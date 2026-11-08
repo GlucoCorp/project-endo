@@ -108,7 +108,9 @@ jobs:
           persist-credentials: false
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.4
+          # The installer's own bootstrap version: verified against a digest pinned in the action,
+          # so no further release download is needed (v3.1.4 assets were unreachable, 2026-11-08).
+          cosign-release: v3.0.6
 
       - name: Build
         run: docker build --build-arg SERVICE=${{ matrix.service }} -t "$IMAGE:sha-$GITHUB_SHA" .

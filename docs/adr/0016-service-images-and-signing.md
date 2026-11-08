@@ -40,9 +40,9 @@ M0 must produce signed images with SBOMs. The organisation is on GitHub Free wit
 
 ## Dependencies
 
-| Item                                            | Version               | Licence                                  | Notes                                                                                 |
-| ----------------------------------------------- | --------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------- |
-| `node` image (build stage only)                 | 24.22.2-trixie-slim   | MIT (Node), Debian packages              | digest-pinned                                                                         |
-| `gcr.io/distroless/nodejs24-debian13` (runtime) | nonroot, Node 24.22.2 | Apache-2.0 (distroless), Debian packages | digest-pinned; rebuilt images of the aged Node release are accepted (ADR-0014 policy) |
-| `sigstore/cosign-installer` action              | v4.1.2 (`6f9f177`)    | Apache-2.0                               | v4.1.3 under 7 days                                                                   |
-| cosign                                          | v3.1.4                | Apache-2.0                               | released 2026-10-20; installer verifies the binary signature                          |
+| Item                                            | Version               | Licence                                  | Notes                                                                                                                                                       |
+| ----------------------------------------------- | --------------------- | ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `node` image (build stage only)                 | 24.22.2-trixie-slim   | MIT (Node), Debian packages              | digest-pinned                                                                                                                                               |
+| `gcr.io/distroless/nodejs24-debian13` (runtime) | nonroot, Node 24.22.2 | Apache-2.0 (distroless), Debian packages | digest-pinned; rebuilt images of the aged Node release are accepted (ADR-0014 policy)                                                                       |
+| `sigstore/cosign-installer` action              | v4.1.2 (`6f9f177`)    | Apache-2.0                               | v4.1.3 under 7 days                                                                                                                                         |
+| cosign                                          | v3.0.6                | Apache-2.0                               | the installer's bootstrap version, checked against a digest pinned in the action (no second download); v3.1.4 release assets were unreachable on 2026-11-08 |
