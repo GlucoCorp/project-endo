@@ -109,6 +109,29 @@ No names, emails, phones or addresses (spec 5.1). Every table has row-level secu
 | `audit_outbox.attempts`                   | Failed relay attempts; set aside after 5                                                                                              | as above                                                            | as above                                           | S0          |
 | `audit_outbox.last_error`                 | Safe error code of the last failure (never a message)                                                                                 | as above                                                            | as above                                           | S0          |
 
-## Identity vault and other stores
+## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
+
+The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.
+
+| Column                            | Purpose                                                  | Legal basis                           | Retention                                                    | Sensitivity |
+| --------------------------------- | -------------------------------------------------------- | ------------------------------------- | ------------------------------------------------------------ | ----------- |
+| `person.id`                       | Person identifier in the vault                           | Contract / consent to use the service | Until erasure (REQ-009), then hard delete after 14-day grace | S3          |
+| `person.idp_subject`              | Opaque identity-provider subject, to find her at sign-in | as above                              | as above                                                     | S3          |
+| `person.email_encrypted`          | Email, encrypted under her own key (`kms/identity`)      | as above                              | as above; unrecoverable at once when her key is shredded     | S3          |
+| `person.phone_encrypted`          | Phone, encrypted under her own key                       | as above                              | as above                                                     | S3          |
+| `person.display_name_encrypted`   | Name, encrypted under her own key                        | as above                              | as above                                                     | S3          |
+| `person.created_at`               | When created                                             | as above                              | as above                                                     | S1          |
+| `person.deleted_at`               | Erasure requested (start of the grace period)            | as above                              | as above                                                     | S1          |
+| `person_key.person_id`            | Whose data key                                           | as above                              | Deleted on erasure (crypto-shredding)                        | S1          |
+| `person_key.wrapped`              | Her data key, wrapped by the `kms/identity` master key   | as above                              | as above                                                     | S0          |
+| `person_key.created_at`           | When created                                             | as above                              | as above                                                     | S0          |
+| `person_key_shredded.person_id`   | Tombstone: this person's key was destroyed               | Legal obligation (proof of erasure)   | Life of the vault                                            | S1          |
+| `person_key_shredded.shredded_at` | When it was destroyed                                    | as above                              | as above                                                     | S0          |
+| `patient_link.person_id`          | Person (spec 5.2 PatientLink)                            | Contract / consent to use the service | Until erasure                                                | S1          |
+| `patient_link.patient_record_id`  | Her pseudonymous clinical record                         | as above                              | as above                                                     | S1          |
+| `patient_link.org_id`             | Organisation of that record                              | as above                              | as above                                                     | S1          |
+| `patient_link.created_at`         | When linked                                              | as above                              | as above                                                     | S1          |
+
+## Other stores
 
 Not yet created. Entries are added in the same PR as each migration (spec 0 rule 9).

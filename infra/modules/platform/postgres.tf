@@ -48,6 +48,21 @@ resource "random_password" "clinical_relay" {
   special = false
 }
 
+resource "random_password" "identity_api" {
+  length  = 32
+  special = false
+}
+
+resource "kubernetes_secret_v1" "identity_api_url" {
+  metadata {
+    name      = "db-identity-api"
+    namespace = local.ns
+  }
+  data = {
+    url = "postgres://identity_api:${random_password.identity_api.result}@postgres-${local.pg_host_of["identity"]}.${local.ns}.svc:5432/identity"
+  }
+}
+
 resource "kubernetes_secret_v1" "clinical_relay_url" {
   metadata {
     name      = "db-clinical-relay"
@@ -72,6 +87,7 @@ resource "kubernetes_secret_v1" "pg_bootstrap" {
       CLINICAL_API_PASSWORD   = random_password.clinical_api.result
       CLINICAL_RELAY_PASSWORD = random_password.clinical_relay.result
     } : {},
+    contains(each.value, "identity") ? { IDENTITY_API_PASSWORD = random_password.identity_api.result } : {},
   )
 }
 
@@ -146,6 +162,12 @@ resource "kubernetes_config_map_v1" "pg_init" {
         "CREATE ROLE endo_clinical_relay NOLOGIN;",
         "CREATE ROLE clinical_relay LOGIN PASSWORD '$${CLINICAL_RELAY_PASSWORD}' IN ROLE endo_clinical_relay;",
         "GRANT CONNECT ON DATABASE clinical TO clinical_relay;",
+      ] : [],
+      # Same role as packages/identity-store/bootstrap/roles.sql. Only the identity service logs in.
+      contains(each.value, "identity") ? [
+        "CREATE ROLE endo_identity_app NOLOGIN;",
+        "CREATE ROLE identity_api LOGIN PASSWORD '$${IDENTITY_API_PASSWORD}' IN ROLE endo_identity_app;",
+        "GRANT CONNECT ON DATABASE identity TO identity_api;",
       ] : [],
       ["EOSQL", ""],
     ))
