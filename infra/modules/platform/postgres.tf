@@ -3,6 +3,8 @@
 # - local profile: one instance with separate databases and roles, to fit a small dev machine.
 # Every database is owned by its own role and closed to PUBLIC. The audit database also gets
 # `audit_api`, a login role that is a member of endo_audit_app (SELECT and INSERT only, ADR-0013).
+# The clinical database gets `clinical_api` (member of endo_clinical_app) and endo_clinical_lookup,
+# which owns the one cross-organisation lookup; neither group role can log in (ADR-0017).
 
 locals {
   pg_instances = var.profile == "local" ? {
@@ -36,6 +38,11 @@ resource "random_password" "audit_api" {
   special = false
 }
 
+resource "random_password" "clinical_api" {
+  length  = 32
+  special = false
+}
+
 resource "kubernetes_secret_v1" "pg_bootstrap" {
   for_each = local.pg_instances
   metadata {
@@ -46,6 +53,7 @@ resource "kubernetes_secret_v1" "pg_bootstrap" {
     { POSTGRES_PASSWORD = random_password.pg_superuser[each.key].result },
     { for db in each.value : "${upper(db)}_OWNER_PASSWORD" => random_password.db_owner[db].result },
     contains(each.value, "audit") ? { AUDIT_API_PASSWORD = random_password.audit_api.result } : {},
+    contains(each.value, "clinical") ? { CLINICAL_API_PASSWORD = random_password.clinical_api.result } : {},
   )
 }
 
@@ -68,6 +76,16 @@ resource "kubernetes_secret_v1" "audit_api_url" {
   }
   data = {
     url = "postgres://audit_api:${random_password.audit_api.result}@postgres-${local.pg_host_of["audit"]}.${local.ns}.svc:5432/audit"
+  }
+}
+
+resource "kubernetes_secret_v1" "clinical_api_url" {
+  metadata {
+    name      = "db-clinical-api"
+    namespace = local.ns
+  }
+  data = {
+    url = "postgres://clinical_api:${random_password.clinical_api.result}@postgres-${local.pg_host_of["clinical"]}.${local.ns}.svc:5432/clinical"
   }
 }
 
@@ -98,6 +116,15 @@ resource "kubernetes_config_map_v1" "pg_init" {
         "CREATE ROLE endo_audit_app NOLOGIN;",
         "CREATE ROLE audit_api LOGIN PASSWORD '$${AUDIT_API_PASSWORD}' IN ROLE endo_audit_app;",
         "GRANT CONNECT ON DATABASE audit TO audit_api;",
+      ] : [],
+      # Same roles as packages/clinical-store/bootstrap/roles.sql (plain statements: this script
+      # runs once, and the shell would expand the $$ in that file's DO block).
+      contains(each.value, "clinical") ? [
+        "CREATE ROLE endo_clinical_app NOLOGIN;",
+        "CREATE ROLE endo_clinical_lookup NOLOGIN;",
+        "GRANT endo_clinical_lookup TO clinical_owner;",
+        "CREATE ROLE clinical_api LOGIN PASSWORD '$${CLINICAL_API_PASSWORD}' IN ROLE endo_clinical_app;",
+        "GRANT CONNECT ON DATABASE clinical TO clinical_api;",
       ] : [],
       ["EOSQL", ""],
     ))
