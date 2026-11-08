@@ -18,7 +18,8 @@ import { ROLES, uuidv7, type Role } from '@endo/domain';
  * RISK-S01, RISK-E01
  */
 
-export type ServiceName = 'bff-patient' | 'bff-clinic' | 'jobs' | 'integration' | 'api';
+export type ServiceName =
+  'bff-patient' | 'bff-clinic' | 'jobs' | 'integration' | 'api' | 'identity' | 'keycloak';
 
 /** Key type as jose returns it; avoids depending on the global WebCrypto `CryptoKey` type. */
 type JoseKey = Awaited<ReturnType<typeof importJWK>>;
