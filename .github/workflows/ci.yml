@@ -65,6 +65,13 @@ jobs:
         run: |
           pnpm --filter @endo/audit migrate
           pnpm --filter @endo/audit migrate
+      - name: Clinical migrations apply cleanly and are idempotent
+        env:
+          ENDO_CLINICAL_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/endo_test
+        run: |
+          psql "$ENDO_CLINICAL_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f packages/clinical-store/bootstrap/roles.sql
+          pnpm --filter @endo/clinical-store migrate
+          pnpm --filter @endo/clinical-store migrate
       - name: Unfinished clinical, licence and legal content (report)
         run: pnpm check:clinical
 
