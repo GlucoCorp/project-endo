@@ -22,6 +22,7 @@
   "devDependencies": {
     "@endo/api": "workspace:*",
     "@endo/audit": "workspace:*",
-    "@endo/clinical-store": "workspace:*"
+    "@endo/clinical-store": "workspace:*",
+    "@endo/crypto": "workspace:*"
   }
 }

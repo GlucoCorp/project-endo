@@ -15,5 +15,18 @@ export type {
   NewInvitation,
 } from './invitations.ts';
 
+export {
+  InMemoryIdempotentInvitationStore,
+  PostgresIdempotentInvitationStore,
+} from './idempotent.ts';
+export type {
+  CreateInvitationOnce,
+  IdempotencyKey,
+  IdempotentInvitationStore,
+  IdempotentOutcome,
+  SealedResponse,
+} from './idempotent.ts';
+export { relayAuditOutbox } from './outbox.ts';
+
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */
 export const CLINICAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));

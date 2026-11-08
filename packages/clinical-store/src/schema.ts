@@ -40,6 +40,25 @@ export interface ClinicalDatabase {
     patient_id: string | null;
     revoked_at: Date | null;
   };
+  idempotency_record: {
+    org_id: string;
+    actor_ref: string;
+    operation: string;
+    idem_key: string;
+    request_hash: string;
+    status_code: number;
+    response_wrapped_key: string;
+    response_envelope: string;
+    created_at: Generated<Date>;
+    expires_at: Generated<Date>;
+  };
+  audit_outbox: {
+    id: string;
+    seq: Generated<string>;
+    event: unknown;
+    created_at: Generated<Date>;
+    published_at: Date | null;
+  };
   consent: {
     id: string;
     patient_id: string;

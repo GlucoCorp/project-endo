@@ -1,11 +1,13 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore } from '@endo/audit';
+import { randomUUID } from 'node:crypto';
 import {
-  InMemoryInvitationStore,
+  InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
   type ClinicianMembership,
 } from '@endo/clinical-store';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   ServiceTokenSigner,
   ServiceTokenVerifier,
@@ -32,7 +34,7 @@ async function setup(
   const keys = await generateServiceKeyPair(); // patient BFF
   const clinicKeys = await generateServiceKeyPair(); // clinic BFF: its own key
   const audit = new InMemoryAuditStore();
-  const invitations = new InMemoryInvitationStore(() => NOW);
+  const invitations = new InMemoryIdempotentInvitationStore(() => NOW);
   const memberships = new InMemoryMembershipStore().add(ORG, IDENTITY_REF, membership);
   const logs: string[] = [];
   const app = await buildApi({
@@ -47,6 +49,8 @@ async function setup(
     audit: new AuditWriter(audit),
     invitations,
     memberships,
+    sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
+    relayOutbox: () => Promise.resolve(),
     now: () => NOW,
     loadConsents: () => Promise.resolve(new Set()),
     logStream: { write: (l) => logs.push(l) },
@@ -55,14 +59,22 @@ async function setup(
   const patientBff = new ServiceTokenSigner(keys.privateJwk, 'bff-patient');
   const post = async (
     claims: ServiceClaims | null,
-    opts: { signer?: ServiceTokenSigner; payload?: unknown; url?: string } = {},
+    opts: {
+      signer?: ServiceTokenSigner;
+      payload?: unknown;
+      url?: string;
+      key?: string | null;
+    } = {},
   ) =>
     app.inject({
       method: 'POST',
       url: opts.url ?? '/v1/enrolments',
-      headers: claims
-        ? { authorization: `Bearer ${await (opts.signer ?? clinicBff).sign(claims, 'api')}` }
-        : {},
+      headers: {
+        ...(claims
+          ? { authorization: `Bearer ${await (opts.signer ?? clinicBff).sign(claims, 'api')}` }
+          : {}),
+        ...(opts.key === null ? {} : { 'idempotency-key': opts.key ?? randomUUID() }),
+      },
       ...(opts.payload === undefined ? {} : { payload: opts.payload as object }),
     });
   return { post, patientBff, invitations, audit, logs };
@@ -90,6 +102,40 @@ describe('REQ-001 POST /v1/enrolments (clinician creates an invitation)', () => 
     expect((await post(CLINICIAN, { payload: { org_id: 'x' } })).statusCode).toBe(400);
     expect((await post(CLINICIAN, { url: '/v1/enrolments?org_id=x' })).statusCode).toBe(400);
     expect(invitations.invitations).toHaveLength(1);
+  });
+
+  it('spec 9.1 replays the original response for a retried Idempotency-Key, creating nothing new', async () => {
+    const { post, invitations } = await setup();
+    const key = randomUUID();
+    const first = await post(CLINICIAN, { key });
+    const retry = await post(CLINICIAN, { key });
+    expect(retry.statusCode).toBe(201);
+    expect(retry.json()).toEqual(first.json());
+    expect(invitations.invitations).toHaveLength(1);
+    expect(invitations.outbox).toHaveLength(1);
+  });
+
+  it('requires a UUID Idempotency-Key', async () => {
+    const { post, invitations } = await setup();
+    expect((await post(CLINICIAN, { key: null })).statusCode).toBe(400);
+    expect((await post(CLINICIAN, { key: 'not-a-uuid' })).statusCode).toBe(400);
+    expect(invitations.invitations).toHaveLength(0);
+  });
+
+  it('spec 2.6 queues a creation audit event with the invitation id, in the same step', async () => {
+    const { post, invitations } = await setup();
+    const res = await post(CLINICIAN);
+    const id = res.json<{ id: string }>().id;
+    expect(invitations.outbox).toMatchObject([
+      {
+        action: 'enrolment.created',
+        outcome: 'success',
+        org_id: ORG,
+        resource: { type: 'enrolment_invitation', id },
+        actor: { id: IDENTITY_REF, role: 'clinician' },
+      },
+    ]);
+    expect(JSON.stringify(invitations.outbox)).not.toContain(res.json<{ token: string }>().token);
   });
 
   it('issues a different token every time', async () => {

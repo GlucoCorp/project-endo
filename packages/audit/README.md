@@ -20,6 +20,6 @@
 ## Rules
 
 - If writing an audit event fails, the request that caused it fails. Never swallow audit errors.
-- Health-data reads and writes audit in the same database transaction or through a guaranteed outbox (spec 2.6). The outbox arrives with the first health-data tables (M1).
+- Health-data reads and writes audit in the same database transaction or through a guaranteed outbox (spec 2.6). The clinical store's `audit_outbox` (relayed by the API, at least once) is the first such outbox.
 - Services connect as members of `endo_audit_app` (SELECT and INSERT only). Migrations run as a separate release step with an owner role.
 - A daily anchor hash is published to a write-once bucket (infra slice).

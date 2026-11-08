@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore, verifyChain, type AuditEvent } from '@endo/audit';
-import { InMemoryInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   RouteDeclarationError,
   ServiceTokenSigner,
@@ -29,7 +30,8 @@ async function setup(overrides: Partial<ApiDeps> = {}, roles: readonly Role[] = 
       'bff-patient': { publicJwk: keys.publicJwk, roles },
     }),
     audit: new AuditWriter(store),
-    invitations: new InMemoryInvitationStore(),
+    invitations: new InMemoryIdempotentInvitationStore(),
+    sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
     memberships: new InMemoryMembershipStore(),
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
@@ -215,7 +217,8 @@ describe('deny by default: route policy enforcement (spec 2.5, 10.4)', () => {
         'bff-patient': { publicJwk: keys.publicJwk, roles: ['patient'] },
       }),
       audit: new AuditWriter(new InMemoryAuditStore()),
-      invitations: new InMemoryInvitationStore(),
+      invitations: new InMemoryIdempotentInvitationStore(),
+      sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
       memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
       loadConsents: () => Promise.resolve(new Set()),

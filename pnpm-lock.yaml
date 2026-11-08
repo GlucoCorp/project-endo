@@ -293,6 +293,9 @@ importers:
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@endo/db':
         specifier: workspace:*
         version: link:../../packages/db
@@ -345,6 +348,9 @@ importers:
       '@endo/clinical-store':
         specifier: workspace:*
         version: link:../../packages/clinical-store
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
 
 packages:
 

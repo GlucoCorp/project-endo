@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CLINICAL_MIGRATIONS_DIR,
   CONSENT_PURPOSES,
+  InMemoryIdempotentInvitationStore,
   InMemoryInvitationStore,
   InMemoryMembershipStore,
 } from './index.ts';
@@ -40,5 +41,31 @@ describe('InMemoryInvitationStore (dev and tests)', () => {
     const store = new InMemoryMembershipStore().add('org', 'ref', m);
     expect(await store.find('org', 'ref')).toEqual(m);
     expect(await store.find('org', 'other')).toBeNull();
+  });
+});
+
+describe('InMemoryIdempotentInvitationStore (dev and tests)', () => {
+  const req = (key: string, requestHash = 'b'.repeat(64)) => ({
+    invitation: { id: 'i', orgId: 'o', createdBy: 'c', tokenHash: 'a'.repeat(64) },
+    idempotency: { actorRef: 'c', key, requestHash },
+    auditEvent: { id: 'e' },
+    sealResponse: () => Promise.resolve({ wrappedKey: 'w', envelope: 'v' }),
+  });
+
+  it('creates once, replays the same key and request, and flags a changed request', async () => {
+    const store = new InMemoryIdempotentInvitationStore(() => new Date(0));
+    expect(await store.createOnce(req('k'))).toEqual({
+      kind: 'created',
+      expiresAt: new Date(7 * 24 * 3600 * 1000),
+    });
+    expect(await store.createOnce(req('k'))).toEqual({
+      kind: 'replay',
+      statusCode: 201,
+      sealed: { wrappedKey: 'w', envelope: 'v' },
+    });
+    expect(await store.createOnce(req('k', 'c'.repeat(64)))).toEqual({ kind: 'conflict' });
+    expect(store.invitations).toHaveLength(1);
+    expect(store.outbox).toEqual([{ id: 'e' }]);
+    expect(new InMemoryIdempotentInvitationStore().invitations).toEqual([]);
   });
 });

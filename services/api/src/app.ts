@@ -10,7 +10,8 @@ import {
   type Subject,
 } from '@endo/authz';
 import type { AuditWriter } from '@endo/audit';
-import type { InvitationStore, MembershipStore } from '@endo/clinical-store';
+import type { IdempotentInvitationStore, MembershipStore } from '@endo/clinical-store';
+import type { EnvelopeSealer } from '@endo/crypto';
 import {
   API_SECURITY_HEADERS,
   ProblemError,
@@ -67,8 +68,12 @@ export interface ApiDeps {
   readonly logLevel: string;
   readonly verifier: ServiceTokenVerifier;
   readonly audit: AuditWriter;
-  /** Enrolment invitations in the clinical store (REQ-001). */
-  readonly invitations: InvitationStore;
+  /** Enrolment invitations in the clinical store, created at most once per Idempotency-Key. */
+  readonly invitations: IdempotentInvitationStore;
+  /** Seals responses kept for idempotent replay. */
+  readonly sealer: EnvelopeSealer;
+  /** Relays queued audit events to the audit store; called after commits (spec 2.6). */
+  readonly relayOutbox?: () => Promise<void>;
   /** Current clinician membership; staff whose membership is missing, inactive or changed are denied. */
   readonly memberships: MembershipStore;
   readonly now: () => Date;
@@ -87,7 +92,16 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
-  registerEnrolmentRoutes(app, { invitations: deps.invitations });
+  registerEnrolmentRoutes(app, {
+    invitations: deps.invitations,
+    sealer: deps.sealer,
+    // Best effort: the periodic relay in main.ts picks up anything this misses.
+    onCommitted: () => {
+      deps.relayOutbox?.().catch(() => {
+        app.log.warn({ event: 'audit.outbox_relay_failed' });
+      });
+    },
+  });
   await app.ready();
   return app;
 }

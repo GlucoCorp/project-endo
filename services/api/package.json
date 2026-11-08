@@ -18,6 +18,7 @@
     "@endo/authz": "workspace:*",
     "@endo/clinical-store": "workspace:*",
     "@endo/config": "workspace:*",
+    "@endo/crypto": "workspace:*",
     "@endo/db": "workspace:*",
     "@endo/domain": "workspace:*",
     "@endo/service-kit": "workspace:*",

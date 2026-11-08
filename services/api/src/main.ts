@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import {
+  AuditEventInput,
   AuditWriter,
   InMemoryAuditStore,
   PostgresAuditStore,
@@ -14,14 +15,16 @@ import {
   loadConfig,
 } from '@endo/config';
 import {
-  InMemoryInvitationStore,
+  InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
-  PostgresInvitationStore,
+  PostgresIdempotentInvitationStore,
   PostgresMembershipStore,
+  relayAuditOutbox,
   type ClinicalDatabase,
-  type InvitationStore,
+  type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
 import { ServiceTokenVerifier } from '@endo/service-kit';
 import { buildApi } from './app.ts';
@@ -74,22 +77,37 @@ async function main(): Promise<void> {
   }
 
   // Clinical store: same fail-closed rule as the audit store.
-  let invitations: InvitationStore;
+  let invitations: IdempotentInvitationStore;
   let memberships: MembershipStore;
+  let relayOutbox: () => Promise<void>;
+  const auditWriter = new AuditWriter(auditStore);
+  // Queued events carry their outbox id; the audit store assigns its own.
+  const publish = (queued: unknown): Promise<void> => {
+    const input: Record<string, unknown> = { ...(queued as Record<string, unknown>) };
+    delete input['id'];
+    return auditWriter.write(AuditEventInput.parse(input)).then(() => undefined);
+  };
   let closeClinical = (): Promise<void> => Promise.resolve();
   if (config.API_CLINICAL_DATABASE_URL) {
     const pool = createPool(config.API_CLINICAL_DATABASE_URL, {
       applicationName: 'endo-api-clinical',
     });
     const db = createDb<ClinicalDatabase>(pool);
-    invitations = new PostgresInvitationStore(db);
+    invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
-    closeClinical = () => db.destroy();
+    relayOutbox = () => relayAuditOutbox(db, publish).then(() => undefined);
+    closeClinical = async () => {
+      await db.destroy();
+    };
   } else if (isDeployedEnvironment(config.ENDO_ENV)) {
     throw new Error('API_CLINICAL_DATABASE_URL is required in staging and production.');
   } else {
-    invitations = new InMemoryInvitationStore();
+    const store = new InMemoryIdempotentInvitationStore();
+    invitations = store;
     memberships = new InMemoryMembershipStore();
+    relayOutbox = async () => {
+      for (const event of store.outbox.splice(0)) await publish(event);
+    };
   }
 
   const app = await buildApi({
@@ -97,13 +115,23 @@ async function main(): Promise<void> {
     verifier: new ServiceTokenVerifier('api', {
       'bff-patient': { publicJwk: config.API_SERVICE_TOKEN_PUBLIC_KEY_JWK, roles: ['patient'] },
     }),
-    audit: new AuditWriter(auditStore),
+    audit: auditWriter,
     invitations,
     memberships,
+    // DevKeyManager refuses staging and production: deployed environments need the OpenBao
+    // KeyManager (infra slice) before the API can start. Fail closed.
+    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/clinical'),
+    relayOutbox,
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
+
+  // Periodic relay for events whose immediate relay failed or was interrupted.
+  const relayTimer = setInterval(() => {
+    relayOutbox().catch(() => process.stderr.write('audit outbox relay failed\n'));
+  }, 5_000);
+  relayTimer.unref();
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void app.close().then(closeAudit).then(closeClinical));

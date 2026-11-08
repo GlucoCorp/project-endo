@@ -2,7 +2,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApi } from '@endo/api/app';
 import { AuditWriter, InMemoryAuditStore, verifyChain } from '@endo/audit';
-import { InMemoryInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { uuidv7 } from '@endo/domain';
 import {
   ServiceTokenSigner,
@@ -31,7 +32,8 @@ describe('M0 walking skeleton: browser -> bff-patient -> api -> authz -> audit',
         'bff-patient': { publicJwk: keys.publicJwk, roles: ['patient'] },
       }),
       audit: new AuditWriter(auditStore),
-      invitations: new InMemoryInvitationStore(),
+      invitations: new InMemoryIdempotentInvitationStore(),
+      sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
       memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
       loadConsents: () => Promise.resolve(new Set()),
