@@ -28,7 +28,9 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
   it('round-trips claims for the right audience and issuer', async () => {
     const { privateJwk, publicJwk } = await generateServiceKeyPair();
     const token = await new ServiceTokenSigner(privateJwk, 'bff-patient').sign(claims, 'api');
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(`Bearer ${token}`)).resolves.toEqual({
       ...claims,
       iss: 'bff-patient',
@@ -41,7 +43,9 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
     ['garbage', 'Bearer a.b.c', 'authn.invalid'],
   ])('rejects %s', async (_l, header, code) => {
     const { publicJwk } = await generateServiceKeyPair();
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(header)).rejects.toMatchObject({ code });
   });
 
@@ -51,7 +55,9 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
       claims,
       'identity' as never,
     );
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
       code: 'authn.invalid',
     });
@@ -60,7 +66,9 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
   it('rejects an issuer that is not allowlisted', async () => {
     const { privateJwk, publicJwk } = await generateServiceKeyPair();
     const token = await new ServiceTokenSigner(privateJwk, 'bff-clinic').sign(claims, 'api');
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
       code: 'authn.invalid',
     });
@@ -70,8 +78,41 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
     const a = await generateServiceKeyPair();
     const b = await generateServiceKeyPair();
     const token = await new ServiceTokenSigner(a.privateJwk, 'bff-patient').sign(claims, 'api');
-    const v = new ServiceTokenVerifier(b.publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: b.publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
+      code: 'authn.invalid',
+    });
+  });
+
+  it('RISK-S03 rejects a role the issuer may not vouch for', async () => {
+    const { privateJwk, publicJwk } = await generateServiceKeyPair();
+    const token = await new ServiceTokenSigner(privateJwk, 'bff-patient').sign(
+      { ...claims, role: 'clinician', org_id: claims.patient_id, patient_id: null },
+      'api',
+    );
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk, roles: ['patient'] },
+    });
+    await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
+      code: 'authn.invalid',
+    });
+  });
+
+  it('RISK-S03 does not accept one issuer posing as another: each issuer has its own key', async () => {
+    const patient = await generateServiceKeyPair();
+    const clinic = await generateServiceKeyPair();
+    // Signed with the patient BFF's key but claiming to come from the clinic BFF.
+    const forged = await new ServiceTokenSigner(patient.privateJwk, 'bff-clinic').sign(
+      { ...claims, role: 'clinician', org_id: claims.patient_id, patient_id: null },
+      'api',
+    );
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: patient.publicJwk, roles: ['patient'] },
+      'bff-clinic': { publicJwk: clinic.publicJwk, roles: ['clinician'] },
+    });
+    await expect(v.verifyHeader(`Bearer ${forged}`)).rejects.toMatchObject({
       code: 'authn.invalid',
     });
   });
@@ -84,7 +125,13 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
       'api',
     );
     const later = new Date(t0.getTime() + 66_000);
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient'], () => later);
+    const v = new ServiceTokenVerifier(
+      'api',
+      {
+        'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+      },
+      () => later,
+    );
     await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
       code: 'authn.invalid',
     });
@@ -102,7 +149,9 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
       .setExpirationTime('60s')
       .setJti('x')
       .sign(key);
-    const v = new ServiceTokenVerifier(publicJwk, 'api', ['bff-patient']);
+    const v = new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
+    });
     await expect(v.verifyHeader(`Bearer ${token}`)).rejects.toMatchObject({
       code: 'authn.invalid',
     });

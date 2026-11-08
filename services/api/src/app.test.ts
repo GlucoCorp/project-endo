@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore, verifyChain, type AuditEvent } from '@endo/audit';
+import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   RouteDeclarationError,
   ServiceTokenSigner,
@@ -7,6 +9,7 @@ import {
   generateServiceKeyPair,
   type ServiceClaims,
 } from '@endo/service-kit';
+import type { Role } from '@endo/domain';
 import { buildApi, createApiInstance, isRoutePolicy, type ApiDeps } from './app.ts';
 
 const PATIENT: ServiceClaims = {
@@ -16,14 +19,20 @@ const PATIENT: ServiceClaims = {
   patient_id: '01900000-0000-7000-8000-0000000000c1',
 };
 
-async function setup(overrides: Partial<ApiDeps> = {}) {
+/** `roles`: what the test issuer may vouch for. Widened only to exercise the authz layer behind it. */
+async function setup(overrides: Partial<ApiDeps> = {}, roles: readonly Role[] = ['patient']) {
   const keys = await generateServiceKeyPair();
   const store = new InMemoryAuditStore();
   const logs: string[] = [];
   const app = await buildApi({
     logLevel: 'info',
-    verifier: new ServiceTokenVerifier(keys.publicJwk, 'api', ['bff-patient']),
+    verifier: new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: keys.publicJwk, roles },
+    }),
     audit: new AuditWriter(store),
+    invitations: new InMemoryIdempotentInvitationStore(),
+    sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
+    memberships: new InMemoryMembershipStore(),
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
     logStream: { write: (l) => logs.push(l) },
@@ -81,8 +90,19 @@ describe('GET /v1/hello (M0 walking skeleton, spec 2.5, 2.6)', () => {
     expect(await events()).toMatchObject([{ reason: 'authn.invalid' }]);
   });
 
-  it('denies platform admins inside the app (break-glass is infra-only) and audits it', async () => {
+  it('RISK-S03 rejects a platform-admin claim from the patient BFF at authentication, and audits it', async () => {
     const { app, bearer, events } = await setup();
+    const admin: ServiceClaims = { ...PATIENT, role: 'glucorp_platform_admin', patient_id: null };
+    const res = await app.inject({
+      url: '/v1/hello',
+      headers: { authorization: await bearer(admin) },
+    });
+    expect(res.statusCode).toBe(401);
+    expect(await events()).toMatchObject([{ outcome: 'denied', reason: 'authn.invalid' }]);
+  });
+
+  it('denies platform admins inside the app even from a trusted issuer (break-glass is infra-only)', async () => {
+    const { app, bearer, events } = await setup({}, ['patient', 'glucorp_platform_admin']);
     const admin: ServiceClaims = { ...PATIENT, role: 'glucorp_platform_admin', patient_id: null };
     const res = await app.inject({
       url: '/v1/hello',
@@ -193,8 +213,13 @@ describe('deny by default: route policy enforcement (spec 2.5, 10.4)', () => {
     const keys = await generateServiceKeyPair();
     return createApiInstance({
       logLevel: 'silent',
-      verifier: new ServiceTokenVerifier(keys.publicJwk, 'api', ['bff-patient']),
+      verifier: new ServiceTokenVerifier('api', {
+        'bff-patient': { publicJwk: keys.publicJwk, roles: ['patient'] },
+      }),
       audit: new AuditWriter(new InMemoryAuditStore()),
+      invitations: new InMemoryIdempotentInvitationStore(),
+      sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
+      memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
       loadConsents: () => Promise.resolve(new Set()),
     });

@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
-// org-scope.ts is covered by integration tests (ENDO_TEST_DATABASE_URL, always set in CI).
-const dbCode = process.env['ENDO_TEST_DATABASE_URL'] ? [] : ['src/org-scope.ts'];
+// org-scope.ts and the Postgres stores are covered by integration tests (ENDO_TEST_DATABASE_URL, always set in CI).
+const dbCode = process.env['ENDO_TEST_DATABASE_URL'] ? [] : ['src/org-scope.ts', 'src/outbox.ts'];
 
 export default defineConfig({
   test: {

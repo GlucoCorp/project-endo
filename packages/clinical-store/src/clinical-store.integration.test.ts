@@ -7,6 +7,10 @@ import type { Kysely } from 'kysely';
 import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
 import {
   CLINICAL_MIGRATIONS_DIR,
+  PostgresInvitationStore,
+  PostgresIdempotentInvitationStore,
+  PostgresMembershipStore,
+  relayAuditOutbox,
   findLiveInvitation,
   withOrg,
   type ClinicalDatabase,
@@ -22,6 +26,7 @@ const CLIN_B = '01900000-0000-7000-8000-0000000000c2';
 const PAT_A = '01900000-0000-7000-8000-0000000000a1';
 const PAT_B = '01900000-0000-7000-8000-0000000000b1';
 const REF_SHARED = '01900000-0000-7000-8000-0000000000ff';
+const IDREF_CLIN_A = '01900000-0000-7000-8000-0000000000e1';
 const tokenHash = () => createHash('sha256').update(randomBytes(32)).digest('hex');
 
 /**
@@ -119,7 +124,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     );
     await admin.query(
       `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'clinician'), ($4, $5, $6, 'clinician')`,
-      [CLIN_A, ORG_A, randomUUID(), CLIN_B, ORG_B, randomUUID()],
+      [CLIN_A, ORG_A, IDREF_CLIN_A, CLIN_B, ORG_B, randomUUID()],
     );
     await admin.query(
       `INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3), ($4, $5, $6)`,
@@ -216,6 +221,39 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
            VALUES ($1, $2, $3, $4, now() + interval '1 day', now())`,
         ),
       ).rejects.toThrow(/permission denied/);
+    });
+
+    it('PostgresInvitationStore creates an invitation with a database-clock expiry of 7 days', async () => {
+      const hash = tokenHash();
+      const store = new PostgresInvitationStore(apiDb);
+      const { expiresAt } = await store.create({
+        id: randomUUID(),
+        orgId: ORG_A,
+        createdBy: CLIN_A,
+        tokenHash: hash,
+      });
+      const { rows } = await admin.query<{ ok: boolean }>(
+        `SELECT expires_at = created_at + interval '7 days' AS ok FROM enrolment_invitation WHERE token_hash = $1`,
+        [hash],
+      );
+      expect(rows[0]?.ok).toBe(true);
+      expect(expiresAt).toBeInstanceOf(Date);
+      expect((await findLiveInvitation(apiDb, hash))?.orgId).toBe(ORG_A);
+      // A clinician cannot issue for another organisation, whatever the API passes.
+      await expect(
+        store.create({ id: randomUUID(), orgId: ORG_A, createdBy: CLIN_B, tokenHash: tokenHash() }),
+      ).rejects.toThrow(/foreign key/);
+    });
+
+    it('PostgresMembershipStore resolves a clinician by identity reference, only in their organisation', async () => {
+      const members = new PostgresMembershipStore(apiDb);
+      expect(await members.find(ORG_A, IDREF_CLIN_A)).toEqual({
+        clinicianId: CLIN_A,
+        role: 'clinician',
+        active: true,
+      });
+      expect(await members.find(ORG_B, IDREF_CLIN_A)).toBeNull();
+      expect(await members.find(ORG_A, CLIN_A)).toBeNull(); // the clinical id is not an identity ref
     });
 
     it('finds a live invitation across organisations as the API role', async () => {
@@ -403,6 +441,108 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
         );
       await expect(bad('marketing', 'granted')).rejects.toThrow(/check constraint/);
       await expect(bad('self_tracking', 'maybe')).rejects.toThrow(/check constraint/);
+    });
+  });
+
+  describe('spec 9.1, 2.6 idempotent creation with a same-transaction audit outbox', () => {
+    const request = (key: string, requestHash = 'b'.repeat(64)) => ({
+      invitation: { id: randomUUID(), orgId: ORG_A, createdBy: CLIN_A, tokenHash: tokenHash() },
+      idempotency: { actorRef: CLIN_A, key, requestHash },
+      auditEvent: { id: randomUUID(), action: 'enrolment.create', outcome: 'success' },
+      sealResponse: () => Promise.resolve({ wrappedKey: 'wk', envelope: randomUUID() }),
+    });
+
+    it('creates once; a retry replays the same sealed response and creates nothing', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const key = randomUUID();
+      const first = await store.createOnce(request(key));
+      expect(first.kind).toBe('created');
+      const again = await store.createOnce(request(key));
+      expect(again.kind).toBe('replay');
+      const counts = await admin.query<{ invitations: string; outbox: string }>(
+        `SELECT (SELECT count(*) FROM enrolment_invitation i JOIN idempotency_record r ON r.org_id = i.org_id WHERE r.idem_key = $1) AS invitations,
+                (SELECT count(*) FROM audit_outbox) AS outbox`,
+        [key],
+      );
+      expect(Number(counts.rows[0]?.invitations)).toBeGreaterThan(0);
+      const records = await admin.query(`SELECT 1 FROM idempotency_record WHERE idem_key = $1`, [
+        key,
+      ]);
+      expect(records.rowCount).toBe(1);
+    });
+
+    it('treats a reused key with a different request as a conflict', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const key = randomUUID();
+      await store.createOnce(request(key));
+      expect((await store.createOnce(request(key, 'c'.repeat(64)))).kind).toBe('conflict');
+    });
+
+    it('lets only one of two simultaneous requests with the same key create', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const key = randomUUID();
+      const results = await Promise.all([
+        store.createOnce(request(key)),
+        store.createOnce(request(key)),
+      ]);
+      expect(results.map((r) => r.kind).sort()).toEqual(['created', 'replay']);
+    });
+
+    it('commits nothing when sealing fails: no invitation, no record, no audit event', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const key = randomUUID();
+      const r = request(key);
+      await expect(
+        store.createOnce({ ...r, sealResponse: () => Promise.reject(new Error('kms down')) }),
+      ).rejects.toThrow('kms down');
+      expect(
+        (await admin.query(`SELECT 1 FROM enrolment_invitation WHERE id = $1`, [r.invitation.id]))
+          .rowCount,
+      ).toBe(0);
+      expect(
+        (await admin.query(`SELECT 1 FROM audit_outbox WHERE id = $1`, [r.auditEvent.id])).rowCount,
+      ).toBe(0);
+    });
+
+    it('does not let the API set or extend the replay lifetime', async () => {
+      await expect(
+        asApi(ORG_A, (c) =>
+          c.query(
+            `INSERT INTO idempotency_record (org_id, actor_ref, operation, idem_key, request_hash, status_code, response_wrapped_key, response_envelope, expires_at)
+             VALUES ($1, $2, 'enrolment.create', $3, $4, 201, 'k', 'e', now() + interval '1 year')`,
+            [ORG_A, CLIN_A, randomUUID(), 'd'.repeat(64)],
+          ),
+        ),
+      ).rejects.toThrow(/permission denied/);
+    });
+
+    it('relays each queued event once, in order, and refuses to change a published event', async () => {
+      const seen: unknown[] = [];
+      while ((await relayAuditOutbox(apiDb, (e) => Promise.resolve(void seen.push(e)))) > 0);
+      const pending = await admin.query(`SELECT 1 FROM audit_outbox WHERE published_at IS NULL`);
+      expect(pending.rowCount).toBe(0);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(await relayAuditOutbox(apiDb, () => Promise.reject(new Error('never called')))).toBe(
+        0,
+      );
+      await expect(
+        asApi(null, (c) => c.query(`UPDATE audit_outbox SET published_at = NULL`)),
+      ).rejects.toThrow(/published once/);
+    });
+
+    it('keeps an event queued when publishing fails', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const r = request(randomUUID());
+      await store.createOnce(r);
+      await expect(
+        relayAuditOutbox(apiDb, () => Promise.reject(new Error('audit down'))),
+      ).rejects.toThrow('audit down');
+      const still = await admin.query(
+        `SELECT 1 FROM audit_outbox WHERE id = $1 AND published_at IS NULL`,
+        [r.auditEvent.id],
+      );
+      expect(still.rowCount).toBe(1);
+      await relayAuditOutbox(apiDb, () => Promise.resolve());
     });
   });
 

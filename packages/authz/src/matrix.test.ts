@@ -63,6 +63,14 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  // REQ-001 (not a spec 3.2 row): a clinician invites a patient into their own organisation.
+  'enrolment.create': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'org.clinicians.manage': {
     patient: '-',
     clinician: '-',
@@ -340,7 +348,10 @@ describe('properties', () => {
       fc.property(arbAction, arbConsents, (action, consents) => {
         consents.delete('share_with_care_team');
         const d = can(subject('clinician'), action, ownResource, { now: NOW, consents });
-        if (d.allow) expect(['org.dashboard.read', 'system.hello']).toContain(action);
+        // Only actions that touch no individual patient's data survive withdrawal. Creating an
+        // enrolment invitation is one: the patient does not exist yet (REQ-001).
+        if (d.allow)
+          expect(['org.dashboard.read', 'system.hello', 'enrolment.create']).toContain(action);
       }),
     );
   });

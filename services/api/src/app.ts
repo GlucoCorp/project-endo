@@ -10,6 +10,8 @@ import {
   type Subject,
 } from '@endo/authz';
 import type { AuditWriter } from '@endo/audit';
+import type { IdempotentInvitationStore, MembershipStore } from '@endo/clinical-store';
+import type { EnvelopeSealer } from '@endo/crypto';
 import {
   API_SECURITY_HEADERS,
   ProblemError,
@@ -21,6 +23,7 @@ import {
   requestIdFrom,
   type ServiceTokenVerifier,
 } from '@endo/service-kit';
+import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
@@ -49,6 +52,8 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     subject: Subject | null;
+    /** For clinicians and org admins: their clinical-store id, resolved from current membership. */
+    clinicianId: string | null;
   }
 }
 
@@ -63,6 +68,14 @@ export interface ApiDeps {
   readonly logLevel: string;
   readonly verifier: ServiceTokenVerifier;
   readonly audit: AuditWriter;
+  /** Enrolment invitations in the clinical store, created at most once per Idempotency-Key. */
+  readonly invitations: IdempotentInvitationStore;
+  /** Seals responses kept for idempotent replay. */
+  readonly sealer: EnvelopeSealer;
+  /** Relays queued audit events to the audit store; called after commits (spec 2.6). */
+  readonly relayOutbox?: () => Promise<void>;
+  /** Current clinician membership; staff whose membership is missing, inactive or changed are denied. */
+  readonly memberships: MembershipStore;
   readonly now: () => Date;
   /** Loads the current consent state for a patient. M1 replaces the default with the consent service. */
   readonly loadConsents: (patientId: string | null) => Promise<ReadonlySet<ConsentPurpose>>;
@@ -79,6 +92,16 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
+  registerEnrolmentRoutes(app, {
+    invitations: deps.invitations,
+    sealer: deps.sealer,
+    // Best effort: the periodic relay in main.ts picks up anything this misses.
+    onCommitted: () => {
+      deps.relayOutbox?.().catch(() => {
+        app.log.warn({ event: 'audit.outbox_relay_failed' });
+      });
+    },
+  });
   await app.ready();
   return app;
 }
@@ -97,6 +120,7 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
   });
 
   app.decorateRequest('subject', null);
+  app.decorateRequest('clinicianId', null);
   enforceRouteDeclarations(app, 'policy', isRoutePolicy);
   registerProblemHandlers(app);
 
@@ -126,14 +150,23 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     if (!policy || policy.kind === 'public') return;
 
     let subject: Subject;
+    let clinicianId: string | null = null;
     try {
       const claims = await deps.verifier.verifyHeader(request.headers.authorization);
+      // Organisation staff: the token says who they are; the clinical store says whether they
+      // are still an active member with that role. Anything else makes them inactive (denied).
+      let active = true;
+      if (claims.role === 'clinician' || claims.role === 'org_admin') {
+        const m = claims.org_id ? await deps.memberships.find(claims.org_id, claims.sub) : null;
+        active = m !== null && m.active && m.role === claims.role;
+        clinicianId = active && m ? m.clinicianId : null;
+      }
       subject = {
         id: claims.sub,
         role: claims.role,
         orgId: claims.org_id,
         patientId: claims.patient_id,
-        active: true,
+        active,
       };
     } catch (error) {
       const reason = error instanceof ServiceTokenError ? error.code : 'authn.invalid';
@@ -173,6 +206,7 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
       throw new ProblemError(403, decision.reason, 'You do not have access to this.');
     }
     request.subject = subject;
+    request.clinicianId = clinicianId;
   });
 
   app.addHook('onResponse', async (request, reply) => {

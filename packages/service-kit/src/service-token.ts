@@ -1,6 +1,14 @@
-import { SignJWT, exportJWK, generateKeyPair, importJWK, jwtVerify, type JWK } from 'jose';
+import {
+  SignJWT,
+  decodeJwt,
+  exportJWK,
+  generateKeyPair,
+  importJWK,
+  jwtVerify,
+  type JWK,
+} from 'jose';
 import { z } from 'zod';
-import { ROLES, uuidv7 } from '@endo/domain';
+import { ROLES, uuidv7, type Role } from '@endo/domain';
 
 /**
  * Short-lived, audience-restricted service tokens for BFF -> API calls (spec 8.4; ADR-0006).
@@ -77,21 +85,33 @@ export class ServiceTokenSigner {
   }
 }
 
+/**
+ * A caller the API trusts: its own public key, and the end-user roles it may vouch for. The patient
+ * BFF may only assert `patient`; a compromised patient BFF therefore cannot mint clinician tokens,
+ * and no caller can verify with another caller's key (RISK-S03, RISK-E01).
+ */
+export interface TrustedIssuer {
+  readonly publicJwk: JWK;
+  readonly roles: readonly Role[];
+}
+
 export class ServiceTokenVerifier {
-  readonly #key: Promise<JoseKey>;
   readonly #audience: ServiceName;
-  readonly #issuers: readonly ServiceName[];
+  readonly #issuers: ReadonlyMap<string, { key: Promise<JoseKey>; roles: readonly Role[] }>;
   readonly #clock: () => Date;
 
   constructor(
-    publicJwk: JWK,
     audience: ServiceName,
-    allowedIssuers: readonly ServiceName[],
+    trusted: Partial<Record<ServiceName, TrustedIssuer>>,
     clock: () => Date = () => new Date(),
   ) {
-    this.#key = importJWK(publicJwk, ALG);
     this.#audience = audience;
-    this.#issuers = allowedIssuers;
+    this.#issuers = new Map(
+      Object.entries(trusted).map(([name, t]) => [
+        name,
+        { key: importJWK(t.publicJwk, ALG), roles: [...t.roles] },
+      ]),
+    );
     this.#clock = clock;
   }
 
@@ -102,10 +122,14 @@ export class ServiceTokenVerifier {
     const token = match?.[1];
     if (!token) throw new ServiceTokenError('authn.invalid');
     try {
-      const { payload } = await jwtVerify(token, await this.#key, {
+      // The unverified issuer only selects which key to try; the signature check then binds it.
+      const claimedIssuer = decodeJwt(token).iss;
+      const trusted = claimedIssuer === undefined ? undefined : this.#issuers.get(claimedIssuer);
+      if (!trusted || claimedIssuer === undefined) throw new ServiceTokenError('authn.invalid');
+      const { payload } = await jwtVerify(token, await trusted.key, {
         algorithms: [ALG],
         audience: this.#audience,
-        issuer: [...this.#issuers],
+        issuer: claimedIssuer,
         typ: 'endo-service+jwt',
         maxTokenAge: SERVICE_TOKEN_TTL_SECONDS + CLOCK_TOLERANCE_SECONDS,
         clockTolerance: CLOCK_TOLERANCE_SECONDS,
@@ -113,7 +137,8 @@ export class ServiceTokenVerifier {
         currentDate: this.#clock(),
       });
       const claims = ClaimsSchema.parse(payload);
-      return { ...claims, iss: payload.iss as ServiceName };
+      if (!trusted.roles.includes(claims.role)) throw new ServiceTokenError('authn.invalid');
+      return { ...claims, iss: claimedIssuer as ServiceName };
     } catch {
       throw new ServiceTokenError('authn.invalid');
     }
