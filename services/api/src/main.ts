@@ -22,6 +22,8 @@ const Config = z.object({
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   ENDO_CLINICAL_RULESET_PATH: z.string().min(1),
   API_PORT: z.coerce.number().int().min(1).max(65535),
+  // Loopback by default; containers set 0.0.0.0 and rely on NetworkPolicy (ADR-0016).
+  API_HOST: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(1200),
   // Durable audit store (spec 2.6, 11.1). Required in staging and production.
   API_AUDIT_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
@@ -74,7 +76,7 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void app.close().then(closeAudit));
   }
-  await app.listen({ host: '127.0.0.1', port: config.API_PORT });
+  await app.listen({ host: config.API_HOST, port: config.API_PORT });
 }
 
 main().catch((error: unknown) => {

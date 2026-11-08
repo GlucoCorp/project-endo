@@ -44,6 +44,24 @@ curl -H "cookie: __Host-endo_session=<token>" http://127.0.0.1:4100/v1/hello
 
 In `staging` or `production` the API refuses to start while the rule set contains `TODO_CLINICAL`.
 
+## Container images
+
+One `Dockerfile` builds every service (ADR-0016): distroless Node 24, non-root, no shell, read-only filesystem.
+
+```sh
+docker build --build-arg SERVICE=api -t endo-api .
+docker build --build-arg SERVICE=bff-patient -t endo-bff-patient .
+```
+
+CI (`.github/workflows/images.yml`) scans every image and keeps a CycloneDX SBOM. On `main` it pushes to private GHCR, signs with Sigstore keyless signing and attaches the SBOM as a signed attestation. Verify before deploying (by digest):
+
+```sh
+cosign verify \
+  --certificate-identity https://github.com/GlucoCorp/project-endo/.github/workflows/images.yml@refs/heads/main \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/glucocorp/endo-api@sha256:<digest>
+```
+
 ## Security scanning on a free GitHub plan
 
 GitHub Code Security (paid) is not enabled. The free set-up gives equivalent blocking checks:
