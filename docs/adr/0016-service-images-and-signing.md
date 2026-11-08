@@ -26,6 +26,9 @@ M0 must produce signed images with SBOMs. The organisation is on GitHub Free wit
    `cosign verify --certificate-identity https://github.com/GlucoCorp/project-endo/.github/workflows/images.yml@refs/heads/main --certificate-oidc-issuer https://token.actions.githubusercontent.com ghcr.io/glucocorp/endo-api@sha256:...`
    and the same with `verify-attestation --type cyclonedx`. Admission enforcement in k3s (Sigstore policy-controller) comes with the shared-dev environment, after testing bundle compatibility.
 
+7. **Debian security fixes ahead of the base image.** When Trivy finds a fixed Debian vulnerability that the pinned distroless rebuild does not yet contain, the `os-patches` stage downloads Debian's update (apt verifies the archive signature and package checksum), unpacks it over the base and updates the package record, so scanners see the real version. Each entry names its CVEs and a minimum version, and is removed when Renovate moves the base to a rebuild with the fix. Security fixes from Debian's signed archive are not held back by the 7-day release-age rule. First use: `zlib1g` (CVE-2026-76844, CVE-2026-85091), 2026-11-08.
+8. **CI smoke-tests every image** under `--read-only --cap-drop ALL` as uid 65532 before scanning it.
+
 ## Consequences
 
 - **Trust rests on who can change `main`.** GitHub Free has no branch protection for private repos, so anyone with write access could change the signing workflow on `main` and get valid signatures. `main-guard` detects commits that did not come from a merged PR (RISK-T04); keep write access minimal.

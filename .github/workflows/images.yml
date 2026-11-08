@@ -46,6 +46,26 @@ jobs:
           persist-credentials: false
       - name: Build
         run: docker build --build-arg SERVICE=${{ matrix.service }} -t endo-${{ matrix.service }}:ci .
+      - name: Smoke test (read-only filesystem, all capabilities dropped, non-root)
+        env:
+          SERVICE: ${{ matrix.service }}
+        run: |
+          set -euo pipefail
+          eval "$(node tools/dev-keys.mjs)"   # throwaway keys for this test only
+          common=(--read-only --cap-drop ALL --security-opt no-new-privileges -p 127.0.0.1:18000:8080 -e ENDO_ENV=dev)
+          if [ "$SERVICE" = api ]; then
+            docker run -d --name smoke "${common[@]}" -e API_PORT=8080 -e API_HOST=0.0.0.0 \
+              -e ENDO_CLINICAL_RULESET_PATH=/app/clinical/rulesets/ruleset.1.0.0.yaml \
+              -e API_SERVICE_TOKEN_PUBLIC_KEY_JWK endo-api:ci
+          else
+            docker run -d --name smoke "${common[@]}" -e BFF_PATIENT_PORT=8080 -e BFF_PATIENT_HOST=0.0.0.0 \
+              -e BFF_PATIENT_DEV_SESSIONS_ENABLED=true -e BFF_PATIENT_API_BASE_URL=http://127.0.0.1:9 \
+              -e BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK endo-bff-patient:ci
+          fi
+          for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18000/healthz && break; sleep 1; done
+          curl -sf http://127.0.0.1:18000/healthz | grep -q '"ok"'
+          test "$(docker inspect smoke --format '{{.Config.User}}')" = "65532:65532"
+          docker rm -f smoke > /dev/null
       - name: Vulnerabilities (Trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
