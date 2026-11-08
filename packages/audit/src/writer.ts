@@ -82,18 +82,25 @@ export class AuditWriter {
   /**
    * Serialised within this process. Across processes the store rejects a duplicate sequence with
    * AuditSequenceConflictError, and the event is rebuilt on the new head and retried.
+   *
+   * `occurredAt`: when the action really happened, for events relayed later from an outbox
+   * (spec 2.6). Defaults to now. It may not lie in the future.
    */
-  async write(input: AuditEventInputType): Promise<AuditEvent> {
+  async write(input: AuditEventInputType, occurredAt?: Date): Promise<AuditEvent> {
     const parsed = AuditEventInput.parse(input);
     const run = this.#tail.then(async () => {
       for (let attempt = 1; ; attempt++) {
         const head = await this.#store.head();
         const now = this.#clock();
+        if (occurredAt && occurredAt.getTime() > now.getTime()) {
+          throw new RangeError('occurredAt is in the future');
+        }
+        const when = occurredAt ?? now;
         const base = {
           ...parsed,
           id: uuidv7(now.getTime()),
           sequence: head ? head.sequence + 1 : 1,
-          occurred_at: now.toISOString(),
+          occurred_at: when.toISOString(),
           prev_hash: head ? head.hash : GENESIS_HASH,
         };
         const event: AuditEvent = { ...base, hash: hashEvent(base) };

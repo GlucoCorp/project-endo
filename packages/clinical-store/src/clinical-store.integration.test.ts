@@ -39,6 +39,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
   let apiOne: pg.Pool; // same login, one connection, to prove settings do not leak
   let apiDb: Kysely<ClinicalDatabase>;
   let apiOneDb: Kysely<ClinicalDatabase>;
+  let relayDb: Kysely<ClinicalDatabase>; // member of endo_clinical_relay only
   let schema: string;
 
   const withSchema = (base: string, user: string, password: string) => {
@@ -73,6 +74,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     schema = `clinical_${randomBytes(6).toString('hex')}`;
     const ownerPw = randomBytes(16).toString('hex');
     const apiPw = randomBytes(16).toString('hex');
+    const relayPw = randomBytes(16).toString('hex');
     const bootstrap = await readFile(
       fileURLToPath(new URL('../bootstrap/roles.sql', import.meta.url)),
       'utf8',
@@ -84,6 +86,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       for (const [role, pw, extra] of [
         ['clinical_owner_test', ownerPw, 'IN ROLE endo_clinical_lookup'],
         ['clinical_api_test', apiPw, 'IN ROLE endo_clinical_app'],
+        ['clinical_relay_test', relayPw, 'IN ROLE endo_clinical_relay'],
       ] as const) {
         const exists = await su.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role]);
         // Role names and hex passwords are fixed or generated here, never external input.
@@ -117,6 +120,11 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     });
     apiDb = createDb<ClinicalDatabase>(api);
     apiOneDb = createDb<ClinicalDatabase>(apiOne);
+    relayDb = createDb<ClinicalDatabase>(
+      createPool(withSchema(url!, 'clinical_relay_test', relayPw), {
+        applicationName: 'endo-test-relay',
+      }),
+    );
 
     await admin.query(
       `INSERT INTO organization (id, region, name) VALUES ($1, 'ke', 'Clinic A'), ($2, 'rw', 'Clinic B')`,
@@ -135,6 +143,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
   afterAll(async () => {
     await apiDb.destroy();
     await apiOneDb.destroy();
+    await relayDb.destroy();
     await admin.end();
   });
 
@@ -504,6 +513,26 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       ).toBe(0);
     });
 
+    it('reports an expired key as expired, never replaying or creating again', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const key = randomUUID();
+      await store.createOnce(request(key));
+      await admin.query(`ALTER TABLE idempotency_record DROP CONSTRAINT idempotency_record_check`);
+      await admin.query(
+        `UPDATE idempotency_record SET expires_at = now() - interval '1 second' WHERE idem_key = $1`,
+        [key],
+      );
+      expect((await store.createOnce(request(key))).kind).toBe('expired');
+      await admin.query(
+        `UPDATE idempotency_record SET response_wrapped_key = NULL, response_envelope = NULL, expires_at = created_at + interval '24 hours' WHERE idem_key = $1`,
+        [key],
+      );
+      expect((await store.createOnce(request(key))).kind).toBe('expired'); // tombstone
+      await admin.query(
+        `ALTER TABLE idempotency_record ADD CONSTRAINT idempotency_record_check CHECK (expires_at = created_at + interval '24 hours')`,
+      );
+    });
+
     it('does not let the API set or extend the replay lifetime', async () => {
       await expect(
         asApi(ORG_A, (c) =>
@@ -516,33 +545,85 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       ).rejects.toThrow(/permission denied/);
     });
 
-    it('relays each queued event once, in order, and refuses to change a published event', async () => {
-      const seen: unknown[] = [];
-      while ((await relayAuditOutbox(apiDb, (e) => Promise.resolve(void seen.push(e)))) > 0);
-      const pending = await admin.query(`SELECT 1 FROM audit_outbox WHERE published_at IS NULL`);
-      expect(pending.rowCount).toBe(0);
-      expect(seen.length).toBeGreaterThan(0);
-      expect(await relayAuditOutbox(apiDb, () => Promise.reject(new Error('never called')))).toBe(
-        0,
-      );
-      await expect(
-        asApi(null, (c) => c.query(`UPDATE audit_outbox SET published_at = NULL`)),
-      ).rejects.toThrow(/published once/);
-    });
+    const drain = async (publish: (e: unknown, at: Date) => Promise<void>) => {
+      let total = 0;
+      for (;;) {
+        const r = await relayAuditOutbox(relayDb, publish);
+        total += r.published;
+        if (r.published === 0) return total;
+      }
+    };
 
-    it('keeps an event queued when publishing fails', async () => {
+    it('relays every queued event once, with its original time', async () => {
       const store = new PostgresIdempotentInvitationStore(apiDb);
       const r = request(randomUUID());
       await store.createOnce(r);
-      await expect(
-        relayAuditOutbox(apiDb, () => Promise.reject(new Error('audit down'))),
-      ).rejects.toThrow('audit down');
-      const still = await admin.query(
-        `SELECT 1 FROM audit_outbox WHERE id = $1 AND published_at IS NULL`,
+      const seen: { event: unknown; at: Date }[] = [];
+      await drain((event, at) => Promise.resolve(void seen.push({ event, at })));
+      const mine = seen.filter((x) => (x.event as { id?: string }).id === r.auditEvent.id);
+      expect(mine).toHaveLength(1);
+      const { rows } = await admin.query<{ created_at: Date }>(
+        `SELECT created_at FROM audit_outbox WHERE id = $1`,
         [r.auditEvent.id],
       );
-      expect(still.rowCount).toBe(1);
-      await relayAuditOutbox(apiDb, () => Promise.resolve());
+      expect(mine[0]?.at.getTime()).toBe(rows[0]?.created_at.getTime());
+      expect(
+        (await relayAuditOutbox(relayDb, () => Promise.reject(new Error('x')))).published,
+      ).toBe(0);
+    });
+
+    it('RISK-R01 gives the API no way to read, acknowledge or hide queued events', async () => {
+      await expect(asApi(null, (c) => c.query(`SELECT 1 FROM audit_outbox`))).rejects.toThrow(
+        /permission denied/,
+      );
+      await expect(
+        asApi(null, (c) =>
+          c.query(`UPDATE audit_outbox SET published_at = now() WHERE published_at IS NULL`),
+        ),
+      ).rejects.toThrow(/permission denied/);
+    });
+
+    it('refuses to change a published event, even for the relay', async () => {
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL ROLE endo_clinical_relay');
+        await expect(
+          c.query(`UPDATE audit_outbox SET published_at = NULL WHERE published_at IS NOT NULL`),
+        ).rejects.toThrow(/published once/);
+      } finally {
+        await c.query('ROLLBACK');
+        c.release();
+      }
+    });
+
+    it('counts failures, keeps a failing event queued, and sets it aside after 5 attempts', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      await drain(() => Promise.resolve());
+      const bad = request(randomUUID());
+      await store.createOnce(bad);
+      const good = request(randomUUID());
+      await store.createOnce(good);
+      const failBad = (e: unknown) =>
+        (e as { id?: string }).id === bad.auditEvent.id
+          ? Promise.reject(new Error('poison'))
+          : Promise.resolve();
+      // One run: the bad event fails once and does not block the good one.
+      const first = await relayAuditOutbox(relayDb, failBad);
+      expect(first).toEqual({ published: 1, failed: 1 });
+      for (let i = 0; i < 6; i++) await relayAuditOutbox(relayDb, failBad);
+      const { rows } = await admin.query<{
+        attempts: number;
+        last_error: string;
+        published_at: Date | null;
+      }>(`SELECT attempts, last_error, published_at FROM audit_outbox WHERE id = $1`, [
+        bad.auditEvent.id,
+      ]);
+      expect(rows[0]).toMatchObject({
+        attempts: 5,
+        last_error: 'audit.publish_failed',
+        published_at: null,
+      });
     });
   });
 

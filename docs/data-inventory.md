@@ -87,7 +87,7 @@ No names, emails, phones or addresses (spec 5.1). Every table has row-level secu
 
 ### Idempotency and audit outbox — `packages/clinical-store/migrations/0002`
 
-`idempotency_record` has row-level security. `audit_outbox` holds no free text and is read across organisations by the relay only.
+`idempotency_record` has row-level security. `audit_outbox` holds no free text; the API can only add to it, and only the relay role (`endo_clinical_relay`) reads and acknowledges it, across organisations.
 
 | Column                                    | Purpose                                                                                                                               | Legal basis                                                         | Retention                                          | Sensitivity |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- | -------------------------------------------------- | ----------- |
@@ -106,6 +106,8 @@ No names, emails, phones or addresses (spec 5.1). Every table has row-level secu
 | `audit_outbox.event`                      | Audit event awaiting relay: opaque ids and codes only, validated before insert                                                        | as above                                                            | as above                                           | S1          |
 | `audit_outbox.created_at`                 | When queued                                                                                                                           | as above                                                            | as above                                           | S0          |
 | `audit_outbox.published_at`               | When relayed (set once)                                                                                                               | as above                                                            | as above                                           | S0          |
+| `audit_outbox.attempts`                   | Failed relay attempts; set aside after 5                                                                                              | as above                                                            | as above                                           | S0          |
+| `audit_outbox.last_error`                 | Safe error code of the last failure (never a message)                                                                                 | as above                                                            | as above                                           | S0          |
 
 ## Identity vault and other stores
 

@@ -26,7 +26,8 @@ export type {
   IdempotentOutcome,
   SealedResponse,
 } from './idempotent.ts';
-export { relayAuditOutbox } from './outbox.ts';
+export { OUTBOX_MAX_ATTEMPTS, relayAuditOutbox } from './outbox.ts';
+export type { RelayResult } from './outbox.ts';
 
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */
 export const CLINICAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));

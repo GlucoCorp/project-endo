@@ -47,8 +47,8 @@ export interface ClinicalDatabase {
     idem_key: string;
     request_hash: string;
     status_code: number;
-    response_wrapped_key: string;
-    response_envelope: string;
+    response_wrapped_key: string | null;
+    response_envelope: string | null;
     created_at: Generated<Date>;
     expires_at: Generated<Date>;
   };
@@ -58,6 +58,8 @@ export interface ClinicalDatabase {
     event: unknown;
     created_at: Generated<Date>;
     published_at: Date | null;
+    attempts: Generated<number>;
+    last_error: string | null;
   };
   consent: {
     id: string;

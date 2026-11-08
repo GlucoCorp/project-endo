@@ -43,6 +43,21 @@ resource "random_password" "clinical_api" {
   special = false
 }
 
+resource "random_password" "clinical_relay" {
+  length  = 32
+  special = false
+}
+
+resource "kubernetes_secret_v1" "clinical_relay_url" {
+  metadata {
+    name      = "db-clinical-relay"
+    namespace = local.ns
+  }
+  data = {
+    url = "postgres://clinical_relay:${random_password.clinical_relay.result}@postgres-${local.pg_host_of["clinical"]}.${local.ns}.svc:5432/clinical"
+  }
+}
+
 resource "kubernetes_secret_v1" "pg_bootstrap" {
   for_each = local.pg_instances
   metadata {
@@ -53,7 +68,10 @@ resource "kubernetes_secret_v1" "pg_bootstrap" {
     { POSTGRES_PASSWORD = random_password.pg_superuser[each.key].result },
     { for db in each.value : "${upper(db)}_OWNER_PASSWORD" => random_password.db_owner[db].result },
     contains(each.value, "audit") ? { AUDIT_API_PASSWORD = random_password.audit_api.result } : {},
-    contains(each.value, "clinical") ? { CLINICAL_API_PASSWORD = random_password.clinical_api.result } : {},
+    contains(each.value, "clinical") ? {
+      CLINICAL_API_PASSWORD   = random_password.clinical_api.result
+      CLINICAL_RELAY_PASSWORD = random_password.clinical_relay.result
+    } : {},
   )
 }
 
@@ -125,6 +143,9 @@ resource "kubernetes_config_map_v1" "pg_init" {
         "GRANT endo_clinical_lookup TO clinical_owner;",
         "CREATE ROLE clinical_api LOGIN PASSWORD '$${CLINICAL_API_PASSWORD}' IN ROLE endo_clinical_app;",
         "GRANT CONNECT ON DATABASE clinical TO clinical_api;",
+        "CREATE ROLE endo_clinical_relay NOLOGIN;",
+        "CREATE ROLE clinical_relay LOGIN PASSWORD '$${CLINICAL_RELAY_PASSWORD}' IN ROLE endo_clinical_relay;",
+        "GRANT CONNECT ON DATABASE clinical TO clinical_relay;",
       ] : [],
       ["EOSQL", ""],
     ))
