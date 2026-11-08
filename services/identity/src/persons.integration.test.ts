@@ -72,12 +72,9 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     db = createDb<IdentityDatabase>(
       createPool(at('idsvc_api_test', appPw), { applicationName: 'endo-test' }),
     );
-    cipher = new FieldCipher(
-      new DevKeyManager('test'),
-      new PostgresPersonKeyStore(db),
-      'kms/identity',
-    );
-    store = new PostgresPersonStore(db, cipher);
+    const kms = new DevKeyManager('test');
+    cipher = new FieldCipher(kms, new PostgresPersonKeyStore(db), 'kms/identity');
+    store = new PostgresPersonStore(db, kms);
   });
 
   afterAll(async () => {
@@ -114,6 +111,37 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
       .where('id', '=', id)
       .executeTakeFirstOrThrow();
     expect(after.deleted_at).toBeInstanceOf(Date);
+  });
+
+  it('leaves nothing behind when encryption fails during creation', async () => {
+    const failing = {
+      generateDataKey: () => Promise.reject(new Error('kms down')),
+      unwrapDataKey: () => Promise.reject(new Error('kms down')),
+    };
+    const id = uuidv7();
+    await expect(
+      new PostgresPersonStore(db, failing).create({
+        id,
+        email: 'a@example.test',
+        displayName: null,
+      }),
+    ).rejects.toThrow('kms down');
+    expect((await admin.query(`SELECT 1 FROM person WHERE id = $1`, [id])).rowCount).toBe(0);
+    expect(
+      (await admin.query(`SELECT 1 FROM person_key WHERE person_id = $1`, [id])).rowCount,
+    ).toBe(0);
+  });
+
+  it('erasure clears the sign-in subject in the same transaction as the shredding', async () => {
+    const id = uuidv7();
+    await store.create({ id, email: null, displayName: 'x' });
+    await admin.query(`UPDATE person SET idp_subject = 'kc-subject-1' WHERE id = $1`, [id]);
+    await store.erase(id);
+    const row = await admin.query<{ idp_subject: string | null; shredded: boolean }>(
+      `SELECT idp_subject, EXISTS (SELECT 1 FROM person_key_shredded WHERE person_id = $1) AS shredded FROM person WHERE id = $1`,
+      [id],
+    );
+    expect(row.rows[0]).toEqual({ idp_subject: null, shredded: true });
   });
 
   it('reports an unknown person, and stores a person with no contact fields', async () => {

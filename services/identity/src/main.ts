@@ -9,7 +9,7 @@ import {
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { DevKeyManager, FieldCipher, InMemoryPatientKeyStore } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
-import { PostgresPersonKeyStore, type IdentityDatabase } from '@endo/identity-store';
+import type { IdentityDatabase } from '@endo/identity-store';
 import { WorkloadTokenVerifier, type TrustedWorkload } from '@endo/service-kit';
 import { buildIdentity } from './app.ts';
 import { InMemoryPersonStore, PostgresPersonStore, type PersonStore } from './persons.ts';
@@ -66,10 +66,7 @@ async function main(): Promise<void> {
     const db = createDb<IdentityDatabase>(
       createPool(config.IDENTITY_DATABASE_URL, { applicationName: 'endo-identity' }),
     );
-    persons = new PostgresPersonStore(
-      db,
-      new FieldCipher(kms, new PostgresPersonKeyStore(db), 'kms/identity'),
-    );
+    persons = new PostgresPersonStore(db, kms);
     closeVault = () => db.destroy();
   } else if (deployed) {
     throw new Error('IDENTITY_DATABASE_URL is required in staging and production.');

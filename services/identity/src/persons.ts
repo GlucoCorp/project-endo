@@ -1,6 +1,6 @@
 import type { Kysely } from 'kysely';
-import type { FieldCipher } from '@endo/crypto';
-import type { IdentityDatabase } from '@endo/identity-store';
+import { FieldCipher, type KeyManager } from '@endo/crypto';
+import { PostgresPersonKeyStore, type IdentityDatabase } from '@endo/identity-store';
 
 /** Identity fields as they arrive. Never stored or logged in this form. */
 export interface NewPerson {
@@ -10,9 +10,16 @@ export interface NewPerson {
 }
 
 export interface PersonStore {
-  /** Encrypts each field under the person's own key (`kms/identity`), then stores the person. */
+  /**
+   * Encrypts each field under the person's own key (`kms/identity`) and stores the person, all in
+   * one transaction: on any failure nothing remains, neither the person nor a key.
+   */
   create(person: NewPerson): Promise<void>;
-  /** REQ-009: marks erasure and crypto-shreds the key. Idempotent. Returns false if unknown. */
+  /**
+   * REQ-009 and spec 11.4: in one transaction, marks erasure, clears the sign-in subject and
+   * crypto-shreds the key (immediately). The hard delete of the row and links follows after the
+   * 14-day grace period (jobs, M6). Idempotent. Returns false if the person is unknown.
+   */
   erase(personId: string): Promise<boolean>;
 }
 
@@ -25,47 +32,52 @@ const ctx = (personId: string, field: string) => ({
 
 export class PostgresPersonStore implements PersonStore {
   readonly #db: Kysely<IdentityDatabase>;
-  readonly #cipher: FieldCipher;
+  readonly #kms: KeyManager;
 
-  /** `cipher` must be built with `PostgresPersonKeyStore` and `kms/identity`. */
-  constructor(db: Kysely<IdentityDatabase>, cipher: FieldCipher) {
+  constructor(db: Kysely<IdentityDatabase>, kms: KeyManager) {
     this.#db = db;
-    this.#cipher = cipher;
+    this.#kms = kms;
   }
 
   async create(p: NewPerson): Promise<void> {
-    // The person row comes first: the key row references it.
-    await this.#db.insertInto('person').values({ id: p.id }).execute();
-    const email =
-      p.email === null ? null : await this.#cipher.encrypt(p.email, ctx(p.id, 'person.email'));
-    const name =
-      p.displayName === null
-        ? null
-        : await this.#cipher.encrypt(p.displayName, ctx(p.id, 'person.display_name'));
-    await this.#db
-      .updateTable('person')
-      .set({ email_encrypted: email, display_name_encrypted: name })
-      .where('id', '=', p.id)
-      .execute();
+    await this.#db.transaction().execute(async (trx) => {
+      // Key store and cipher bound to this transaction, so a failure rolls back the key too.
+      const cipher = new FieldCipher(this.#kms, new PostgresPersonKeyStore(trx), 'kms/identity');
+      await trx.insertInto('person').values({ id: p.id }).execute();
+      const email =
+        p.email === null ? null : await cipher.encrypt(p.email, ctx(p.id, 'person.email'));
+      const name =
+        p.displayName === null
+          ? null
+          : await cipher.encrypt(p.displayName, ctx(p.id, 'person.display_name'));
+      await trx
+        .updateTable('person')
+        .set({ email_encrypted: email, display_name_encrypted: name })
+        .where('id', '=', p.id)
+        .execute();
+    });
   }
 
   async erase(personId: string): Promise<boolean> {
-    const found = await this.#db
-      .updateTable('person')
-      .set({ deleted_at: new Date() })
-      .where('id', '=', personId)
-      .where('deleted_at', 'is', null)
-      .executeTakeFirst();
-    const exists =
-      Number(found.numUpdatedRows) > 0 ||
-      (await this.#db
+    return this.#db.transaction().execute(async (trx) => {
+      const person = await trx
         .selectFrom('person')
         .select('id')
         .where('id', '=', personId)
-        .executeTakeFirst()) !== undefined;
-    if (!exists) return false;
-    await this.#cipher.shredPatient(personId);
-    return true;
+        .executeTakeFirst();
+      if (!person) return false;
+      await trx
+        .updateTable('person')
+        .set((eb) => ({
+          deleted_at: eb.fn.coalesce('deleted_at', eb.fn<Date>('now', [])),
+          idp_subject: null,
+        }))
+        .where('id', '=', personId)
+        .execute();
+      // The tombstone trigger deletes the key in this same transaction (migration 0001).
+      await new PostgresPersonKeyStore(trx).destroy(personId);
+      return true;
+    });
   }
 }
 
@@ -82,22 +94,20 @@ export class InMemoryPersonStore implements PersonStore {
   }
 
   async create(p: NewPerson): Promise<void> {
-    this.rows.set(p.id, {
-      email:
-        p.email === null ? null : await this.#cipher.encrypt(p.email, ctx(p.id, 'person.email')),
-      displayName:
-        p.displayName === null
-          ? null
-          : await this.#cipher.encrypt(p.displayName, ctx(p.id, 'person.display_name')),
-      erased: false,
-    });
+    const email =
+      p.email === null ? null : await this.#cipher.encrypt(p.email, ctx(p.id, 'person.email'));
+    const displayName =
+      p.displayName === null
+        ? null
+        : await this.#cipher.encrypt(p.displayName, ctx(p.id, 'person.display_name'));
+    this.rows.set(p.id, { email, displayName, erased: false });
   }
 
   async erase(personId: string): Promise<boolean> {
     const row = this.rows.get(personId);
     if (!row) return false;
-    row.erased = true;
     await this.#cipher.shredPatient(personId);
+    row.erased = true;
     return true;
   }
 }

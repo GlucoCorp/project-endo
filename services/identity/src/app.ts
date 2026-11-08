@@ -60,7 +60,8 @@ export interface IdentityDeps {
   readonly rateLimitPerMinute?: number;
 }
 
-const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+// Same shape the audit schema accepts (RFC 9562 variant), so a valid id can always be audited.
+const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
 const UUID_RE = new RegExp(UUID);
 /** Audit runs before schema validation, so only a well-formed id may reach the audit event. */
 const idParam = (req: FastifyRequest): string | null => {
@@ -131,6 +132,19 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     request.caller = caller;
   });
 
+  /** The outcome of an authorised operation, with the person it concerned (spec 2.6). */
+  const auditResult = (request: FastifyRequest, action: string, personId: string | null) =>
+    deps.audit.write({
+      actor: { id: null, role: 'system' },
+      action,
+      resource: { type: 'person', id: personId },
+      org_id: null,
+      purpose_of_use: 'operations',
+      outcome: 'success',
+      reason: null,
+      request_id: request.id,
+    });
+
   app.get('/healthz', { config: { access: { kind: 'public', reason: 'liveness' } } }, () => ({
     status: 'ok',
   }));
@@ -173,6 +187,7 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
         email: body.email ?? null,
         displayName: body.display_name ?? null,
       });
+      await auditResult(request, 'identity.person.created', id);
       return reply.code(201).send({ person_id: id });
     },
   );
@@ -202,9 +217,32 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
       if (!(await deps.persons.erase(id))) {
         throw new ProblemError(404, 'identity.person_not_found', 'Not found.');
       }
+      await auditResult(request, 'identity.person.erased', id);
       return reply.code(204).send();
     },
   );
+
+  // An authorised request that then failed (validation, not found, storage) is audited as an
+  // error. The response is already sent, so a failure here is logged, never swallowed silently.
+  app.addHook('onResponse', async (request, reply) => {
+    const access = request.routeOptions.config.access;
+    if (access?.kind === 'workload' && request.caller && reply.statusCode >= 400) {
+      await deps.audit
+        .write({
+          actor: { id: null, role: 'system' },
+          action: access.action,
+          resource: { type: 'person', id: access.resourceId(request) },
+          org_id: null,
+          purpose_of_use: 'operations',
+          outcome: 'error',
+          reason: `http.status_${String(reply.statusCode)}`,
+          request_id: request.id,
+        })
+        .catch(() => {
+          request.log.error({ event: 'audit.write_failed' });
+        });
+    }
+  });
 
   app.addHook('onResponse', async (request, reply) => {
     request.log.info({

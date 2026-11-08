@@ -141,6 +141,55 @@ describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => 
     ]);
   });
 
+  it('spec 2.6 audits the decision, then the result with the person id', async () => {
+    const { app, audit, auth, apiSigner } = await setup();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons',
+      headers: await auth(apiSigner, 'identity.person.create'),
+      payload: {},
+    });
+    const id = res.json<{ person_id: string }>().person_id;
+    expect(await audit.readRange(1, 10)).toMatchObject([
+      { action: 'identity.person.create', outcome: 'success', resource: { id: null } },
+      { action: 'identity.person.created', outcome: 'success', resource: { type: 'person', id } },
+    ]);
+  });
+
+  it('audits an authorised request that then fails as an error, never as a success', async () => {
+    const { app, audit, auth, apiSigner, jobsSigner } = await setup();
+    await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons',
+      headers: await auth(apiSigner, 'identity.person.create'),
+      payload: { email: 'bad' },
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons/01900000-0000-7000-8000-000000000999/erasure',
+      headers: await auth(jobsSigner, 'identity.person.erase'),
+    });
+    const events = await audit.readRange(1, 10);
+    expect(events.filter((e) => e.outcome === 'error')).toMatchObject([
+      { action: 'identity.person.create', reason: 'http.status_400' },
+      { action: 'identity.person.erase', reason: 'http.status_404' },
+    ]);
+    expect(events.some((e) => e.action.endsWith('.created') || e.action.endsWith('.erased'))).toBe(
+      false,
+    );
+  });
+
+  it('answers 400, not 500, for an id the audit schema would reject', async () => {
+    const { app, audit, auth, jobsSigner } = await setup();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons/00000000-0000-0000-0000-000000000000/erasure',
+      headers: await auth(jobsSigner, 'identity.person.erase'),
+    });
+    expect(res.statusCode).toBe(400);
+    expect((await audit.readRange(1, 10))[0]).toMatchObject({ resource: { id: null } });
+  });
+
   it('serves liveness without authentication and sets security headers', async () => {
     const { app } = await setup();
     const res = await app.inject({ url: '/healthz' });
