@@ -69,3 +69,31 @@ describe('InMemoryIdempotentInvitationStore (dev and tests)', () => {
     expect(new InMemoryIdempotentInvitationStore().invitations).toEqual([]);
   });
 });
+
+describe('InMemoryIdempotentInvitationStore concurrency and expiry', () => {
+  const req = (key: string, seal = () => Promise.resolve({ wrappedKey: 'w', envelope: 'v' })) => ({
+    invitation: { id: 'i', orgId: 'o', createdBy: 'c', tokenHash: 'a'.repeat(64) },
+    idempotency: { actorRef: 'c', key, requestHash: 'b'.repeat(64) },
+    auditEvent: { id: 'e' },
+    sealResponse: seal,
+  });
+
+  it('creates once when two requests with the same key arrive together', async () => {
+    const store = new InMemoryIdempotentInvitationStore();
+    const results = await Promise.all([store.createOnce(req('k')), store.createOnce(req('k'))]);
+    expect(results.map((r) => r.kind).sort()).toEqual(['created', 'replay']);
+    expect(store.invitations).toHaveLength(1);
+  });
+
+  it('reports expiry after 24 hours, and forgets a key whose sealing failed', async () => {
+    let now = 0;
+    const store = new InMemoryIdempotentInvitationStore(() => new Date(now));
+    await store.createOnce(req('k'));
+    now = 24 * 3600 * 1000;
+    expect((await store.createOnce(req('k'))).kind).toBe('expired');
+    await expect(
+      store.createOnce(req('f', () => Promise.reject(new Error('kms')))),
+    ).rejects.toThrow('kms');
+    expect((await store.createOnce(req('f'))).kind).toBe('created');
+  });
+});

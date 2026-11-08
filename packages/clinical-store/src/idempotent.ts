@@ -21,7 +21,10 @@ export interface IdempotencyKey {
 export type IdempotentOutcome =
   | { readonly kind: 'created'; readonly expiresAt: Date }
   | { readonly kind: 'replay'; readonly statusCode: number; readonly sealed: SealedResponse }
-  | { readonly kind: 'conflict' };
+  /** The key was used for a different request. */
+  | { readonly kind: 'conflict' }
+  /** The key is past its 24-hour replay window; keys are never reused. */
+  | { readonly kind: 'expired' };
 
 export interface CreateInvitationOnce {
   readonly invitation: NewInvitation;
@@ -66,15 +69,19 @@ export class PostgresIdempotentInvitationStore implements IdempotentInvitationSt
       const existing = await trx
         .selectFrom('idempotency_record')
         .select(['request_hash', 'status_code', 'response_wrapped_key', 'response_envelope'])
-        .select((eb) => eb('expires_at', '>', sql<Date>`now()`).as('live'))
+        // clock_timestamp(), not now(): the lock wait may have carried us past the expiry.
+        .select((eb) => eb('expires_at', '>', sql<Date>`clock_timestamp()`).as('live'))
         .where('org_id', '=', i.orgId)
         .where('actor_ref', '=', k.actorRef)
         .where('operation', '=', OPERATION)
         .where('idem_key', '=', k.key)
         .executeTakeFirst();
       if (existing) {
-        // An expired key is never reused: UUID keys are single-use by design.
-        if (!existing.live || existing.request_hash !== k.requestHash) return { kind: 'conflict' };
+        if (existing.request_hash !== k.requestHash) return { kind: 'conflict' };
+        // Past the window, or purged to a tombstone: never served, never created again.
+        if (!existing.live || !existing.response_wrapped_key || !existing.response_envelope) {
+          return { kind: 'expired' };
+        }
         return {
           kind: 'replay',
           statusCode: existing.status_code,
@@ -119,11 +126,14 @@ export class PostgresIdempotentInvitationStore implements IdempotentInvitationSt
   }
 }
 
-/** Dev and test stand-in with the same semantics (records do not expire). */
+/** Dev and test stand-in with the same semantics, including the 24-hour window. */
 export class InMemoryIdempotentInvitationStore implements IdempotentInvitationStore {
   readonly invitations: (NewInvitation & { expiresAt: Date })[] = [];
   readonly outbox: Readonly<Record<string, unknown>>[] = [];
-  readonly #records = new Map<string, { requestHash: string; sealed: SealedResponse }>();
+  readonly #records = new Map<
+    string,
+    Promise<{ requestHash: string; sealed: SealedResponse; until: number } | null>
+  >();
   readonly #now: () => Date;
 
   constructor(now: () => Date = () => new Date()) {
@@ -133,16 +143,34 @@ export class InMemoryIdempotentInvitationStore implements IdempotentInvitationSt
   async createOnce(r: CreateInvitationOnce): Promise<IdempotentOutcome> {
     const k = r.idempotency;
     const id = [r.invitation.orgId, k.actorRef, k.key].join(':');
-    const existing = this.#records.get(id);
-    if (existing) {
-      return existing.requestHash === k.requestHash
-        ? { kind: 'replay', statusCode: 201, sealed: existing.sealed }
-        : { kind: 'conflict' };
+    const pending = this.#records.get(id);
+    if (pending) {
+      const existing = await pending;
+      if (existing) {
+        if (existing.requestHash !== k.requestHash) return { kind: 'conflict' };
+        if (this.#now().getTime() >= existing.until) return { kind: 'expired' };
+        return { kind: 'replay', statusCode: 201, sealed: existing.sealed };
+      }
     }
-    const expiresAt = new Date(this.#now().getTime() + 7 * 24 * 60 * 60 * 1000);
-    const sealed = await r.sealResponse(expiresAt);
+    // Reserve the key before any await, so concurrent calls wait for this one.
+    const now = this.#now().getTime();
+    const expiresAt = new Date(now + 7 * 24 * 60 * 60 * 1000);
+    const work = r.sealResponse(expiresAt).then((sealed) => ({
+      requestHash: k.requestHash,
+      sealed,
+      until: now + 24 * 60 * 60 * 1000,
+    }));
+    this.#records.set(
+      id,
+      work.catch(() => null),
+    );
+    try {
+      await work;
+    } catch (error) {
+      this.#records.delete(id);
+      throw error;
+    }
     this.invitations.push({ ...r.invitation, expiresAt });
-    this.#records.set(id, { requestHash: k.requestHash, sealed });
     this.outbox.push(r.auditEvent);
     return { kind: 'created', expiresAt };
   }

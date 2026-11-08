@@ -125,6 +125,13 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentRou
           'This Idempotency-Key was already used for a different request.',
         );
       }
+      if (outcome.kind === 'expired') {
+        throw new ProblemError(
+          422,
+          'idempotency.key_expired',
+          'This Idempotency-Key is past its replay window. Send the request with a new key.',
+        );
+      }
       if (outcome.kind === 'replay') {
         // This operation only ever stores 201 responses; anything else means a corrupted record.
         if (outcome.statusCode !== 201) throw new Error('Unexpected idempotency record');
