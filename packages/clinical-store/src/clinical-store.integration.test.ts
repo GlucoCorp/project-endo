@@ -7,6 +7,8 @@ import type { Kysely } from 'kysely';
 import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
 import {
   CLINICAL_MIGRATIONS_DIR,
+  PostgresInvitationStore,
+  PostgresMembershipStore,
   findLiveInvitation,
   withOrg,
   type ClinicalDatabase,
@@ -22,6 +24,7 @@ const CLIN_B = '01900000-0000-7000-8000-0000000000c2';
 const PAT_A = '01900000-0000-7000-8000-0000000000a1';
 const PAT_B = '01900000-0000-7000-8000-0000000000b1';
 const REF_SHARED = '01900000-0000-7000-8000-0000000000ff';
+const IDREF_CLIN_A = '01900000-0000-7000-8000-0000000000e1';
 const tokenHash = () => createHash('sha256').update(randomBytes(32)).digest('hex');
 
 /**
@@ -119,7 +122,7 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     );
     await admin.query(
       `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'clinician'), ($4, $5, $6, 'clinician')`,
-      [CLIN_A, ORG_A, randomUUID(), CLIN_B, ORG_B, randomUUID()],
+      [CLIN_A, ORG_A, IDREF_CLIN_A, CLIN_B, ORG_B, randomUUID()],
     );
     await admin.query(
       `INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3), ($4, $5, $6)`,
@@ -216,6 +219,39 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
            VALUES ($1, $2, $3, $4, now() + interval '1 day', now())`,
         ),
       ).rejects.toThrow(/permission denied/);
+    });
+
+    it('PostgresInvitationStore creates an invitation with a database-clock expiry of 7 days', async () => {
+      const hash = tokenHash();
+      const store = new PostgresInvitationStore(apiDb);
+      const { expiresAt } = await store.create({
+        id: randomUUID(),
+        orgId: ORG_A,
+        createdBy: CLIN_A,
+        tokenHash: hash,
+      });
+      const { rows } = await admin.query<{ ok: boolean }>(
+        `SELECT expires_at = created_at + interval '7 days' AS ok FROM enrolment_invitation WHERE token_hash = $1`,
+        [hash],
+      );
+      expect(rows[0]?.ok).toBe(true);
+      expect(expiresAt).toBeInstanceOf(Date);
+      expect((await findLiveInvitation(apiDb, hash))?.orgId).toBe(ORG_A);
+      // A clinician cannot issue for another organisation, whatever the API passes.
+      await expect(
+        store.create({ id: randomUUID(), orgId: ORG_A, createdBy: CLIN_B, tokenHash: tokenHash() }),
+      ).rejects.toThrow(/foreign key/);
+    });
+
+    it('PostgresMembershipStore resolves a clinician by identity reference, only in their organisation', async () => {
+      const members = new PostgresMembershipStore(apiDb);
+      expect(await members.find(ORG_A, IDREF_CLIN_A)).toEqual({
+        clinicianId: CLIN_A,
+        role: 'clinician',
+        active: true,
+      });
+      expect(await members.find(ORG_B, IDREF_CLIN_A)).toBeNull();
+      expect(await members.find(ORG_A, CLIN_A)).toBeNull(); // the clinical id is not an identity ref
     });
 
     it('finds a live invitation across organisations as the API role', async () => {

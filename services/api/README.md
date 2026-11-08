@@ -6,10 +6,11 @@
 
 ## Public API (HTTP)
 
-| Route           | Policy            | Purpose             |
-| --------------- | ----------------- | ------------------- |
-| `GET /healthz`  | public (liveness) | Liveness            |
-| `GET /v1/hello` | `system.hello`    | M0 walking skeleton |
+| Route                 | Policy             | Purpose                                                                                                                                  |
+| --------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`        | public (liveness)  | Liveness                                                                                                                                 |
+| `GET /v1/hello`       | `system.hello`     | M0 walking skeleton                                                                                                                      |
+| `POST /v1/enrolments` | `enrolment.create` | REQ-001: a clinician creates a single-use invitation for their organisation; the link token is returned once and only its hash is stored |
 
 ## How every request is handled
 

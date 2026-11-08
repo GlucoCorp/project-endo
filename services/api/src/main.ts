@@ -13,6 +13,15 @@ import {
   isDeployedEnvironment,
   loadConfig,
 } from '@endo/config';
+import {
+  InMemoryInvitationStore,
+  InMemoryMembershipStore,
+  PostgresInvitationStore,
+  PostgresMembershipStore,
+  type ClinicalDatabase,
+  type InvitationStore,
+  type MembershipStore,
+} from '@endo/clinical-store';
 import { createDb, createPool } from '@endo/db';
 import { ServiceTokenVerifier } from '@endo/service-kit';
 import { buildApi } from './app.ts';
@@ -27,6 +36,8 @@ const Config = z.object({
   API_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(1200),
   // Durable audit store (spec 2.6, 11.1). Required in staging and production.
   API_AUDIT_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
+  // Clinical store as a member of endo_clinical_app (ADR-0017). Required in staging and production.
+  API_CLINICAL_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -62,19 +73,40 @@ async function main(): Promise<void> {
     auditStore = new InMemoryAuditStore();
   }
 
+  // Clinical store: same fail-closed rule as the audit store.
+  let invitations: InvitationStore;
+  let memberships: MembershipStore;
+  let closeClinical = (): Promise<void> => Promise.resolve();
+  if (config.API_CLINICAL_DATABASE_URL) {
+    const pool = createPool(config.API_CLINICAL_DATABASE_URL, {
+      applicationName: 'endo-api-clinical',
+    });
+    const db = createDb<ClinicalDatabase>(pool);
+    invitations = new PostgresInvitationStore(db);
+    memberships = new PostgresMembershipStore(db);
+    closeClinical = () => db.destroy();
+  } else if (isDeployedEnvironment(config.ENDO_ENV)) {
+    throw new Error('API_CLINICAL_DATABASE_URL is required in staging and production.');
+  } else {
+    invitations = new InMemoryInvitationStore();
+    memberships = new InMemoryMembershipStore();
+  }
+
   const app = await buildApi({
     logLevel: config.ENDO_LOG_LEVEL,
-    verifier: new ServiceTokenVerifier(config.API_SERVICE_TOKEN_PUBLIC_KEY_JWK, 'api', [
-      'bff-patient',
-    ]),
+    verifier: new ServiceTokenVerifier('api', {
+      'bff-patient': { publicJwk: config.API_SERVICE_TOKEN_PUBLIC_KEY_JWK, roles: ['patient'] },
+    }),
     audit: new AuditWriter(auditStore),
+    invitations,
+    memberships,
     now: () => new Date(),
     loadConsents: () => Promise.resolve(new Set()),
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    process.once(signal, () => void app.close().then(closeAudit));
+    process.once(signal, () => void app.close().then(closeAudit).then(closeClinical));
   }
   await app.listen({ host: config.API_HOST, port: config.API_PORT });
 }

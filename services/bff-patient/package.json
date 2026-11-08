@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@endo/api": "workspace:*",
-    "@endo/audit": "workspace:*"
+    "@endo/audit": "workspace:*",
+    "@endo/clinical-store": "workspace:*"
   }
 }

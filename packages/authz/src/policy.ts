@@ -17,7 +17,10 @@ export const CONSENT_PURPOSES = [
 ] as const;
 export type ConsentPurpose = (typeof CONSENT_PURPOSES)[number];
 
-/** One action per row of the spec 3.2 matrix, plus `system.hello` for the M0 walking skeleton. */
+/**
+ * One action per row of the spec 3.2 matrix, plus `enrolment.create` (REQ-001) and `system.hello`
+ * for the M0 walking skeleton.
+ */
 export const ACTIONS = [
   'episode.read_own', // View own episodes and check-ins
   'checkin.submit', // Submit check-in
@@ -30,6 +33,7 @@ export const ACTIONS = [
   'own_data.export', // Export own data
   'own_data.delete', // Delete own data
   'support.phi_access', // Access PHI for support
+  'enrolment.create', // REQ-001: clinician invites a patient to their own organisation
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -176,6 +180,11 @@ export function can(
 
     case 'support.phi_access':
       return supportAccess(subject, resource, context);
+
+    // REQ-001: no patient exists yet, so no consent applies; organisation membership does.
+    case 'enrolment.create':
+      if (subject.role !== 'clinician') return deny('authz.role_not_permitted');
+      return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 
     case 'system.hello':
       return subject.role === 'glucorp_platform_admin' ? deny('authz.role_not_permitted') : ALLOW;

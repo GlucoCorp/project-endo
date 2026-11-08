@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApi } from '@endo/api/app';
 import { AuditWriter, InMemoryAuditStore, verifyChain } from '@endo/audit';
+import { InMemoryInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
 import { uuidv7 } from '@endo/domain';
 import {
   ServiceTokenSigner,
@@ -26,8 +27,12 @@ describe('M0 walking skeleton: browser -> bff-patient -> api -> authz -> audit',
     const keys = await generateServiceKeyPair();
     api = await buildApi({
       logLevel: 'info',
-      verifier: new ServiceTokenVerifier(keys.publicJwk, 'api', ['bff-patient']),
+      verifier: new ServiceTokenVerifier('api', {
+        'bff-patient': { publicJwk: keys.publicJwk, roles: ['patient'] },
+      }),
       audit: new AuditWriter(auditStore),
+      invitations: new InMemoryInvitationStore(),
+      memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
       loadConsents: () => Promise.resolve(new Set()),
       logStream: { write: (l) => logs.push(l) },
@@ -110,8 +115,9 @@ describe('M0 walking skeleton: browser -> bff-patient -> api -> authz -> audit',
       url: '/v1/hello',
       headers: { cookie: `${SESSION_COOKIE}=${token}` },
     });
-    expect(res.statusCode).toBe(403);
-    expect(res.json()).toMatchObject({ type: 'https://errors.glucorp.health/authz.denied' });
+    // The API refuses a platform-admin claim from the patient BFF at authentication (RISK-S03).
+    expect(res.statusCode).toBe(401);
+    expect(res.json()).toMatchObject({ type: 'https://errors.glucorp.health/authn.rejected' });
   });
 
   it('writes no session tokens or URLs into any log line (RISK-I02)', async () => {

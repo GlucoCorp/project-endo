@@ -287,6 +287,9 @@ importers:
       '@endo/authz':
         specifier: workspace:*
         version: link:../../packages/authz
+      '@endo/clinical-store':
+        specifier: workspace:*
+        version: link:../../packages/clinical-store
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
@@ -339,6 +342,9 @@ importers:
       '@endo/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@endo/clinical-store':
+        specifier: workspace:*
+        version: link:../../packages/clinical-store
 
 packages:
 

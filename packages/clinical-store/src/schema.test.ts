@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CLINICAL_MIGRATIONS_DIR, CONSENT_PURPOSES } from './index.ts';
+import {
+  CLINICAL_MIGRATIONS_DIR,
+  CONSENT_PURPOSES,
+  InMemoryInvitationStore,
+  InMemoryMembershipStore,
+} from './index.ts';
 
 describe('spec 13.1 consent purposes', () => {
   it('match the database CHECK constraint exactly', () => {
@@ -12,5 +17,28 @@ describe('spec 13.1 consent purposes', () => {
     const check = /purpose\s+text\s+NOT NULL CHECK \(purpose IN \(([^)]*)\)\)/.exec(migration);
     const inDb = (check?.[1] ?? '').match(/'([a-z_]+)'/g)?.map((s) => s.slice(1, -1));
     expect(inDb).toEqual([...CONSENT_PURPOSES]);
+  });
+});
+
+describe('InMemoryInvitationStore (dev and tests)', () => {
+  it('keeps what it is given', async () => {
+    const store = new InMemoryInvitationStore(() => new Date(0));
+    const inv = {
+      id: '01900000-0000-7000-8000-000000000001',
+      orgId: '01900000-0000-7000-8000-00000000000a',
+      createdBy: '01900000-0000-7000-8000-0000000000c1',
+      tokenHash: 'a'.repeat(64),
+    };
+    const { expiresAt } = await store.create(inv);
+    expect(expiresAt.getTime()).toBe(7 * 24 * 3600 * 1000);
+    expect(store.invitations).toEqual([{ ...inv, expiresAt }]);
+    expect(new InMemoryInvitationStore().invitations).toEqual([]);
+  });
+
+  it('InMemoryMembershipStore finds only what was added', async () => {
+    const m = { clinicianId: 'c', role: 'clinician' as const, active: true };
+    const store = new InMemoryMembershipStore().add('org', 'ref', m);
+    expect(await store.find('org', 'ref')).toEqual(m);
+    expect(await store.find('org', 'other')).toBeNull();
   });
 });

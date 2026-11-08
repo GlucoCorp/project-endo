@@ -2,6 +2,18 @@ import { fileURLToPath } from 'node:url';
 export { CONSENT_PURPOSES } from './schema.ts';
 export type { ClinicalDatabase, ConsentPurpose, ConsentStatus } from './schema.ts';
 export { withOrg, findLiveInvitation } from './org-scope.ts';
+export {
+  InMemoryInvitationStore,
+  InMemoryMembershipStore,
+  PostgresInvitationStore,
+  PostgresMembershipStore,
+} from './invitations.ts';
+export type {
+  ClinicianMembership,
+  InvitationStore,
+  MembershipStore,
+  NewInvitation,
+} from './invitations.ts';
 
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */
 export const CLINICAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
