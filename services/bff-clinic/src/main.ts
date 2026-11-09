@@ -1,6 +1,7 @@
 import { createRemoteJWKSet } from 'jose';
 import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { WorkloadTokenSigner } from '@endo/service-kit';
 import { buildClinicBff } from './app.ts';
 import { SeenTokenIds, TransactionStore } from './oidc.ts';
@@ -71,6 +72,8 @@ async function main(): Promise<void> {
     }),
     transactions: new TransactionStore(),
     logoutTokens: new SeenTokenIds(),
+    // DevKeyManager refuses deployed environments; main already refuses them too (no durable store).
+    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/identity'),
     sessions: new InMemoryClinicSessions(config.ENDO_ENV),
     resolver: new HttpResolver({
       identityBaseUrl: config.BFF_CLINIC_IDENTITY_BASE_URL,

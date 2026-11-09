@@ -127,8 +127,62 @@ export async function exchangeCode(
   code: string,
   tx: OidcTransaction,
   fetchImpl: typeof fetch,
-): Promise<{ idToken: string }> {
-  const res = await fetchImpl(config.tokenEndpoint, {
+): Promise<{ idToken: string; refreshToken: string }> {
+  const res = await tokenRequest(config, fetchImpl, {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: config.redirectUri,
+    code_verifier: tx.verifier,
+  });
+  if (!res.ok) throw new OidcError();
+  const body = (await res.json()) as { id_token?: unknown; refresh_token?: unknown };
+  if (typeof body.id_token !== 'string' || typeof body.refresh_token !== 'string') {
+    throw new OidcError();
+  }
+  return { idToken: body.id_token, refreshToken: body.refresh_token };
+}
+
+/** Keycloak said the refresh token is no longer valid: the Keycloak session has ended. */
+export class RefreshRejectedError extends Error {
+  constructor() {
+    super('authn.keycloak_session_ended');
+    this.name = 'RefreshRejectedError';
+  }
+}
+
+/**
+ * Revalidates the Keycloak session (ADR-0019 section 6): a refresh-token grant. Keycloak rotates
+ * refresh tokens and refuses reuse, so the caller must store the returned one. A 400/401 answer
+ * means the Keycloak session ended (RefreshRejectedError); anything else is an outage (OidcError).
+ */
+export async function refreshSession(
+  config: OidcConfig,
+  refreshToken: string,
+  fetchImpl: typeof fetch,
+): Promise<{ refreshToken: string }> {
+  let res: Response;
+  try {
+    res = await tokenRequest(config, fetchImpl, {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    });
+  } catch {
+    throw new OidcError();
+  }
+  if (res.status === 400 || res.status === 401) throw new RefreshRejectedError();
+  if (!res.ok) throw new OidcError();
+  const body = (await res.json()) as { refresh_token?: unknown };
+  if (typeof body.refresh_token !== 'string') throw new OidcError();
+  return { refreshToken: body.refresh_token };
+}
+
+/** A token-endpoint call with client authentication (client_secret_basic). */
+function tokenRequest(
+  config: OidcConfig,
+  fetchImpl: typeof fetch,
+  params: Record<string, string>,
+): Promise<Response> {
+  return fetchImpl(config.tokenEndpoint, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -136,19 +190,10 @@ export async function exchangeCode(
         `${encodeURIComponent(config.clientId)}:${encodeURIComponent(config.clientSecret)}`,
       ).toString('base64')}`,
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: config.redirectUri,
-      code_verifier: tx.verifier,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
     redirect: 'error',
     signal: AbortSignal.timeout(5_000),
   });
-  if (!res.ok) throw new OidcError();
-  const body = (await res.json()) as { id_token?: unknown };
-  if (typeof body.id_token !== 'string') throw new OidcError();
-  return { idToken: body.id_token };
 }
 
 export interface VerifiedIdentity {
@@ -259,16 +304,18 @@ export async function validateLogoutToken(
       algorithms: ['RS256', 'ES256'],
       clockTolerance: CLOCK_SKEW_S,
       maxTokenAge: MAX_TOKEN_AGE_S,
-      requiredClaims: ['iss', 'aud', 'iat', 'jti', 'events'],
+      requiredClaims: ['iss', 'aud', 'iat', 'exp', 'jti', 'events'],
       currentDate: now(),
     });
     const events = payload['events'];
     const sid = typeof payload['sid'] === 'string' ? payload['sid'] : undefined;
     const sub = typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : undefined;
+    const isObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
     const ok =
-      typeof events === 'object' &&
-      events !== null &&
+      isObject(events) &&
       Object.prototype.hasOwnProperty.call(events, BACKCHANNEL_EVENT) &&
+      isObject(new Map(Object.entries(events)).get(BACKCHANNEL_EVENT)) &&
       payload['nonce'] === undefined &&
       (sid !== undefined || sub !== undefined) &&
       typeof payload.jti === 'string' &&

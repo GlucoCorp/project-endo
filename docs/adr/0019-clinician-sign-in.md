@@ -55,8 +55,14 @@ Clinicians sign in to the standalone clinic portal with a passkey through Keyclo
 
 - The session stores `iss`, `sub` and Keycloak `sid`. Keycloak back-channel logout is configured for `bff-clinician` (logout URL registered in the realm and checked by `check:realm`).
 - The BFF's logout receiver validates the logout token's signature, issuer, audience, `iat`, the logout event claim, and `sid` or `sub`. It refuses tokens containing a `nonce`, rejects replays by `jti`, and revokes every matching session. It is idempotent.
-- **Local sign-out** (CSRF-protected POST) revokes locally first, then redirects to Keycloak's RP-initiated logout with `id_token_hint` and the registered post-logout URI. Refresh tokens are not kept.
-- If a logout notification is missed, the session still ends at its 15-minute idle limit. When the session is used after more than 5 minutes, the BFF revalidates against Keycloak's userinfo with the stored access token. This needs an access token lifetime of at least 5 minutes, and is refused if Keycloak says the session ended.
+- **Local sign-out** (CSRF-protected POST) revokes locally first, then redirects to Keycloak's RP-initiated logout with `id_token_hint` and the registered post-logout URI.
+- **Revalidation with the refresh token** (decided by the product owner on 2026-11-09, replacing the first draft's userinfo check, which could not outlive Keycloak's 5-minute access tokens):
+  - at sign-in the BFF keeps Keycloak's refresh token in the session, sealed with its own data key (`EnvelopeSealer`), bound to the issuer and subject, never sent to the browser;
+  - when a session is used more than 4 minutes after Keycloak last confirmed it, the BFF makes a refresh-token grant and stores the rotated refresh token;
+  - only one refresh runs per session at a time, because Keycloak rotates refresh tokens and refuses reuse;
+  - if Keycloak refuses the refresh (its session has ended), the portal session is revoked at once;
+  - if Keycloak is unreachable, the request is refused (503) but the session is kept, so an outage does not sign everyone out.
+- So a missed logout notification ends the portal session within about 4 minutes of use, or at the 15-minute idle limit.
 
 ### 7. API calls
 

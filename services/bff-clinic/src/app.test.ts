@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
 import { buildClinicBff } from './app.ts';
+import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { SeenTokenIds, TransactionStore, type OidcConfig } from './oidc.ts';
 import type { Membership, Resolver } from './resolve.ts';
 import { InMemoryClinicSessions, OIDC_COOKIE, SESSION_COOKIE } from './sessions.ts';
@@ -33,11 +34,15 @@ async function setup(
     person?: string | null;
     claims?: (nonce: string) => Record<string, unknown>;
     tokenStatus?: number;
+    /** Status the stand-in Keycloak answers refresh grants with (default 200). */
+    refreshStatus?: () => number;
   } = {},
 ) {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256' };
   let lastExchange: URLSearchParams | null = null;
+  const refreshCalls: string[] = [];
+  let clock = NOW.getTime();
   let issueNonce = '';
   const sign = (claims: Record<string, unknown>) =>
     new SignJWT(claims)
@@ -50,6 +55,12 @@ async function setup(
       .sign(privateKey);
   const fetchStub = (async (_url: string, init?: RequestInit) => {
     lastExchange = new URLSearchParams(init?.body as string);
+    if (lastExchange.get('grant_type') === 'refresh_token') {
+      refreshCalls.push(lastExchange.get('refresh_token') ?? '');
+      const status = opts.refreshStatus?.() ?? 200;
+      if (status !== 200) return Response.json({ error: 'invalid_grant' }, { status });
+      return Response.json({ refresh_token: `rt-${String(refreshCalls.length)}` });
+    }
     if (opts.tokenStatus && opts.tokenStatus !== 200)
       return new Response('{}', { status: opts.tokenStatus });
     const claims = opts.claims?.(issueNonce) ?? {
@@ -58,7 +69,7 @@ async function setup(
       acr: '1',
       sid: 'kc-session-1',
     };
-    return Response.json({ id_token: await sign(claims) });
+    return Response.json({ id_token: await sign(claims), refresh_token: 'rt-0' });
   }) as typeof fetch;
   const resolver: Resolver = {
     person: (iss, sub) =>
@@ -74,17 +85,18 @@ async function setup(
         opts.membershipReads?.shift() ?? opts.memberships ?? [{ orgId: ORG_A, role: 'clinician' }],
       ),
   };
-  const sessions = new InMemoryClinicSessions('test', () => NOW.getTime());
+  const sessions = new InMemoryClinicSessions('test', () => clock);
   const app = await buildClinicBff({
     logLevel: 'info',
     oidc: CONFIG,
     keys: createLocalJWKSet({ keys: [jwk] }),
-    transactions: new TransactionStore(() => NOW.getTime()),
-    logoutTokens: new SeenTokenIds(() => NOW.getTime()),
+    transactions: new TransactionStore(() => clock),
+    logoutTokens: new SeenTokenIds(() => clock),
+    sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/identity'),
     sessions,
     resolver,
     fetch: fetchStub,
-    now: () => NOW,
+    now: () => new Date(clock),
     portalOrigin: 'https://clinic.test',
   });
 
@@ -113,15 +125,24 @@ async function setup(
     issueNonce = nonce;
   };
   /** A back-channel logout token signed by the stand-in Keycloak. */
-  const logoutToken = (claims: Record<string, unknown>, audience = 'bff-clinician') =>
-    new SignJWT(claims)
+  const logoutToken = (
+    claims: Record<string, unknown>,
+    audience = 'bff-clinician',
+    withExpiry = true,
+  ) => {
+    const jwt = new SignJWT(claims)
       .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: 'logout+jwt' })
       .setIssuer(ISSUER)
       .setAudience(audience)
       .setIssuedAt(nowS)
-      .setJti(String(Math.floor(nowS)) + JSON.stringify(claims).length.toString() + audience)
-      .sign(privateKey);
-  return { app, start, callback, exchanged, answer, sessions, logoutToken };
+      .setJti(String(Math.floor(nowS)) + JSON.stringify(claims).length.toString() + audience);
+    return (withExpiry ? jwt.setExpirationTime(nowS + 120) : jwt).sign(privateKey);
+  };
+  /** Moves the shared clock forward (sessions, transactions, revalidation). */
+  const advance = (ms: number) => {
+    clock += ms;
+  };
+  return { app, start, callback, exchanged, answer, sessions, logoutToken, advance, refreshCalls };
 }
 
 const sessionFrom = (setCookie: string | string[] | undefined) =>
@@ -548,5 +569,112 @@ describe('ADR-0019 section 6: sign-out and back-channel logout', () => {
     });
     expect(empty.statusCode).toBe(400);
     expect(await alive()).toBe(true);
+  });
+});
+
+describe('ADR-0019 section 6: revalidating the Keycloak session with the refresh token', () => {
+  async function signedIn(opts: { refreshStatus?: () => number } = {}) {
+    const ctx = await setup(opts);
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = sessionFrom(res.headers['set-cookie'])?.split(';')[0] ?? '';
+    const context = () => ctx.app.inject({ url: '/v1/context', headers: { cookie: session } });
+    return { ...ctx, session, context };
+  }
+
+  it('does not call Keycloak within the window, then refreshes and stores the rotated token', async () => {
+    const { context, advance, refreshCalls } = await signedIn();
+    expect((await context()).statusCode).toBe(200);
+    expect(refreshCalls).toEqual([]);
+    advance(5 * 60 * 1000);
+    expect((await context()).statusCode).toBe(200);
+    advance(5 * 60 * 1000);
+    expect((await context()).statusCode).toBe(200);
+    expect(refreshCalls).toEqual(['rt-0', 'rt-1']); // the rotated token is the one used next
+  });
+
+  it('ends the portal session when Keycloak says its session has ended (missed logout notice)', async () => {
+    const { context, advance } = await signedIn({ refreshStatus: () => 400 });
+    advance(5 * 60 * 1000);
+    expect((await context()).statusCode).toBe(401);
+    expect((await context()).statusCode).toBe(401); // revoked, not just refused once
+  });
+
+  it('refuses but keeps the session while Keycloak is unreachable', async () => {
+    let status = 503;
+    const { context, advance } = await signedIn({ refreshStatus: () => status });
+    advance(5 * 60 * 1000);
+    expect((await context()).statusCode).toBe(503);
+    status = 200;
+    expect((await context()).statusCode).toBe(200);
+  });
+
+  it('refreshes once for concurrent requests (rotation refuses reuse)', async () => {
+    const { context, advance, refreshCalls } = await signedIn();
+    advance(5 * 60 * 1000);
+    const results = await Promise.all([context(), context(), context()]);
+    expect(results.map((r) => r.statusCode)).toEqual([200, 200, 200]);
+    expect(refreshCalls).toEqual(['rt-0']);
+  });
+
+  it('never sends the refresh token to the browser', async () => {
+    const { app, session } = await signedIn();
+    const me = await app.inject({ url: '/v1/session', headers: { cookie: session } });
+    expect(me.body).not.toContain('rt-0');
+  });
+});
+
+describe('Codex review, slice 6: logout token strictness', () => {
+  const EVENT_KEY = 'http://schemas.openid.net/event/backchannel-logout';
+  async function signedIn() {
+    const ctx = await setup();
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = sessionFrom(res.headers['set-cookie'])?.split(';')[0] ?? '';
+    const alive = async () =>
+      (await ctx.app.inject({ url: '/v1/context', headers: { cookie: session } })).statusCode ===
+      200;
+    const post = (body: string) =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/auth/backchannel-logout',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: body,
+      });
+    return { ...ctx, alive, post };
+  }
+
+  it.each([
+    ['a null event value', { [EVENT_KEY]: null }],
+    ['a string event value', { [EVENT_KEY]: 'x' }],
+    ['an array event value', { [EVENT_KEY]: [] }],
+  ])('refuses %s', async (_n, events) => {
+    const { post, logoutToken, alive } = await signedIn();
+    const token = await logoutToken({ events, sid: 'kc-session-1' });
+    expect((await post(new URLSearchParams({ logout_token: token }).toString())).statusCode).toBe(
+      400,
+    );
+    expect(await alive()).toBe(true);
+  });
+
+  it('refuses a logout token without an expiry (exp is required)', async () => {
+    const { post, logoutToken, alive } = await signedIn();
+    const token = await logoutToken(
+      { events: { [EVENT_KEY]: {} }, sid: 'kc-session-1' },
+      'bff-clinician',
+      false,
+    );
+    expect((await post(new URLSearchParams({ logout_token: token }).toString())).statusCode).toBe(
+      400,
+    );
+    expect(await alive()).toBe(true);
+  });
+
+  it('ignores unknown form parameters instead of refusing the logout', async () => {
+    const { post, logoutToken, alive } = await signedIn();
+    const token = await logoutToken({ events: { [EVENT_KEY]: {} }, sid: 'kc-session-1' });
+    const res = await post(new URLSearchParams({ logout_token: token, extension: 'x' }).toString());
+    expect(res.statusCode).toBe(200);
+    expect(await alive()).toBe(false);
   });
 });
