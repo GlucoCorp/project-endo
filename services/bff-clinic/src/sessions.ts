@@ -79,17 +79,28 @@ export class InMemoryClinicSessions {
    * session id and CSRF token: the old id stops working at once (ADR-0019 section 5). The absolute
    * deadline is kept. Returns the new token, or null if the old session is gone.
    */
-  activate(token: string, membership: Membership): Promise<string | null> {
+  activate(
+    token: string,
+    membership: Membership,
+    opts: { touch: boolean } = { touch: true },
+  ): Promise<string | null> {
     const s = this.#sessions.get(token);
     if (!s) return Promise.resolve(null);
+    // Expiry is checked again here, atomically with rotation: a slow membership lookup must not
+    // carry an expired session over its deadline (ADR-0019 section 5).
+    const t = this.#now();
     this.#sessions.delete(token);
+    if (t - s.lastSeenAt > CLINIC_IDLE_MS || t - s.createdAt > CLINIC_ABSOLUTE_MS) {
+      return Promise.resolve(null);
+    }
     const next = random();
     this.#sessions.set(next, {
       ...s,
       state: 'active',
       active: membership,
       csrfToken: random(),
-      lastSeenAt: this.#now(),
+      // A background request never extends the idle time, not even by rotating.
+      lastSeenAt: opts.touch ? t : s.lastSeenAt,
     });
     return Promise.resolve(next);
   }

@@ -403,6 +403,28 @@ describe('ADR-0019 section 5 and 8: choosing an organisation, CSRF, rotation', (
     expect(res.statusCode).toBe(403);
   });
 
+  it('can choose any listed organisation, however many (no arbitrary index cap)', async () => {
+    const many = Array.from({ length: 101 }, (_v, i) => ({
+      orgId: `01900000-0000-7000-8000-${i.toString(16).padStart(12, '0')}`,
+      role: 'clinician' as const,
+    }));
+    const ctx = await setup({ memberships: many });
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = cookieOf(res.headers['set-cookie']);
+    const csrf = (await ctx.app.inject({ url: '/v1/session', headers: { cookie: session } })).json<{
+      csrf_token: string;
+    }>().csrf_token;
+    const chosen = await ctx.app.inject({
+      method: 'POST',
+      url: '/v1/session/organisation',
+      headers: { cookie: session, 'x-csrf-token': csrf, origin: ORIGIN },
+      payload: { index: 100 },
+    });
+    expect(chosen.statusCode).toBe(200);
+    expect(chosen.json()).toMatchObject({ active: { org_id: many[100]?.orgId } });
+  });
+
   it('accepts only an index into the server-side list', async () => {
     const { app, session, csrf, choose } = await pending();
     expect((await choose(5)).statusCode).toBe(400);

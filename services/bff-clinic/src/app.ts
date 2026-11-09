@@ -289,7 +289,7 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
           type: 'object',
           additionalProperties: false,
           required: ['index'],
-          properties: { index: { type: 'integer', minimum: 0, maximum: 99 } },
+          properties: { index: { type: 'integer', minimum: 0 } },
         },
       },
     },
@@ -309,9 +309,10 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
           'That organisation is not available.',
         );
       }
-      const next = await deps.sessions.activate(oldToken, current);
+      const touch = request.headers['x-endo-background'] !== '1';
+      const next = await deps.sessions.activate(oldToken, current, { touch });
       if (!next) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
-      const rotated = await deps.sessions.resolve(next);
+      const rotated = await deps.sessions.resolve(next, { touch });
       if (!rotated) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
       return reply.header('set-cookie', sessionCookie(next)).send(view(rotated));
     },
