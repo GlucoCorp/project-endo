@@ -334,6 +334,27 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
+  services/bff-clinic:
+    dependencies:
+      '@endo/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@endo/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      '@fastify/rate-limit':
+        specifier: 11.2.1
+        version: 11.2.1
+      fastify:
+        specifier: 5.12.7
+        version: 5.12.7
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
   services/bff-patient:
     dependencies:
       '@endo/authz':
