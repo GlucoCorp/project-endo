@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   CLINICAL_MIGRATIONS_DIR,
   CONSENT_PURPOSES,
+  InMemoryConsentStore,
   InMemoryIdempotentInvitationStore,
   InMemoryInvitationStore,
   InMemoryMembershipStore,
@@ -102,5 +103,31 @@ describe('InMemoryIdempotentInvitationStore concurrency and expiry', () => {
       store.createOnce(req('f', () => Promise.reject(new Error('kms')))),
     ).rejects.toThrow('kms');
     expect((await store.createOnce(req('f'))).kind).toBe('created');
+  });
+});
+
+describe('InMemoryConsentStore (spec 13.1)', () => {
+  const decision = (status: 'granted' | 'revoked', version = 1, id = 'd1') => ({
+    id,
+    orgId: 'o',
+    patientId: 'p',
+    purpose: 'share_with_care_team' as const,
+    status,
+    version,
+    auditEvent: { id: `e-${id}` },
+  });
+
+  it('records a decision, ignores an identical repeat, and applies a withdrawal at once', async () => {
+    const store = new InMemoryConsentStore(() => new Date(0));
+    expect((await store.record(decision('granted'))).changed).toBe(true);
+    expect((await store.record(decision('granted', 1, 'd2'))).changed).toBe(false);
+    const revoked = await store.record(decision('revoked', 1, 'd3'));
+    expect(revoked).toMatchObject({ changed: true, state: { status: 'revoked' } });
+    expect(await store.current('o', 'p')).toEqual([
+      { purpose: 'share_with_care_team', status: 'revoked', version: 1, decidedAt: new Date(0) },
+    ]);
+    expect(store.outbox).toEqual([{ id: 'e-d1' }, { id: 'e-d3' }]);
+    expect(await store.current('o', 'other')).toEqual([]);
+    expect(new InMemoryConsentStore().decisions).toEqual([]);
   });
 });

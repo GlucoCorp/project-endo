@@ -8,6 +8,7 @@ import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
 import {
   CLINICAL_MIGRATIONS_DIR,
   PostgresInvitationStore,
+  PostgresConsentStore,
   PostgresIdempotentInvitationStore,
   PostgresMembershipStore,
   relayAuditOutbox,
@@ -657,6 +658,37 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
         last_error: 'audit.publish_failed',
         published_at: null,
       });
+    });
+  });
+
+  describe('spec 13.1 PostgresConsentStore as the API role', () => {
+    const decision = (
+      status: 'granted' | 'revoked',
+      purpose = 'org_aggregate_reporting' as const,
+    ) => ({
+      id: randomUUID(),
+      orgId: ORG_A,
+      patientId: PAT_A,
+      purpose,
+      status,
+      version: 1,
+      auditEvent: { id: randomUUID(), action: 'consent.updated' },
+    });
+
+    it('records with its audit event, skips an identical repeat, and a withdrawal wins at once', async () => {
+      const store = new PostgresConsentStore(apiDb);
+      const first = decision('granted');
+      expect((await store.record(first)).changed).toBe(true);
+      expect((await store.record(decision('granted'))).changed).toBe(false);
+      expect((await store.record(decision('revoked'))).state.status).toBe('revoked');
+      const current = await store.current(ORG_A, PAT_A);
+      expect(current.find((c) => c.purpose === 'org_aggregate_reporting')?.status).toBe('revoked');
+      const queued = await admin.query(`SELECT 1 FROM audit_outbox WHERE id = $1`, [
+        first.auditEvent.id,
+      ]);
+      expect(queued.rowCount).toBe(1);
+      // Another organisation sees nothing of hers.
+      expect(await store.current(ORG_B, PAT_A)).toEqual([]);
     });
   });
 

@@ -15,12 +15,15 @@ import {
   loadConfig,
 } from '@endo/config';
 import {
+  InMemoryConsentStore,
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
+  PostgresConsentStore,
   PostgresIdempotentInvitationStore,
   PostgresMembershipStore,
   relayAuditOutbox,
   type ClinicalDatabase,
+  type ConsentStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -97,6 +100,7 @@ async function main(): Promise<void> {
   // Clinical store: same fail-closed rule as the audit store.
   let invitations: IdempotentInvitationStore;
   let memberships: MembershipStore;
+  let consents: ConsentStore;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
   // Queued events carry their outbox id; the audit store assigns its own.
@@ -113,6 +117,7 @@ async function main(): Promise<void> {
     const db = createDb<ClinicalDatabase>(pool);
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
+    consents = new PostgresConsentStore(db);
     if (!config.API_AUDIT_RELAY_DATABASE_URL) {
       throw new Error('API_AUDIT_RELAY_DATABASE_URL is required with API_CLINICAL_DATABASE_URL.');
     }
@@ -136,6 +141,7 @@ async function main(): Promise<void> {
     const store = new InMemoryIdempotentInvitationStore();
     invitations = store;
     memberships = new InMemoryMembershipStore();
+    consents = new InMemoryConsentStore();
     // Serialised; an event leaves the queue only once it is published.
     let running: Promise<void> = Promise.resolve();
     relayOutbox = () => {
@@ -181,7 +187,7 @@ async function main(): Promise<void> {
     sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/clinical'),
     relayOutbox,
     now: () => new Date(),
-    loadConsents: () => Promise.resolve(new Set()),
+    consents,
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 

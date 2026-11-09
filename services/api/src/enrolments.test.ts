@@ -3,9 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore } from '@endo/audit';
 import { randomUUID } from 'node:crypto';
 import {
+  type ClinicianMembership,
+  InMemoryConsentStore,
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
-  type ClinicianMembership,
 } from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
@@ -52,7 +53,7 @@ async function setup(
     sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
     relayOutbox: () => Promise.resolve(),
     now: () => NOW,
-    loadConsents: () => Promise.resolve(new Set()),
+    consents: new InMemoryConsentStore(),
     logStream: { write: (l) => logs.push(l) },
   });
   const clinicBff = new ServiceTokenSigner(clinicKeys.privateJwk, 'bff-clinic');

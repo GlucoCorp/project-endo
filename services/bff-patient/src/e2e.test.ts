@@ -2,7 +2,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { buildApi } from '@endo/api/app';
 import { AuditWriter, InMemoryAuditStore, verifyChain } from '@endo/audit';
-import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import {
+  InMemoryConsentStore,
+  InMemoryIdempotentInvitationStore,
+  InMemoryMembershipStore,
+} from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { uuidv7 } from '@endo/domain';
 import {
@@ -36,7 +40,7 @@ describe('M0 walking skeleton: browser -> bff-patient -> api -> authz -> audit',
       sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
       memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
-      loadConsents: () => Promise.resolve(new Set()),
+      consents: new InMemoryConsentStore(),
       logStream: { write: (l) => logs.push(l) },
     });
     await api.listen({ host: '127.0.0.1', port: 0 });

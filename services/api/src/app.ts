@@ -10,7 +10,11 @@ import {
   type Subject,
 } from '@endo/authz';
 import type { AuditWriter } from '@endo/audit';
-import type { IdempotentInvitationStore, MembershipStore } from '@endo/clinical-store';
+import type {
+  ConsentStore,
+  IdempotentInvitationStore,
+  MembershipStore,
+} from '@endo/clinical-store';
 import type { EnvelopeSealer } from '@endo/crypto';
 import {
   API_SECURITY_HEADERS,
@@ -25,6 +29,7 @@ import {
   type WorkloadCaller,
   type WorkloadTokenVerifier,
 } from '@endo/service-kit';
+import { registerConsentRoutes } from './routes/consents.ts';
 import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerMembershipRoutes } from './routes/memberships.ts';
@@ -102,8 +107,8 @@ export interface ApiDeps {
   /** Current clinician membership; staff whose membership is missing, inactive or changed are denied. */
   readonly memberships: MembershipStore;
   readonly now: () => Date;
-  /** Loads the current consent state for a patient. M1 replaces the default with the consent service. */
-  readonly loadConsents: (patientId: string | null) => Promise<ReadonlySet<ConsentPurpose>>;
+  /** Her consent decisions (spec 13.1). Authorisation reads the current state on every request. */
+  readonly consents: ConsentStore;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
@@ -112,12 +117,24 @@ export interface ApiDeps {
   readonly rateLimitPerMinute?: number;
 }
 
+/** Purposes she has currently granted; none when the resource names no patient. */
+async function grantedPurposes(
+  consents: ConsentStore,
+  orgId: string | null,
+  patientId: string | null,
+): Promise<ReadonlySet<ConsentPurpose>> {
+  if (!orgId || !patientId) return new Set();
+  const current = await consents.current(orgId, patientId);
+  return new Set(current.filter((c) => c.status === 'granted').map((c) => c.purpose));
+}
+
 /** Core domain API (spec 8.2). Internal only: reachable from BFFs and jobs, never from browsers. */
 export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
   registerMembershipRoutes(app, { memberships: deps.memberships, audit: deps.audit });
+  registerConsentRoutes(app, { consents: deps.consents });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,
@@ -241,7 +258,8 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     const resource = policy.resource(request, subject);
     const context: AuthzContext = {
       now: deps.now(),
-      consents: await deps.loadConsents(resource.patientId),
+      // Current decisions, read on every request, so a withdrawal takes effect immediately.
+      consents: await grantedPurposes(deps.consents, resource.orgId, resource.patientId),
     };
     const decision = can(subject, policy.action, resource, context);
 
