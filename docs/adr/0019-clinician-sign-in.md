@@ -80,6 +80,10 @@ Clinicians sign in to the standalone clinic portal with a passkey through Keyclo
   - a real-Keycloak integration gate covering a patient SSO session not reaching the clinician flow, back-channel logout, and the claims;
   - negative tests for every refusal in sections 1–8.
 
+## Implementation notes
+
+- Slice 3 (realm): the `endo clinician passkey` flow has a fixed id so the client override can reference it. Verified against Keycloak 26.8.1 on 2026-11-09: the import keeps the id and binds `bff-clinician`'s browser flow to it, and the back-channel logout URL is set. Keycloak documents that a login completed by authenticating (not by an SSO cookie) yields `acr` "1"; the BFF will require exactly that plus `auth_time` freshness. Not yet observed here: that needs a real passkey sign-in, which the slice 7 Keycloak integration test covers.
+
 ## Consequences
 
 - New internal routes: identity `subjects/resolve` and API `memberships/resolve`, each with a single workload scope held only by bff-clinic, plus a dedicated cross-organisation membership lookup function in the clinical store.
