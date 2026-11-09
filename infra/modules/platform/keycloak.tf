@@ -58,6 +58,8 @@ resource "kubernetes_secret_v1" "keycloak" {
     ENDO_BFF_CLINICIAN_REDIRECT_URI    = "${var.bff_base_urls.clinician}/auth/callback"
     ENDO_BFF_PATIENT_POST_LOGOUT_URI   = "${var.bff_base_urls.patient}/"
     ENDO_BFF_CLINICIAN_POST_LOGOUT_URI = "${var.bff_base_urls.clinician}/"
+    # ADR-0019: Keycloak notifies the clinic BFF when a clinician session ends.
+    ENDO_BFF_CLINICIAN_BACKCHANNEL_LOGOUT_URI = "${var.bff_base_urls.clinician}/auth/backchannel-logout"
   }
 }
 

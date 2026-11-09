@@ -151,6 +151,23 @@
           "userSetupAllowed": false
         }
       ]
+    },
+    {
+      "id": "5f0d1c2e-7a3b-4c4d-9e5f-6a7b8c9d0e1f",
+      "alias": "endo clinician passkey",
+      "description": "ADR-0019: clinicians always sign in with a fresh passkey and user verification. No SSO cookie step, so a session from any other flow (for example a patient email code) can never sign a clinician in.",
+      "providerId": "basic-flow",
+      "topLevel": true,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "webauthn-authenticator-passwordless",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        }
+      ]
     }
   ],
   "requiredActions": [
@@ -244,10 +261,15 @@
         "oidc.ciba.grant.enabled": "false",
         "backchannel.logout.session.required": "true",
         "client.session.idle.timeout": "900",
-        "client.session.max.lifespan": "43200"
+        "client.session.max.lifespan": "43200",
+        "backchannel.logout.url": "${ENDO_BFF_CLINICIAN_BACKCHANNEL_LOGOUT_URI}",
+        "backchannel.logout.revoke.offline.tokens": "false"
       },
       "defaultClientScopes": ["basic", "roles", "acr"],
-      "optionalClientScopes": []
+      "optionalClientScopes": [],
+      "authenticationFlowBindingOverrides": {
+        "browser": "5f0d1c2e-7a3b-4c4d-9e5f-6a7b8c9d0e1f"
+      }
     },
     {
       "clientId": "account",

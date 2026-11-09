@@ -146,10 +146,30 @@ function checkRealm(realm) {
     const c = (realm.clients ?? []).find((x) => x.clientId === builtin);
     expect(c?.enabled === false, `built-in client ${builtin} must be disabled`);
   }
+  // ADR-0019 section 3: the one allowed override binds bff-clinician's browser flow to a flow that
+  // demands a fresh passkey with no SSO-cookie step, so no other session can sign a clinician in.
+  const clinicianOverride = new Map(
+    Object.entries(
+      (realm.clients ?? []).find((x) => x.clientId === 'bff-clinician')
+        ?.authenticationFlowBindingOverrides ?? {},
+    ),
+  );
+  const clinicianFlow = (realm.authenticationFlows ?? []).find(
+    (f) => f.id !== undefined && f.id === clinicianOverride.get('browser'),
+  );
+  const clinicianSteps = clinicianFlow?.authenticationExecutions ?? [];
+  expect(
+    clinicianOverride.size === 1 &&
+      clinicianSteps.length === 1 &&
+      clinicianSteps[0].authenticator === 'webauthn-authenticator-passwordless' &&
+      clinicianSteps[0].requirement === 'REQUIRED',
+    'bff-clinician must use a browser flow of exactly one fresh passkey step (no SSO cookie)',
+  );
   for (const c of realm.clients ?? []) {
     const id = c.clientId;
     expect(
-      c.authenticationFlowBindingOverrides === undefined ||
+      id === 'bff-clinician' ||
+        c.authenticationFlowBindingOverrides === undefined ||
         Object.keys(c.authenticationFlowBindingOverrides).length === 0,
       `${id}: per-client flow overrides are not allowed`,
     );
@@ -183,6 +203,14 @@ function checkRealm(realm) {
     expect(c.directAccessGrantsEnabled === false, `${id}: password grant forbidden`);
     expect(c.serviceAccountsEnabled === false, `${id}: service account not expected`);
     const attributes = new Map(Object.entries(c.attributes ?? {}));
+    if (id === 'bff-clinician') {
+      // ADR-0019 section 6: Keycloak tells the BFF when a clinician session ends.
+      expect(
+        /^\$\{[A-Z0-9_]+\}$/.test(String(attributes.get('backchannel.logout.url'))) &&
+          attributes.get('backchannel.logout.session.required') === 'true',
+        `${id}: back-channel logout URL (environment placeholder) and session id are required`,
+      );
+    }
     for (const attr of DISABLED_GRANT_ATTRIBUTES)
       expect(attributes.get(attr) === 'false', `${id}: ${attr} must be "false"`);
     expect(c.attributes?.['pkce.code.challenge.method'] === 'S256', `${id}: PKCE S256 required`);
@@ -229,6 +257,24 @@ const MUTATIONS = [
   [
     'client flow override',
     (r) => (bff(r, 'bff-patient').authenticationFlowBindingOverrides = { browser: 'x' }),
+  ],
+  [
+    'clinician override removed',
+    (r) => delete bff(r, 'bff-clinician').authenticationFlowBindingOverrides,
+  ],
+  [
+    'clinician flow reuses the SSO cookie',
+    (r) =>
+      r.authenticationFlows
+        .find((f) => f.alias === 'endo clinician passkey')
+        .authenticationExecutions.unshift({
+          authenticator: 'auth-cookie',
+          requirement: 'ALTERNATIVE',
+        }),
+  ],
+  [
+    'clinician back-channel logout removed',
+    (r) => delete bff(r, 'bff-clinician').attributes['backchannel.logout.url'],
   ],
   ['required actions omitted', (r) => delete r.requiredActions],
   [
