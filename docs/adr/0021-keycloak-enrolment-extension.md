@@ -1,6 +1,6 @@
 # ADR-0021: Patient enrolment and the Keycloak enrolment extension (first passkey)
 
-- Status: accepted design (revised after an independent Codex design review: 17 findings, 4 critical); implementation in slices below
+- Status: accepted design (revised twice after independent Codex design reviews); implementation in slices below
 - Date: 2026-11-09
 - Requirements/Risks: REQ-001; spec 2, 2.6, 8.4, 10.1, 11.4, 12, 13.1; ADR-0015, ADR-0017, ADR-0018, ADR-0019; RISK-S04, RISK-S05
 - Product owner decisions (2026-11-09): points 2 and 3
@@ -26,12 +26,12 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 
 - The patient's phone shows a 6-digit code from a cryptographically secure generator.
 - The clinician selects the invitation in the portal and types the code. The portal never lists pending codes.
-- The code is a comparison aid, never a credential on its own. It is verified with a keyed HMAC (never a plain hash) within the selected invitation only. Collisions across invitations do not matter.
+- The code is a comparison aid, never a credential on its own. It is verified with a keyed HMAC (never a plain hash) within the selected invitation only. Codes of the (at most 3) pending transactions of one invitation are distinct.
 - Limits:
-  - 5 wrong entries per invitation cancel its pending transactions;
-  - at most 3 pending transactions per invitation;
+  - wrong entries are counted per **invitation**, shared by all its transactions and all clinicians; the fifth cancels its pending transactions and locks the invitation for 15 minutes (audited);
   - rate limits per clinician, per organisation and per source;
   - each transaction lives 15 minutes.
+- A code is never shown again after the transaction leaves `awaiting-confirmation`. "Start" repeated from the same browser binding returns the same transaction (idempotent), not a new code.
 
 ### 4. Link, landing and the browser binding
 
@@ -51,22 +51,39 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - The authorisation request carries only an opaque handoff reference. No invitation token, code or identity data goes into Keycloak's URL.
 - The extension never trusts `client_request_param_*`. It redeems the reference with the coordinator, which compares the real request's client, redirect URI, PKCE challenge, state and nonce with the stored binding. The PKCE verifier never leaves the BFF.
 
-### 6. Atomic, idempotent redemption bound to one Keycloak authentication session
+### 6. The invitation reservation: one serialisation point
 
-- `confirmed → redeemed` happens atomically in the coordinator. It records Keycloak's full authentication-session identity: root session id, client UUID and tab id.
-- An identical retry gets the same answer; any other session or a changed request is refused.
-- Confirmation itself reserves the invitation for that one transaction, atomically, and cancels its competitors. A revocation or expiry is re-checked at redemption and at completion.
-- Restarting Keycloak authentication never revives a used handoff.
+- The authoritative record is the **invitation row in the clinical store** (API). Migration 0005 adds `reserved_by` (transaction id) and `reserved_at`.
+- Every invitation mutation is one conditional update on that row:
+  - **reserve:** live, unreserved, or already reserved by the same transaction;
+  - **revoke:** sets `revoked_at` whether or not it is reserved;
+  - **claim:** live, `reserved_by` equal to the transaction, not revoked.
+- **Races:**
+  - confirmation before revocation: the reservation stands, but a later revocation still wins, because the claim requires "not revoked";
+  - revocation before claim: the claim fails, and the coordinator cancels the transaction and cleans up;
+  - claim before revocation: the revocation is refused, because the invitation is final.
 
-### 7. Keycloak flow: a mandatory enrolment branch, no SSO reuse
+  All three operations are idempotent per transaction, and the API stores each result durably. An unknown outcome is resolved by asking the API for the invitation's state.
 
-- The patient browser flow gets a conditional branch that runs **before** the SSO-cookie step whenever the request carries a handoff reference for `bff-patient`.
-- In that branch the extension:
-  - redeems the handoff;
-  - ignores and never reuses any existing authenticated user (a shared phone with an existing session cannot capture the new passkey);
-  - creates, or on a bound retry resumes, exactly one provisional user with an opaque username.
-- Ordinary patient sign-in stays a separate branch. ADR-0019's clinician flow is untouched.
-- `check:realm` asserts this structure.
+- New starts on a reserved invitation are refused. Starts are served only while the invitation is live and unreserved.
+- Redemption into Keycloak is `confirmed → redeemed`, atomic in the coordinator. It records Keycloak's full authentication-session identity (root session id, client UUID, tab id). An identical retry gets the same answer; another session or a changed request is refused. A Keycloak restart never revives a used handoff.
+
+### 7. Keycloak flow: an explicit tree, enrolment first, no SSO reuse
+
+The patient browser flow is exactly this tree; `check:realm` asserts it:
+
+```
+endo patient browser (top level)
+  1. endo-enrolment           ALTERNATIVE   (extension authenticator)
+  2. auth-cookie              ALTERNATIVE
+  3. webauthn-passwordless    ALTERNATIVE
+```
+
+- With no handoff reference, `endo-enrolment` answers `attempted()`, so Keycloak goes on to the ordinary alternatives. There is no `CONDITIONAL` execution: Keycloak 26.8 clears sibling alternatives before evaluating a condition.
+- With a reference, it either succeeds or fails the whole flow. An invalid, expired or mismatched reference fails closed and never falls through to the SSO cookie.
+- On success it ignores any existing authenticated user. It creates, or on a bound retry resumes, exactly one provisional user with an opaque username and the attribute `endo_enrolment=<transaction id>`.
+- A **resume** reference (section 11) authenticates only that same provisional user, with the passkey she has just registered.
+- Ordinary login (alternatives 2 and 3) refuses users who carry `endo_enrolment`, enforced by the extension's user-storage guard. Until activation (section 10), a provisional user cannot sign in any other way.
 
 ### 8. Guarded registration
 
@@ -81,58 +98,67 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - `VERIFY_PROFILE` and email-verification required actions are disabled.
 - The provisional user is enabled only for the enrolment flow. The extension assigns the `patient` realm role explicitly at completion. No dummy email addresses are used.
 
-### 10. Completion is a recoverable state machine, not one transaction
+### 10. Lifecycle: nothing permanent before consent
 
-- Coordinator states:
+The coordinator's transition table (identity database), with each state's deadline:
 
-  | State                   | Meaning                                                      |
-  | ----------------------- | ------------------------------------------------------------ |
-  | `awaiting-confirmation` | The patient pressed Start; waiting for the clinician         |
-  | `confirmed`             | The clinician confirmed; the invitation is reserved          |
-  | `redeemed`              | Keycloak redeemed the handoff for one authentication session |
-  | `credential-committed`  | The passkey is durably stored in Keycloak                    |
-  | `provisioning`          | Identity and clinical records are being created              |
-  | `completed`             | Everything is in place                                       |
+| From                                       | Event                                                                             | To                      | Side effects (idempotent, keyed by the transaction)            |
+| ------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------- |
+| none                                       | patient presses Start (browser secret)                                            | `awaiting-confirmation` | code generated; invitation must be live and unreserved; 15 min |
+| `awaiting-confirmation`                    | clinician confirms (correct code, attestation)                                    | `confirmed`             | API `reserve` (section 6); siblings cancelled; 15 min          |
+| `confirmed`                                | Keycloak redeems the handoff                                                      | `redeemed`              | session tuple recorded; provisional user created; 15 min       |
+| `redeemed`                                 | extension post-commit hook, or reconciliation finds the credential                | `credential-committed`  | none; 30 min to consent                                        |
+| `credential-committed`                     | BFF callback with the expected subject                                            | `consent-pending`       | consent-pending BFF session (section 12)                       |
+| `consent-pending`                          | she records `self_tracking: granted` (all four decisions held in the transaction) | `activating`            | none yet                                                       |
+| `activating`                               | coordinator runs the activation steps in order                                    | `active`                | see below                                                      |
+| any non-terminal state before `activating` | deadline passes, patient cancels, clinician revokes, `self_tracking` declined     | `cancelling`            | access refused at once                                         |
+| `cancelling`                               | cleanup completes                                                                 | `cancelled`             | see section 11                                                 |
 
-  The terminal failure states are `cancelled`, `expired` and `failed`.
+- **Activation steps, each idempotent and durably recorded before the next:**
+  1. API `claim` (which creates the patient record first, then claims the reserved invitation, in one clinical transaction);
+  2. identity: create the person with the issuer and subject, plus the patient link;
+  3. API: write all four consent decisions with their versions and times, and their audit events;
+  4. Keycloak finalisation through the extension's narrow endpoint: assign `patient`, remove the `endo_enrolment` quarantine, durably acknowledged.
 
-- **Credential commitment** is reported by the extension from a Keycloak post-commit hook. If that report is lost, a reconciliation job asks Keycloak whether the provisional user has the credential. Provisioning never starts on an unsuccessful registration.
-- **Stable ids are reserved before any remote call:** the person id and patient-record id are fixed in the transaction.
-- **Every remote step is idempotent, keyed by the transaction:**
-  - the identity service creates the person with the issuer and subject, and the patient link, through a new workload-authorised operation;
-  - the API creates the patient record, **then** claims the invitation (the schema requires that order), and writes completion and its audit event in one clinical transaction.
-- **Access is gated:** an account counts only when the coordinator says `completed`. The BFF refuses any other subject, and ordinary login refuses provisional users.
+  A failed step is retried with backoff. The transaction stays `activating`, and access stays consent-pending, until all four succeed.
 
-### 11. Provisional users: quarantine and cleanup
+- **No clinical or identity records exist before `activating`.** Consent decisions are held only in the transaction until then.
 
-- Each transaction has exactly one provisional Keycloak user, correlated by an opaque attribute.
-- If a transaction ends `cancelled`, `expired` or `failed`, a cleanup job removes the provisional user, its credentials and sessions, and any partial records. It removes them idempotently and fenced against a concurrent completion. It never removes an established user because of a timeout.
+### 11. Cancellation and cleanup (per resource)
+
+- **Before `activating`:** cleanup deletes the provisional Keycloak user (and its credential and sessions) through the extension endpoint, releases or revokes the invitation, and wipes the code verifier and browser secret.
+  - The invitation is revoked when she declined or the clinician revoked it.
+  - It is released (reservation cleared) when she cancelled or the deadline passed, so the clinic can use it again.
+- **Once `activating` has claimed the invitation,** cancellation is no longer possible. Activation only moves forward. A woman who changes her mind uses account deletion (REQ-009), which has its own retention rules.
+- Cleanup is fenced: it runs only in `cancelling`, and activation steps check the state before writing. A remote write that finishes after cancellation is undone by the same cleanup, which is idempotent.
+- **Lost callback:** if the OIDC callback never reaches the BFF after `credential-committed`, the patient's page (browser secret still valid, 30 min) offers "Continue". That starts a **resume** handoff bound to the same transaction (section 7), and she authenticates with her new passkey. After the deadline, cleanup runs.
 - Stalled transactions raise an alert.
 
 ### 12. Consent-pending session
 
-- After completion the BFF creates a **consent-pending** session. It allows only reading and recording consent, signing out and cancelling.
-- Recording `self_tracking` promotes the session to an ordinary patient session and rotates its id.
-- Declining it, or leaving it undecided until expiry, cancels the enrolment: access is refused at once and cleanup removes the account (section 11).
-- The four purposes are recorded independently with version and time (spec 13.1).
-- Until she grants sharing, the clinician sees only "invitation accepted, sharing declined" (REQ-001).
+- The BFF accepts the callback only if the ID token passes ADR-0019-style validation (signature, issuer, audience, nonce, `acr`, freshness) **and** its subject equals the transaction's provisional subject.
+- It then creates a **consent-pending** session that allows only: reading the explanations, recording each decision (into the transaction), signing out and cancelling.
+- When the transaction reaches `active`, the session rotates into an ordinary patient session.
+- Declining `self_tracking` moves the transaction to `cancelling` at once.
+- The clinician sees only "invitation accepted, sharing declined" until she grants sharing (REQ-001).
 
 ### 13. Routes and callers (ADR-0018 workload tokens; mTLS underneath)
 
-| Route (owner)                                 | Caller               | Authorisation                                                                         |
-| --------------------------------------------- | -------------------- | ------------------------------------------------------------------------------------- |
-| start, status, continue, cancel (identity)    | patient BFF          | workload scope `identity.enrolment.patient`, plus the browser secret checked per call |
-| confirm, revoke (identity, via API)           | clinic BFF → API     | clinician session (ADR-0019), current membership, the invitation's organisation       |
-| redeem, credential-committed (identity)       | Keycloak extension   | workload scope `identity.enrolment.keycloak`                                          |
-| create patient record, claim invitation (API) | identity coordinator | workload scope `api.enrolment.complete`                                               |
+| Route (owner)                                                   | Caller               | Authorisation                                                                                                                                                                          |
+| --------------------------------------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| start, status, continue, resume, cancel, consent (identity)     | patient BFF          | workload scope `identity.enrolment.patient` + the browser secret checked per call                                                                                                      |
+| confirm, revoke (identity)                                      | API                  | workload scope `identity.enrolment.clinic` (API only); the API first checks the clinician's session, current membership and the invitation's organisation, then passes the attestation |
+| redeem, resume, credential-committed (identity)                 | Keycloak extension   | workload scope `identity.enrolment.keycloak`                                                                                                                                           |
+| reserve, revoke, claim, state (API)                             | identity coordinator | workload scope `api.enrolment.coordinate`                                                                                                                                              |
+| finalise, delete provisional user (Keycloak extension endpoint) | identity coordinator | workload scope `keycloak.enrolment.admin`; acts only on users carrying `endo_enrolment`                                                                                                |
 
-- Each scope belongs to one caller, and a valid token alone is never enough: every call is then checked against the transaction.
+Each scope belongs to one caller, and a valid token alone is never enough: every call is then checked against the transaction.
 
 ### 14. Audit
 
-- **Events:** start, confirm (with clinician and organisation), wrong-code attempt, cancel, redeem, credential committed, provisioning steps, completion, consent decisions and cleanup.
-- **How they are written:** transactionally in each owning store through its outbox. This closes ADR-0018's identity-service gap for enrolment.
-- **What they never contain:** invitation tokens, codes, browser secrets or handoff references. Keycloak debug logging stays off.
+- Every transition in section 10 is written with its audit event, transactionally, in the owning store's outbox, correlated by transaction id. That includes start, confirm (clinician, organisation, attestation), wrong code, lock, reserve, revoke, redeem, credential committed, each activation step, consent decisions, cancellation, each cleanup step and expiry.
+- The relays alert on stalled delivery.
+- Events never contain invitation tokens, codes, browser secrets or handoff references. Keycloak debug logging stays off.
 
 ### 15. Java build and supply chain
 
@@ -150,6 +176,7 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - The Keycloak image and the extension are pinned together.
 - Keycloak's authentication interfaces are internal (`server-spi-private`), so every Keycloak upgrade must pass the real-Keycloak test suite before release.
 - That suite covers:
+  - both browser-flow paths, with and without a handoff reference (section 7);
   - existing patient or clinician SSO cookies;
   - a substituted handoff reference;
   - a lost cookie or callback;
@@ -162,14 +189,15 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
   - a revoked invitation;
   - consent refusal.
 
-  It also includes ADR-0019 slice 7b.
+  It also includes the real-Keycloak clinician sign-in test deferred from ADR-0019 (ADR-0020).
 
+- The handoff reference travels in the authorisation URL. Ingress, proxy and Keycloak access logs must not record query strings for these paths, and the reference is short-lived and single-use.
 - Realm changes on existing deployments go through a reviewed migration (imports skip existing realms, ADR-0015), with effective-configuration checks and a rollback plan.
 - An external review of the authentication design is required before M1 exits (ADR-0017).
 
 ## Implementation slices
 
-1. Coordinator state machine and transaction store in the identity service, with code HMAC, limits and outbox.
+1. Coordinator state machine and transaction store in the identity service (section 10 table), with code HMAC, shared attempt counter, limits and outbox; clinical migration 0005 for the invitation reservation (section 6).
 2. Patient BFF landing, start, status and continue, with the browser secret.
 3. Clinician confirm in the clinic BFF and API, with attestation and audit.
 4. Handoff and redemption, with the binding checks.
