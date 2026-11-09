@@ -25,4 +25,5 @@
 - State-changing requests need the exact portal `Origin` and the session's CSRF token (`x-csrf-token`).
 - A session waiting for an organisation may only see its state, choose, or sign out.
 - The Keycloak session is revalidated with the sealed refresh token at most every 4 minutes of use; if Keycloak has ended it, the portal session ends.
-- Coming next (ADR-0019 slice 7): browser and real-Keycloak tests.
+- Browser tests (`pnpm test:e2e`, Playwright, ADR-0020) prove the cross-site sign-in and the Strict session cookie in a real browser. Install the browser once with `pnpm exec playwright install --only-shell chromium`.
+- Coming next (ADR-0019 slice 7b, with the Keycloak enrolment add-on): a real-Keycloak passkey test.

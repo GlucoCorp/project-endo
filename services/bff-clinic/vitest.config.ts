@@ -2,6 +2,8 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // Browser tests run with Playwright (pnpm test:e2e), not with Vitest.
+    exclude: ['e2e/**', 'node_modules/**'],
     testTimeout: 15_000,
     coverage: {
       provider: 'v8',
