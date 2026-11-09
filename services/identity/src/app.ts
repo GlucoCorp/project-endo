@@ -56,6 +56,8 @@ export interface IdentityDeps {
   readonly verifier: WorkloadTokenVerifier;
   readonly audit: AuditWriter;
   readonly persons: PersonStore;
+  /** The one identity-provider issuer this deployment trusts (ADR-0019, single-issuer invariant). */
+  readonly idpIssuer: string;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -219,6 +221,54 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
       }
       await auditResult(request, 'identity.person.erased', id);
       return reply.code(204).send();
+    },
+  );
+
+  // ADR-0019: which person signed in as this identity-provider subject. bff-clinic only.
+  app.post(
+    '/internal/v1/subjects/resolve',
+    {
+      config: {
+        access: {
+          kind: 'workload',
+          scope: 'identity.subject.resolve',
+          action: 'identity.subject.resolve',
+          resourceId: () => null,
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['idp_issuer', 'idp_subject'],
+          properties: {
+            idp_issuer: { type: 'string', minLength: 1, maxLength: 512 },
+            idp_subject: { type: 'string', minLength: 1, maxLength: 255 },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['person_id'],
+            properties: { person_id: { type: 'string' } },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { idp_issuer, idp_subject } = request.body as {
+        idp_issuer: string;
+        idp_subject: string;
+      };
+      // Single-issuer invariant (ADR-0019 section 4): subjects are only meaningful for our issuer.
+      if (idp_issuer !== deps.idpIssuer) {
+        throw new ProblemError(404, 'identity.subject_unknown', 'Not found.');
+      }
+      const personId = await deps.persons.resolveSubject(idp_subject);
+      if (!personId) throw new ProblemError(404, 'identity.subject_unknown', 'Not found.');
+      await auditResult(request, 'identity.subject.resolved', personId);
+      return { person_id: personId };
     },
   );
 

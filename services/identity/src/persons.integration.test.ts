@@ -136,7 +136,9 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     const id = uuidv7();
     await store.create({ id, email: null, displayName: 'x' });
     await admin.query(`UPDATE person SET idp_subject = 'kc-subject-1' WHERE id = $1`, [id]);
+    expect(await store.resolveSubject('kc-subject-1')).toBe(id);
     await store.erase(id);
+    expect(await store.resolveSubject('kc-subject-1')).toBeNull();
     const row = await admin.query<{ idp_subject: string | null; shredded: boolean }>(
       `SELECT idp_subject, EXISTS (SELECT 1 FROM person_key_shredded WHERE person_id = $1) AS shredded FROM person WHERE id = $1`,
       [id],
