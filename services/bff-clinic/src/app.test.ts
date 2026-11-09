@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
 import { SignJWT, createLocalJWKSet, exportJWK, generateKeyPair } from 'jose';
 import { buildClinicBff } from './app.ts';
-import { TransactionStore, type OidcConfig } from './oidc.ts';
+import { SeenTokenIds, TransactionStore, type OidcConfig } from './oidc.ts';
 import type { Membership, Resolver } from './resolve.ts';
 import { InMemoryClinicSessions, OIDC_COOKIE, SESSION_COOKIE } from './sessions.ts';
 
@@ -15,6 +15,8 @@ const CONFIG: OidcConfig = {
   clientSecret: 'test-secret',
   redirectUri: 'https://clinic.test/auth/callback',
   requiredAcr: '1',
+  endSessionEndpoint: `${ISSUER}/protocol/openid-connect/logout`,
+  postLogoutRedirectUri: 'https://clinic.test/',
 };
 const PERSON = '01900000-0000-7000-8000-0000000000e1';
 const ORG_A = '01900000-0000-7000-8000-00000000000a';
@@ -78,6 +80,7 @@ async function setup(
     oidc: CONFIG,
     keys: createLocalJWKSet({ keys: [jwk] }),
     transactions: new TransactionStore(() => NOW.getTime()),
+    logoutTokens: new SeenTokenIds(() => NOW.getTime()),
     sessions,
     resolver,
     fetch: fetchStub,
@@ -109,7 +112,16 @@ async function setup(
   const answer = (nonce: string) => {
     issueNonce = nonce;
   };
-  return { app, start, callback, exchanged, answer, sessions };
+  /** A back-channel logout token signed by the stand-in Keycloak. */
+  const logoutToken = (claims: Record<string, unknown>, audience = 'bff-clinician') =>
+    new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256', kid: 'k1', typ: 'logout+jwt' })
+      .setIssuer(ISSUER)
+      .setAudience(audience)
+      .setIssuedAt(nowS)
+      .setJti(String(Math.floor(nowS)) + JSON.stringify(claims).length.toString() + audience)
+      .sign(privateKey);
+  return { app, start, callback, exchanged, answer, sessions, logoutToken };
 }
 
 const sessionFrom = (setCookie: string | string[] | undefined) =>
@@ -435,5 +447,106 @@ describe('ADR-0019 section 5 and 8: choosing an organisation, CSRF, rotation', (
       payload: { index: 0, org_id: ORG_B, role: 'org_admin' },
     });
     expect(forged.statusCode).toBe(400);
+  });
+});
+
+describe('ADR-0019 section 6: sign-out and back-channel logout', () => {
+  const ORIGIN = 'https://clinic.test';
+  const EVENT = { 'http://schemas.openid.net/event/backchannel-logout': {} };
+
+  async function signedIn() {
+    const ctx = await setup();
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = sessionFrom(res.headers['set-cookie'])?.split(';')[0] ?? '';
+    const csrf = (await ctx.app.inject({ url: '/v1/session', headers: { cookie: session } })).json<{
+      csrf_token: string;
+    }>().csrf_token;
+    const alive = async () =>
+      (await ctx.app.inject({ url: '/v1/context', headers: { cookie: session } })).statusCode ===
+      200;
+    const backchannel = (token: string) =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/auth/backchannel-logout',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ logout_token: token }).toString(),
+      });
+    return { ...ctx, session, csrf, alive, backchannel };
+  }
+
+  it('signs out: revokes locally, clears the cookie and returns the Keycloak logout URL', async () => {
+    const { app, session, csrf, alive } = await signedIn();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: session, 'x-csrf-token': csrf, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(String(res.headers['set-cookie'])).toContain('Max-Age=0');
+    const url = new URL(res.json<{ logout_url: string }>().logout_url);
+    expect(url.origin + url.pathname).toBe(CONFIG.endSessionEndpoint);
+    expect(url.searchParams.get('post_logout_redirect_uri')).toBe(CONFIG.postLogoutRedirectUri);
+    expect(url.searchParams.get('id_token_hint')?.split('.')).toHaveLength(3);
+    expect(await alive()).toBe(false);
+  });
+
+  it('refuses sign-out without the CSRF token (a cross-site page cannot sign her out)', async () => {
+    const { app, session, alive } = await signedIn();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/auth/logout',
+      headers: { cookie: session, origin: ORIGIN },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(await alive()).toBe(true);
+  });
+
+  it('a valid back-channel logout for her Keycloak session revokes it, once', async () => {
+    const { backchannel, logoutToken, alive } = await signedIn();
+    const token = await logoutToken({ events: EVENT, sid: 'kc-session-1' });
+    expect((await backchannel(token)).statusCode).toBe(200);
+    expect(await alive()).toBe(false);
+    expect((await backchannel(token)).statusCode).toBe(400); // replayed jti
+  });
+
+  it('revokes by subject when the token has no sid, and is idempotent for unknown sessions', async () => {
+    const { backchannel, logoutToken, alive } = await signedIn();
+    expect((await backchannel(await logoutToken({ events: EVENT, sid: 'other' }))).statusCode).toBe(
+      200,
+    );
+    expect(await alive()).toBe(true);
+    expect(
+      (await backchannel(await logoutToken({ events: EVENT, sub: 'kc-subject-1' }))).statusCode,
+    ).toBe(200);
+    expect(await alive()).toBe(false);
+  });
+
+  it.each([
+    ['no logout event', { sid: 'kc-session-1' }, 'bff-clinician'],
+    [
+      'a nonce (an ID token, not a logout token)',
+      { events: EVENT, sid: 'kc-session-1', nonce: 'n' },
+      'bff-clinician',
+    ],
+    ['neither sid nor sub', { events: EVENT }, 'bff-clinician'],
+    ['another audience', { events: EVENT, sid: 'kc-session-1' }, 'another-client'],
+  ] as const)('refuses a logout token with %s', async (_n, claims, audience) => {
+    const { backchannel, logoutToken, alive } = await signedIn();
+    expect((await backchannel(await logoutToken(claims, audience))).statusCode).toBe(400);
+    expect(await alive()).toBe(true);
+  });
+
+  it('refuses a forged token and a malformed body', async () => {
+    const { backchannel, app, alive } = await signedIn();
+    expect((await backchannel('a.b.c')).statusCode).toBe(400);
+    const empty = await app.inject({
+      method: 'POST',
+      url: '/auth/backchannel-logout',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'other=1',
+    });
+    expect(empty.statusCode).toBe(400);
+    expect(await alive()).toBe(true);
   });
 });

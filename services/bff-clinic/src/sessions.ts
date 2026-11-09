@@ -18,6 +18,8 @@ export interface ClinicSession {
   readonly issuer: string;
   readonly subject: string;
   readonly sid: string | null;
+  /** Kept server-side only, as `id_token_hint` for Keycloak logout (ADR-0019 section 6). */
+  readonly idToken: string;
   /** `pending-org` until one organisation is chosen (ADR-0019 section 5). */
   readonly state: 'pending-org' | 'active';
   readonly candidates: readonly Membership[];
@@ -32,6 +34,7 @@ export interface NewSession {
   readonly issuer: string;
   readonly subject: string;
   readonly sid: string | null;
+  readonly idToken: string;
   readonly memberships: readonly Membership[];
 }
 
@@ -64,6 +67,7 @@ export class InMemoryClinicSessions {
       issuer: s.issuer,
       subject: s.subject,
       sid: s.sid,
+      idToken: s.idToken,
       state: 'pending-org',
       candidates: [...s.memberships],
       active: null,
@@ -127,6 +131,26 @@ export class InMemoryClinicSessions {
   revoke(token: string): Promise<void> {
     this.#sessions.delete(token);
     return Promise.resolve();
+  }
+
+  /**
+   * Back-channel logout (ADR-0019 section 6): revokes every session of this issuer with the given
+   * Keycloak session id, or, when no sid is given, every session of the subject. Idempotent.
+   */
+  revokeMatching(issuer: string, match: { sid?: string; sub?: string }): Promise<number> {
+    let revoked = 0;
+    for (const [token, s] of this.#sessions) {
+      const hit =
+        s.issuer === issuer &&
+        (match.sid !== undefined
+          ? s.sid === match.sid
+          : match.sub !== undefined && s.subject === match.sub);
+      if (hit) {
+        this.#sessions.delete(token);
+        revoked += 1;
+      }
+    }
+    return Promise.resolve(revoked);
   }
 }
 

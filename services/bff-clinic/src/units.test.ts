@@ -105,6 +105,7 @@ describe('InMemoryClinicSessions (spec 10.2, ADR-0019 section 5)', () => {
     issuer: 'iss',
     subject: 'sub',
     sid: null,
+    idToken: 'id.token.x',
     memberships: [{ orgId: ORG, role: 'clinician' as const }],
   };
 
@@ -192,6 +193,7 @@ describe('background requests never extend the idle limit (ADR-0019 section 5)',
       issuer: 'i',
       subject: 's',
       sid: null,
+      idToken: 'id.token.x',
       memberships: [],
     });
     for (let i = 0; i < 20; i++) {
@@ -208,6 +210,7 @@ describe('background requests never extend the idle limit (ADR-0019 section 5)',
       issuer: 'i',
       subject: 's',
       sid: null,
+      idToken: 'id.token.x',
       memberships: [],
     });
     const before = await s.resolve(old);

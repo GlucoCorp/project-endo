@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { WorkloadTokenSigner } from '@endo/service-kit';
 import { buildClinicBff } from './app.ts';
-import { TransactionStore } from './oidc.ts';
+import { SeenTokenIds, TransactionStore } from './oidc.ts';
 import { HttpResolver } from './resolve.ts';
 import { InMemoryClinicSessions } from './sessions.ts';
 
@@ -33,6 +33,8 @@ const Config = z.object({
   BFF_CLINIC_OIDC_CLIENT_SECRET: z.string().min(32),
   BFF_CLINIC_OIDC_REDIRECT_URI: HttpUrl,
   BFF_CLINIC_OIDC_REQUIRED_ACR: z.string().min(1).default('1'),
+  BFF_CLINIC_OIDC_END_SESSION_ENDPOINT: HttpUrl,
+  BFF_CLINIC_OIDC_POST_LOGOUT_REDIRECT_URI: HttpUrl,
   BFF_CLINIC_IDENTITY_BASE_URL: HttpUrl,
   BFF_CLINIC_API_BASE_URL: HttpUrl,
   // Its own workload key (ADR-0018); never shared with the service-token key.
@@ -59,6 +61,8 @@ async function main(): Promise<void> {
       clientSecret: config.BFF_CLINIC_OIDC_CLIENT_SECRET,
       redirectUri: config.BFF_CLINIC_OIDC_REDIRECT_URI,
       requiredAcr: config.BFF_CLINIC_OIDC_REQUIRED_ACR,
+      endSessionEndpoint: config.BFF_CLINIC_OIDC_END_SESSION_ENDPOINT,
+      postLogoutRedirectUri: config.BFF_CLINIC_OIDC_POST_LOGOUT_REDIRECT_URI,
     },
     // Key refreshes are rate-limited (cooldown) and time-boxed (ADR-0019 section 2).
     keys: createRemoteJWKSet(new URL(config.BFF_CLINIC_OIDC_JWKS_URI), {
@@ -66,6 +70,7 @@ async function main(): Promise<void> {
       timeoutDuration: 5_000,
     }),
     transactions: new TransactionStore(),
+    logoutTokens: new SeenTokenIds(),
     sessions: new InMemoryClinicSessions(config.ENDO_ENV),
     resolver: new HttpResolver({
       identityBaseUrl: config.BFF_CLINIC_IDENTITY_BASE_URL,

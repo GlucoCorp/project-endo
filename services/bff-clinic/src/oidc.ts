@@ -15,6 +15,9 @@ export interface OidcConfig {
   readonly redirectUri: string;
   /** Exact `acr` a fresh clinician sign-in must carry (ADR-0019 section 3). */
   readonly requiredAcr: string;
+  /** RP-initiated logout (ADR-0019 section 6). */
+  readonly endSessionEndpoint: string;
+  readonly postLogoutRedirectUri: string;
 }
 
 /**
@@ -196,6 +199,82 @@ export async function validateIdToken(
       subject: payload.sub as string,
       sid: typeof sid === 'string' ? sid : null,
     };
+  } catch {
+    throw new OidcError();
+  }
+}
+
+/** Keycloak RP-initiated logout URL, with the session's ID token as a hint (ADR-0019 section 6). */
+export function logoutUrl(config: OidcConfig, idToken: string): string {
+  const url = new URL(config.endSessionEndpoint);
+  url.search = new URLSearchParams({
+    id_token_hint: idToken,
+    post_logout_redirect_uri: config.postLogoutRedirectUri,
+    client_id: config.clientId,
+  }).toString();
+  return url.toString();
+}
+
+const BACKCHANNEL_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
+
+/**
+ * Remembers logout-token ids so a captured token cannot be replayed (dev store; the durable store
+ * comes with the session store). Entries expire with the token-age window.
+ */
+export class SeenTokenIds {
+  readonly #seen = new Map<string, number>();
+  readonly #now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
+
+  /** True the first time an id is seen within the window; false for a replay. */
+  firstUse(jti: string): boolean {
+    const t = this.#now();
+    for (const [id, at] of this.#seen)
+      if (t - at > 2 * MAX_TOKEN_AGE_S * 1000) this.#seen.delete(id);
+    if (this.#seen.has(jti)) return false;
+    this.#seen.set(jti, t);
+    return true;
+  }
+}
+
+/**
+ * Validates a back-channel logout token (OpenID Connect Back-Channel Logout 1.0, section 2.6):
+ * signature by the configured JWKS, exact issuer, our audience, `iat` within the window, a `jti`
+ * not seen before, the back-channel logout event, NO `nonce`, and a `sid` or `sub`.
+ */
+export async function validateLogoutToken(
+  config: OidcConfig,
+  token: string,
+  keys: JWTVerifyGetKey,
+  seen: SeenTokenIds,
+  now: () => Date,
+): Promise<{ sid?: string; sub?: string }> {
+  try {
+    const { payload } = await jwtVerify(token, keys, {
+      issuer: config.issuer,
+      audience: config.clientId,
+      algorithms: ['RS256', 'ES256'],
+      clockTolerance: CLOCK_SKEW_S,
+      maxTokenAge: MAX_TOKEN_AGE_S,
+      requiredClaims: ['iss', 'aud', 'iat', 'jti', 'events'],
+      currentDate: now(),
+    });
+    const events = payload['events'];
+    const sid = typeof payload['sid'] === 'string' ? payload['sid'] : undefined;
+    const sub = typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : undefined;
+    const ok =
+      typeof events === 'object' &&
+      events !== null &&
+      Object.prototype.hasOwnProperty.call(events, BACKCHANNEL_EVENT) &&
+      payload['nonce'] === undefined &&
+      (sid !== undefined || sub !== undefined) &&
+      typeof payload.jti === 'string' &&
+      seen.firstUse(payload.jti);
+    if (!ok) throw new OidcError();
+    return { ...(sid !== undefined ? { sid } : {}), ...(sub !== undefined ? { sub } : {}) };
   } catch {
     throw new OidcError();
   }
