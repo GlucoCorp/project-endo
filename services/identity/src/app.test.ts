@@ -16,9 +16,10 @@ import { InMemoryPersonStore } from './persons.ts';
 
 const SYNTHETIC_PHI_MARKER = 'SYNTHETIC_PHI_MARKER-identity-svc-5d1e';
 
-async function setup() {
+async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: boolean } = {}) {
   const api = await generateServiceKeyPair();
   const jobs = await generateServiceKeyPair();
+  const clinic = await generateServiceKeyPair();
   const cipher = new FieldCipher(
     new DevKeyManager('test'),
     new InMemoryPatientKeyStore(),
@@ -26,23 +27,35 @@ async function setup() {
   );
   const persons = new InMemoryPersonStore(cipher);
   const audit = new InMemoryAuditStore();
+  const store = opts.failErrorAudits
+    ? {
+        head: () => audit.head(),
+        readRange: (a: number, b: number) => audit.readRange(a, b),
+        append: (e: Parameters<InMemoryAuditStore['append']>[0]) =>
+          e.outcome === 'error' ? Promise.reject(new Error('audit down')) : audit.append(e),
+      }
+    : audit;
   const logs: string[] = [];
   const app = await buildIdentity({
     logLevel: 'info',
     verifier: new WorkloadTokenVerifier('identity', {
       api: { publicJwk: api.publicJwk, scopes: ['identity.person.create'] },
       jobs: { publicJwk: jobs.publicJwk, scopes: ['identity.person.erase'] },
+      'bff-clinic': { publicJwk: clinic.publicJwk, scopes: ['identity.subject.resolve'] },
     }),
-    audit: new AuditWriter(audit),
+    audit: new AuditWriter(store),
     persons,
+    ...(opts.rateLimitPerMinute ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
+    idpIssuer: 'https://kc.test/realms/endo-dev',
     logStream: { write: (l) => logs.push(l) },
   });
   const apiSigner = new WorkloadTokenSigner(api.privateJwk, 'api');
   const jobsSigner = new WorkloadTokenSigner(jobs.privateJwk, 'jobs');
+  const clinicSigner = new WorkloadTokenSigner(clinic.privateJwk, 'bff-clinic');
   const auth = async (signer: WorkloadTokenSigner, scope: string) => ({
     authorization: `Bearer ${await signer.sign([scope], 'identity')}`,
   });
-  return { app, persons, cipher, audit, logs, apiSigner, jobsSigner, auth };
+  return { app, persons, cipher, audit, logs, apiSigner, jobsSigner, clinicSigner, auth };
 }
 
 describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => {
@@ -188,6 +201,65 @@ describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => 
     });
     expect(res.statusCode).toBe(400);
     expect((await audit.readRange(1, 10))[0]).toMatchObject({ resource: { id: null } });
+  });
+
+  it('ADR-0019 resolves a sign-in subject to its person, and never an erased one', async () => {
+    const { app, persons, auth, clinicSigner, apiSigner, jobsSigner } = await setup();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons',
+      headers: await auth(apiSigner, 'identity.person.create'),
+      payload: {},
+    });
+    const id = created.json<{ person_id: string }>().person_id;
+    persons.subjects.set('kc-sub-1', id);
+    const resolve = async (signer = clinicSigner, issuer = 'https://kc.test/realms/endo-dev') =>
+      app.inject({
+        method: 'POST',
+        url: '/internal/v1/subjects/resolve',
+        headers: await auth(signer, 'identity.subject.resolve'),
+        payload: { idp_issuer: issuer, idp_subject: 'kc-sub-1' },
+      });
+    const ok = await resolve();
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ person_id: id });
+    // Only the clinic BFF holds this scope.
+    expect((await resolve(apiSigner)).statusCode).toBe(401);
+    // Another issuer's subject never resolves.
+    expect((await resolve(clinicSigner, 'https://evil.test/realms/x')).statusCode).toBe(404);
+    await app.inject({
+      method: 'POST',
+      url: `/internal/v1/persons/${id}/erasure`,
+      headers: await auth(jobsSigner, 'identity.person.erase'),
+    });
+    expect((await resolve()).statusCode).toBe(404);
+  });
+
+  it('RISK-D01 rate-limits callers before any work', async () => {
+    const { app, auth, apiSigner } = await setup({ rateLimitPerMinute: 1 });
+    const post = async () =>
+      app.inject({
+        method: 'POST',
+        url: '/internal/v1/persons',
+        headers: await auth(apiSigner, 'identity.person.create'),
+        payload: {},
+      });
+    expect((await post()).statusCode).toBe(201);
+    expect((await post()).statusCode).toBe(429);
+  });
+
+  it('logs, without failing the response, when the error audit write fails', async () => {
+    const { app, logs, auth, apiSigner } = await setup({ failErrorAudits: true });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons',
+      headers: await auth(apiSigner, 'identity.person.create'),
+      payload: { email: 'bad' },
+    });
+    expect(res.statusCode).toBe(400);
+    // onResponse hooks run after the response is handed back to inject().
+    await new Promise((r) => setTimeout(r, 100));
+    expect(logs.join('\n')).toContain('audit.write_failed');
   });
 
   it('serves liveness without authentication and sets security headers', async () => {

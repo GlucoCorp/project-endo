@@ -21,6 +21,11 @@ export interface PersonStore {
    * 14-day grace period (jobs, M6). Idempotent. Returns false if the person is unknown.
    */
   erase(personId: string): Promise<boolean>;
+  /**
+   * ADR-0019: the person signed in as this identity-provider subject, or null. Erased people
+   * never resolve (erasure clears the subject in the same transaction).
+   */
+  resolveSubject(idpSubject: string): Promise<string | null>;
 }
 
 /** Field contexts bind each ciphertext to its person, field and row (AES-GCM associated data). */
@@ -79,6 +84,16 @@ export class PostgresPersonStore implements PersonStore {
       return true;
     });
   }
+
+  async resolveSubject(idpSubject: string): Promise<string | null> {
+    const row = await this.#db
+      .selectFrom('person')
+      .select('id')
+      .where('idp_subject', '=', idpSubject)
+      .where('deleted_at', 'is', null)
+      .executeTakeFirst();
+    return row?.id ?? null;
+  }
 }
 
 /** Dev and test stand-in: keeps only ciphertexts produced by the given cipher. */
@@ -87,6 +102,8 @@ export class InMemoryPersonStore implements PersonStore {
     string,
     { email: string | null; displayName: string | null; erased: boolean }
   >();
+  /** Dev and test: identity-provider subject -> person id. */
+  readonly subjects = new Map<string, string>();
   readonly #cipher: FieldCipher;
 
   constructor(cipher: FieldCipher) {
@@ -108,6 +125,12 @@ export class InMemoryPersonStore implements PersonStore {
     if (!row) return false;
     await this.#cipher.shredPatient(personId);
     row.erased = true;
+    for (const [subject, id] of this.subjects) if (id === personId) this.subjects.delete(subject);
     return true;
+  }
+
+  resolveSubject(idpSubject: string): Promise<string | null> {
+    const id = this.subjects.get(idpSubject);
+    return Promise.resolve(id && !this.rows.get(id)?.erased ? id : null);
   }
 }

@@ -37,6 +37,9 @@ const Config = z.object({
   // Workload keys of the services allowed to call (ADR-0018); each gets fixed scopes below.
   IDENTITY_TRUSTED_API_PUBLIC_KEY_JWK: Jwk.optional(),
   IDENTITY_TRUSTED_JOBS_PUBLIC_KEY_JWK: Jwk.optional(),
+  IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK: Jwk.optional(),
+  // The one identity-provider issuer of this deployment (ADR-0019).
+  IDENTITY_IDP_ISSUER: z.url({ protocol: /^https?$/ }),
 });
 
 async function main(): Promise<void> {
@@ -91,11 +94,19 @@ async function main(): Promise<void> {
     };
   }
 
+  if (config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK) {
+    trusted['bff-clinic'] = {
+      publicJwk: config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK,
+      scopes: ['identity.subject.resolve'],
+    };
+  }
+
   const app = await buildIdentity({
     logLevel: config.ENDO_LOG_LEVEL,
     verifier: new WorkloadTokenVerifier('identity', trusted),
     audit: new AuditWriter(auditStore),
     persons,
+    idpIssuer: config.IDENTITY_IDP_ISSUER,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
