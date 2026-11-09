@@ -789,9 +789,9 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       const inv = await newInvitation();
       const tx = randomUUID();
       await store.reserve(req(inv, tx));
+      // Another transaction's release fences only itself; this reservation stands.
       expect(await store.release(req(inv, randomUUID(), 'release'))).toMatchObject({
         outcome: 'done',
-        changed: false,
         state: { status: 'live', reservedBy: tx },
       });
       expect(await store.release(req(inv, tx, 'release'))).toMatchObject({
@@ -832,6 +832,14 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
 
       // An unknown outcome is retried: the same request answers the same, writing nothing.
       expect(await store.claim(claim(tx))).toMatchObject({ outcome: 'done', changed: false });
+      // A "retry" that changes what is claimed is a different request, and is refused.
+      expect(await store.claim({ ...claim(tx), identityRef: randomUUID() })).toMatchObject({
+        outcome: 'refused',
+        state: { status: 'claimed', patientId },
+      });
+      expect(await store.claim({ ...claim(tx), patientId: randomUUID() })).toMatchObject({
+        outcome: 'refused',
+      });
       expect(
         await store.revoke({ orgId: ORG_A, invitationId: inv, auditEvent: audit('x') }),
       ).toMatchObject({ outcome: 'refused', state: { status: 'claimed' } });
@@ -841,6 +849,57 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
         reservedBy: tx,
         patientId,
       });
+    });
+
+    it('makes a release permanent: a delayed reserve or claim for that transaction never succeeds', async () => {
+      // Release, then a delayed reserve retry with a fresh audit id.
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      await store.reserve(req(inv, tx));
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ changed: true });
+      expect(await store.reserve(req(inv, tx))).toEqual({
+        outcome: 'refused',
+        state: { status: 'live', reservedBy: null },
+      });
+      expect(
+        await store.claim({
+          ...req(inv, tx, 'claim'),
+          patientId: randomUUID(),
+          identityRef: randomUUID(),
+        }),
+      ).toMatchObject({ outcome: 'refused' });
+
+      // The release overtakes the reserve it cancels.
+      const early = randomUUID();
+      const first = req(inv, early, 'release');
+      expect(await store.release(first)).toMatchObject({ outcome: 'done', changed: true });
+      expect(await audited(first.auditEvent.id)).toBe(1);
+      expect(await store.release(req(inv, early, 'release'))).toMatchObject({ changed: false });
+      expect(await store.reserve(req(inv, early))).toMatchObject({ outcome: 'refused' });
+
+      // The database refuses it too, whatever the caller.
+      await expect(
+        asApi(ORG_A, (c) =>
+          c.query(`UPDATE enrolment_invitation SET reserved_by = $2 WHERE id = $1`, [inv, tx]),
+        ),
+      ).rejects.toThrow(/was released/);
+      // The invitation itself stays usable by a new transaction.
+      expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'done' });
+    });
+
+    it('keeps fences inside their organisation and beyond the API reach to delete', async () => {
+      await expect(
+        asApi(ORG_A, (c) => c.query(`DELETE FROM enrolment_reservation_fence`)),
+      ).rejects.toThrow(/permission denied/);
+      const inv = await newInvitation(ORG_B, CLIN_B);
+      await expect(
+        asApi(ORG_A, (c) =>
+          c.query(
+            `INSERT INTO enrolment_reservation_fence (transaction_id, org_id, invitation_id) VALUES ($1, $2, $3)`,
+            [randomUUID(), ORG_B, inv],
+          ),
+        ),
+      ).rejects.toThrow(/row-level security/);
     });
 
     it('lets a revocation win over a reservation, so the holder can no longer claim', async () => {
@@ -863,7 +922,11 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
           identityRef: randomUUID(),
         }),
       ).toEqual({ outcome: 'refused', state: { status: 'revoked', reservedBy: tx } });
-      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ changed: false });
+      // Releasing after a revocation keeps the record of who held it, and fences the transaction.
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({
+        changed: true,
+        state: { status: 'revoked', reservedBy: tx },
+      });
       expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'refused' });
     });
 

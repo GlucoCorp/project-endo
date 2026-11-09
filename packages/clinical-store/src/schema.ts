@@ -43,6 +43,13 @@ export interface ClinicalDatabase {
     reserved_by: string | null;
     reserved_at: Date | null;
   };
+  /** Migration 0005: transactions whose reservation was released, never to reserve again. */
+  enrolment_reservation_fence: {
+    transaction_id: string;
+    org_id: string;
+    invitation_id: string;
+    released_at: Generated<Date>;
+  };
   idempotency_record: {
     org_id: string;
     actor_ref: string;

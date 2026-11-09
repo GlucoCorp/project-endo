@@ -58,7 +58,7 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - Every invitation mutation is one conditional update on that row:
   - **reserve:** live, unreserved, or already reserved by the same transaction;
   - **revoke:** sets `revoked_at` whether or not it is reserved;
-  - **release:** clears this transaction's reservation if the invitation is not final; it never touches another transaction's;
+  - **release:** clears this transaction's reservation if the invitation is not final, and records a permanent fence for the transaction, so a delayed reserve or claim (even one that arrives after the release) never succeeds; it never touches another transaction's reservation;
   - **claim:** live, `reserved_by` equal to the transaction, not revoked. It creates the pseudonymous patient record in the same database transaction. Its identity reference is the identity-vault person id that the coordinator generates before claiming and uses in activation step 1.
 - **Races:**
   - confirmation before revocation: the reservation stands, but a later revocation still wins, because the claim requires "not revoked";

@@ -21,4 +21,4 @@
 - Every query that touches organisation data runs inside `withOrg`. With no organisation set, row-level security returns nothing.
 - Consent is append-only: one row per decision; the latest row per purpose is the current state.
 - Invitations store only the SHA-256 of the link token, are valid at most 7 days, and are claimed with a conditional update so a link works once.
-- Since migration 0005 a claim needs the claiming transaction's reservation, and a reservation never passes directly to another transaction; the trigger enforces both.
+- Since migration 0005 a claim needs the claiming transaction's reservation, a reservation never passes directly to another transaction, and a released transaction (recorded in `enrolment_reservation_fence`) can never reserve again; the trigger enforces all three.

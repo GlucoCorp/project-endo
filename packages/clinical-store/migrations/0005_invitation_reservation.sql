@@ -14,6 +14,10 @@
 -- adds the rules that hold whatever the caller: a claim needs a reservation and keeps it, a
 -- reservation never passes directly from one transaction to another, and times come from the
 -- database clock. Final rows never change (unchanged from 0001).
+--
+-- A release is permanent for its transaction. It records a fence, and a fenced transaction can
+-- never reserve again, so a delayed reserve or claim retry that arrives after cleanup began cannot
+-- succeed. This holds even if the release arrives before the reserve.
 
 ALTER TABLE enrolment_invitation
   ADD COLUMN reserved_by uuid,
@@ -24,6 +28,17 @@ ALTER TABLE enrolment_invitation
   -- exists yet, so no claimed row predates it.
   ADD CONSTRAINT enrolment_invitation_claim_reserved
     CHECK (claimed_at IS NULL OR reserved_by IS NOT NULL);
+
+CREATE TABLE enrolment_reservation_fence (
+  transaction_id uuid        PRIMARY KEY,
+  org_id         uuid        NOT NULL REFERENCES organization (id),
+  invitation_id  uuid        NOT NULL REFERENCES enrolment_invitation (id),
+  released_at    timestamptz NOT NULL DEFAULT now()
+);
+ALTER TABLE enrolment_reservation_fence ENABLE ROW LEVEL SECURITY;
+ALTER TABLE enrolment_reservation_fence FORCE ROW LEVEL SECURITY;
+CREATE POLICY org_isolation ON enrolment_reservation_fence
+  USING (org_id = endo_current_org()) WITH CHECK (org_id = endo_current_org());
 
 DO $migration$
 DECLARE
@@ -55,6 +70,12 @@ BEGIN
         IF OLD.expires_at <= clock_timestamp() THEN
           RAISE EXCEPTION 'enrolment invitation expired' USING ERRCODE = 'check_violation';
         END IF;
+        -- Runs as the caller, so row-level security limits this to the invitation's organisation,
+        -- which is where its fences are.
+        IF EXISTS (SELECT FROM enrolment_reservation_fence AS f
+                   WHERE f.transaction_id = NEW.reserved_by) THEN
+          RAISE EXCEPTION 'enrolment transaction was released' USING ERRCODE = 'check_violation';
+        END IF;
         NEW.reserved_at := clock_timestamp();
       ELSIF OLD.reserved_by IS NOT NULL AND NEW.reserved_by IS NULL THEN
         NEW.reserved_at := NULL;
@@ -84,3 +105,6 @@ $migration$;
 
 GRANT SELECT (reserved_by) ON enrolment_invitation TO endo_clinical_lookup;
 GRANT UPDATE (reserved_by, reserved_at) ON enrolment_invitation TO endo_clinical_app;
+REVOKE ALL ON enrolment_reservation_fence FROM PUBLIC;
+GRANT SELECT, INSERT (transaction_id, org_id, invitation_id) ON enrolment_reservation_fence
+  TO endo_clinical_app;

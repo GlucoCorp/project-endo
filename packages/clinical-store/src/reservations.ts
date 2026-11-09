@@ -48,7 +48,11 @@ export interface InvitationReservationStore {
   state(orgId: string, invitationId: string): Promise<InvitationState>;
   /** Live, not expired, and unreserved (or already reserved by this transaction). */
   reserve(r: ReservationRequest): Promise<ReservationOutcome>;
-  /** Clears this transaction's reservation if the invitation is not final. Never touches another's. */
+  /**
+   * Ends this transaction's hold for good: clears its reservation if the invitation is not final,
+   * and records a fence so the transaction can never reserve again, even if a delayed reserve
+   * arrives later. Never touches another transaction's reservation.
+   */
   release(r: ReservationRequest): Promise<ReservationOutcome>;
   /** Makes the invitation final unless it is already claimed. Wins over any reservation. */
   revoke(r: Omit<ReservationRequest, 'transactionId'>): Promise<ReservationOutcome>;
@@ -87,7 +91,8 @@ export class PostgresInvitationReservationStore implements InvitationReservation
     return this.#locked(r.orgId, r.invitationId, async (trx, state) => {
       if (state.status !== 'live') return { outcome: 'refused', state };
       if (state.reservedBy === r.transactionId) return { outcome: 'done', changed: false, state };
-      if (state.reservedBy !== null) return { outcome: 'refused', state };
+      if (state.reservedBy !== null || (await fenced(trx, r.transactionId)))
+        return { outcome: 'refused', state };
       await update(trx, r.invitationId, { reserved_by: r.transactionId, reserved_at: new Date() });
       return changed(trx, r, { status: 'live', reservedBy: r.transactionId });
     });
@@ -95,12 +100,25 @@ export class PostgresInvitationReservationStore implements InvitationReservation
 
   release(r: ReservationRequest): Promise<ReservationOutcome> {
     return this.#locked(r.orgId, r.invitationId, async (trx, state) => {
-      if (state.status === 'missing' || state.status === 'claimed')
+      if (state.status === 'missing') return { outcome: 'refused', state };
+      // A claim that already won stands: the caller must go on to activation, not clean up.
+      if (state.status === 'claimed' && state.reservedBy === r.transactionId)
         return { outcome: 'refused', state };
-      if (state.reservedBy !== r.transactionId || state.status === 'revoked')
+      const fence = await trx
+        .insertInto('enrolment_reservation_fence')
+        .values({ transaction_id: r.transactionId, org_id: r.orgId, invitation_id: r.invitationId })
+        .onConflict((oc) => oc.column('transaction_id').doNothing())
+        .executeTakeFirst();
+      // Still holding: live or expired, reserved by this transaction (a claimed hold returned above).
+      const held: InvitationState | null =
+        (state.status === 'live' || state.status === 'expired') &&
+        state.reservedBy === r.transactionId
+          ? { status: state.status, reservedBy: null }
+          : null;
+      if (held) await update(trx, r.invitationId, { reserved_by: null, reserved_at: null });
+      if (!held && Number(fence.numInsertedOrUpdatedRows ?? 0) === 0)
         return { outcome: 'done', changed: false, state };
-      await update(trx, r.invitationId, { reserved_by: null, reserved_at: null });
-      return changed(trx, r, { status: state.status, reservedBy: null });
+      return changed(trx, r, held ?? state);
     });
   }
 
@@ -116,8 +134,13 @@ export class PostgresInvitationReservationStore implements InvitationReservation
 
   claim(r: ClaimRequest): Promise<ReservationOutcome> {
     return this.#locked(r.orgId, r.invitationId, async (trx, state) => {
-      if (state.status === 'claimed' && state.reservedBy === r.transactionId)
-        return { outcome: 'done', changed: false, state };
+      if (state.status === 'claimed' && state.reservedBy === r.transactionId) {
+        // A retry must ask for exactly what was claimed; anything else is a different request.
+        const same =
+          state.patientId === r.patientId &&
+          (await identityRefOf(trx, state.patientId)) === r.identityRef;
+        return same ? { outcome: 'done', changed: false, state } : { outcome: 'refused', state };
+      }
       if (state.status !== 'live' || state.reservedBy !== r.transactionId)
         return { outcome: 'refused', state };
       await trx
@@ -161,6 +184,27 @@ function read(
     ])
     .where('id', '=', invitationId);
   return (lock ? q.forUpdate() : q).executeTakeFirst();
+}
+
+async function fenced(trx: Transaction<ClinicalDatabase>, transactionId: string): Promise<boolean> {
+  const row = await trx
+    .selectFrom('enrolment_reservation_fence')
+    .select('transaction_id')
+    .where('transaction_id', '=', transactionId)
+    .executeTakeFirst();
+  return row !== undefined;
+}
+
+async function identityRefOf(
+  trx: Transaction<ClinicalDatabase>,
+  patientId: string,
+): Promise<string | undefined> {
+  const row = await trx
+    .selectFrom('patient_record')
+    .select('identity_ref')
+    .where('id', '=', patientId)
+    .executeTakeFirst();
+  return row?.identity_ref;
 }
 
 async function update(
