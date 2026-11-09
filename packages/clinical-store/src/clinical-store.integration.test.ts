@@ -84,7 +84,11 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     try {
       await su.query(bootstrap);
       for (const [role, pw, extra] of [
-        ['clinical_owner_test', ownerPw, 'IN ROLE endo_clinical_lookup'],
+        [
+          'clinical_owner_test',
+          ownerPw,
+          'IN ROLE endo_clinical_lookup, endo_clinical_membership_lookup',
+        ],
         ['clinical_api_test', apiPw, 'IN ROLE endo_clinical_app'],
         ['clinical_relay_test', relayPw, 'IN ROLE endo_clinical_relay'],
       ] as const) {
@@ -252,6 +256,35 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       await expect(
         store.create({ id: randomUUID(), orgId: ORG_A, createdBy: CLIN_B, tokenHash: tokenHash() }),
       ).rejects.toThrow(/foreign key/);
+    });
+
+    it('ADR-0019 lists the active memberships of a person across organisations, and nothing else', async () => {
+      const members = new PostgresMembershipStore(apiDb);
+      // A person of its own (other tests rely on the seeded clinicians' memberships): active in
+      // two organisations, inactive in a third.
+      const person = randomUUID();
+      const orgC = '01900000-0000-7000-8000-00000000000c';
+      await admin.query(
+        `INSERT INTO organization (id, region, name) VALUES ($1, 'ke', 'Clinic C')`,
+        [orgC],
+      );
+      for (const [org, role, active] of [
+        [ORG_A, 'clinician', true],
+        [ORG_B, 'org_admin', true],
+        [orgC, 'clinician', false],
+      ] as const) {
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role, active) VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), org, person, role, active],
+        );
+      }
+      expect(await members.listActive(person)).toEqual([
+        { orgId: ORG_A, role: 'clinician' },
+        { orgId: ORG_B, role: 'org_admin' },
+      ]);
+      expect(await members.listActive(randomUUID())).toEqual([]);
+      // The API role still sees nothing across organisations directly.
+      expect(await apiDb.selectFrom('clinician').select('id').execute()).toEqual([]);
     });
 
     it('PostgresMembershipStore resolves a clinician by identity reference, only in their organisation', async () => {
@@ -625,6 +658,23 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
         published_at: null,
       });
     });
+  });
+
+  it('gives the membership lookup role nothing beyond clinician membership columns', async () => {
+    const c = await admin.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL ROLE endo_clinical_membership_lookup');
+      // A savepoint per expected failure, so the second check really runs.
+      for (const sql of ['SELECT id FROM patient_record', 'SELECT created_at FROM clinician']) {
+        await c.query('SAVEPOINT probe');
+        await expect(c.query(sql)).rejects.toThrow(/permission denied/);
+        await c.query('ROLLBACK TO SAVEPOINT probe');
+      }
+    } finally {
+      await c.query('ROLLBACK');
+      c.release();
+    }
   });
 
   it('gives the lookup role nothing beyond invitation columns', async () => {

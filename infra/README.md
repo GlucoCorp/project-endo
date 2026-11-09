@@ -51,6 +51,15 @@ What the local profile enforces (verified):
 
 Local ports are below 49152 on purpose: Windows reserves random blocks of the dynamic range (49152 and up) for Hyper-V and WSL, which makes port-forwards there fail after a reboot.
 
+## Upgrading an existing database
+
+The Postgres first-boot script creates roles only on a new volume. When a migration needs a new role (for example `endo_clinical_membership_lookup`, migration 0004), run the idempotent bootstrap scripts as a privileged role before migrating:
+
+```sh
+psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/clinical-store/bootstrap/roles.sql
+psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v owner=clinical_owner -f packages/clinical-store/bootstrap/grant-owner.sql
+```
+
 ## Rules
 
 - State files contain generated credentials: they are git-ignored and never committed. `.terraform.lock.hcl` **is** committed (provider checksums).

@@ -159,6 +159,8 @@ resource "kubernetes_config_map_v1" "pg_init" {
         "GRANT endo_clinical_lookup TO clinical_owner;",
         "CREATE ROLE clinical_api LOGIN PASSWORD '$${CLINICAL_API_PASSWORD}' IN ROLE endo_clinical_app;",
         "GRANT CONNECT ON DATABASE clinical TO clinical_api;",
+        "CREATE ROLE endo_clinical_membership_lookup NOLOGIN;",
+        "GRANT endo_clinical_membership_lookup TO clinical_owner;",
         "CREATE ROLE endo_clinical_relay NOLOGIN;",
         "CREATE ROLE clinical_relay LOGIN PASSWORD '$${CLINICAL_RELAY_PASSWORD}' IN ROLE endo_clinical_relay;",
         "GRANT CONNECT ON DATABASE clinical TO clinical_relay;",

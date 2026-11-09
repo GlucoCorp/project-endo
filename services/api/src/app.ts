@@ -22,9 +22,12 @@ import {
   registerProblemHandlers,
   requestIdFrom,
   type ServiceTokenVerifier,
+  type WorkloadCaller,
+  type WorkloadTokenVerifier,
 } from '@endo/service-kit';
 import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
+import { registerMembershipRoutes } from './routes/memberships.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
 /**
@@ -44,6 +47,17 @@ export type RoutePolicy =
         request: FastifyRequest,
         subject: Subject,
       ) => Resource & { readonly id: string | null };
+    }
+  /**
+   * Service-to-service routes with no end user (ADR-0018, ADR-0019). The caller must present a
+   * workload token holding exactly this scope; the route never sees user authorisation.
+   */
+  | {
+      readonly kind: 'workload';
+      readonly scope: string;
+      /** Audit action code, e.g. `api.membership.resolve`. */
+      readonly action: string;
+      readonly resourceType: string;
     };
 
 declare module 'fastify' {
@@ -54,6 +68,8 @@ declare module 'fastify' {
     subject: Subject | null;
     /** For clinicians and org admins: their clinical-store id, resolved from current membership. */
     clinicianId: string | null;
+    /** For workload routes: the verified calling service. */
+    workload: WorkloadCaller | null;
   }
 }
 
@@ -61,12 +77,21 @@ export function isRoutePolicy(value: unknown): value is RoutePolicy {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<RoutePolicy>;
   if (v.kind === 'public') return v.reason === 'liveness';
+  if (v.kind === 'workload') {
+    return (
+      typeof v.scope === 'string' &&
+      typeof v.action === 'string' &&
+      typeof v.resourceType === 'string'
+    );
+  }
   return v.kind === 'protected' && isAction(v.action) && typeof v.resource === 'function';
 }
 
 export interface ApiDeps {
   readonly logLevel: string;
   readonly verifier: ServiceTokenVerifier;
+  /** Workload callers (ADR-0018). Without it, every workload route answers 401 (fail closed). */
+  readonly workloadVerifier?: WorkloadTokenVerifier;
   readonly audit: AuditWriter;
   /** Enrolment invitations in the clinical store, created at most once per Idempotency-Key. */
   readonly invitations: IdempotentInvitationStore;
@@ -92,6 +117,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
+  registerMembershipRoutes(app, { memberships: deps.memberships, audit: deps.audit });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,
@@ -123,6 +149,7 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
 
   app.decorateRequest('subject', null);
   app.decorateRequest('clinicianId', null);
+  app.decorateRequest('workload', null);
   enforceRouteDeclarations(app, 'policy', isRoutePolicy);
   registerProblemHandlers(app);
 
@@ -150,6 +177,32 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     const policy = request.routeOptions.config.policy;
     // Unmatched routes (404) carry no policy; the not-found handler answers them.
     if (!policy || policy.kind === 'public') return;
+
+    if (policy.kind === 'workload') {
+      let caller: WorkloadCaller | null = null;
+      let reason: string | null = null;
+      try {
+        if (!deps.workloadVerifier) throw new ServiceTokenError('authn.invalid');
+        caller = await deps.workloadVerifier.verifyHeader(request.headers.authorization);
+        if (!caller.scopes.includes(policy.scope)) reason = 'authz.scope_missing';
+      } catch (error) {
+        reason = error instanceof ServiceTokenError ? error.code : 'authn.invalid';
+      }
+      await deps.audit.write({
+        actor: { id: null, role: 'system' },
+        action: policy.action,
+        resource: { type: policy.resourceType, id: null },
+        org_id: null,
+        purpose_of_use: 'operations',
+        outcome: reason === null ? 'success' : 'denied',
+        reason,
+        request_id: request.id,
+      });
+      if (!caller) throw new ProblemError(401, reason ?? 'authn.invalid', 'Sign in to continue.');
+      if (reason) throw new ProblemError(403, reason, 'You do not have access to this.');
+      request.workload = caller;
+      return;
+    }
 
     let subject: Subject;
     let clinicianId: string | null = null;
@@ -209,6 +262,28 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     }
     request.subject = subject;
     request.clinicianId = clinicianId;
+  });
+
+  // A workload request that was allowed and then failed is audited as an error (safe code only).
+  // The response is already sent, so a failure here is logged, never swallowed silently.
+  app.addHook('onResponse', async (request, reply) => {
+    const policy = request.routeOptions.config.policy;
+    if (policy?.kind === 'workload' && request.workload && reply.statusCode >= 400) {
+      await deps.audit
+        .write({
+          actor: { id: null, role: 'system' },
+          action: policy.action,
+          resource: { type: policy.resourceType, id: null },
+          org_id: null,
+          purpose_of_use: 'operations',
+          outcome: 'error',
+          reason: `http.status_${String(reply.statusCode)}`,
+          request_id: request.id,
+        })
+        .catch(() => {
+          request.log.error({ event: 'audit.write_failed' });
+        });
+    }
   });
 
   app.addHook('onResponse', async (request, reply) => {

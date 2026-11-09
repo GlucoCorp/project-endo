@@ -73,6 +73,11 @@ export interface ClinicianMembership {
  */
 export interface MembershipStore {
   find(orgId: string, identityRef: string): Promise<ClinicianMembership | null>;
+  /**
+   * ADR-0019: every ACTIVE membership of this person, across organisations, before one is chosen.
+   * Uses the dedicated lookup function (migration 0004); returns only organisation and role.
+   */
+  listActive(identityRef: string): Promise<{ orgId: string; role: 'clinician' | 'org_admin' }[]>;
 }
 
 export class PostgresMembershipStore implements MembershipStore {
@@ -93,6 +98,22 @@ export class PostgresMembershipStore implements MembershipStore {
     );
     return row ? { clinicianId: row.id, role: row.role, active: row.active } : null;
   }
+
+  async listActive(
+    identityRef: string,
+  ): Promise<{ orgId: string; role: 'clinician' | 'org_admin' }[]> {
+    const row = await this.#db
+      .selectNoFrom((eb) =>
+        eb
+          .fn<{ org_id: string; role: 'clinician' | 'org_admin' }[]>(
+            'clinician_memberships_active',
+            [eb.val(identityRef)],
+          )
+          .as('memberships'),
+      )
+      .executeTakeFirstOrThrow();
+    return row.memberships.map((m) => ({ orgId: m.org_id, role: m.role }));
+  }
 }
 
 /** Dev and test stand-in. */
@@ -106,5 +127,14 @@ export class InMemoryMembershipStore implements MembershipStore {
 
   find(orgId: string, identityRef: string): Promise<ClinicianMembership | null> {
     return Promise.resolve(this.#rows.get(`${orgId}:${identityRef}`) ?? null);
+  }
+
+  listActive(identityRef: string): Promise<{ orgId: string; role: 'clinician' | 'org_admin' }[]> {
+    const out: { orgId: string; role: 'clinician' | 'org_admin' }[] = [];
+    for (const [key, m] of this.#rows) {
+      const [orgId, ref] = key.split(':');
+      if (ref === identityRef && orgId && m.active) out.push({ orgId, role: m.role });
+    }
+    return Promise.resolve(out.sort((a, b) => a.orgId.localeCompare(b.orgId)));
   }
 }
