@@ -63,6 +63,21 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  // Spec 13.1 (not a spec 3.2 row): only she sees or changes her own consent.
+  'consent.read_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'consent.update_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   // REQ-001 (not a spec 3.2 row): a clinician invites a patient into their own organisation.
   'enrolment.create': {
     patient: '-',

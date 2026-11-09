@@ -27,6 +27,8 @@ export type {
   SealedResponse,
 } from './idempotent.ts';
 export { OUTBOX_MAX_ATTEMPTS, relayAuditOutbox } from './outbox.ts';
+export { InMemoryConsentStore, PostgresConsentStore } from './consents.ts';
+export type { ConsentDecision, ConsentState, ConsentStore } from './consents.ts';
 export type { RelayResult } from './outbox.ts';
 
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */

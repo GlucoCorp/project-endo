@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore } from '@endo/audit';
-import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import {
+  InMemoryConsentStore,
+  InMemoryIdempotentInvitationStore,
+  InMemoryMembershipStore,
+} from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   ServiceTokenSigner,
@@ -32,7 +36,7 @@ async function setup(overrides: Partial<ApiDeps> = {}, withoutWorkload = false) 
     memberships,
     sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
     now: () => new Date(),
-    loadConsents: () => Promise.resolve(new Set()),
+    consents: new InMemoryConsentStore(),
   };
   const workloadVerifier = new WorkloadTokenVerifier('api', {
     'bff-clinic': { publicJwk: clinic.publicJwk, scopes: ['api.membership.resolve'] },

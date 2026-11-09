@@ -34,6 +34,8 @@ export const ACTIONS = [
   'own_data.delete', // Delete own data
   'support.phi_access', // Access PHI for support
   'enrolment.create', // REQ-001: clinician invites a patient to their own organisation
+  'consent.read_own', // Spec 13.1: she sees her consent decisions
+  'consent.update_own', // Spec 13.1: she grants or withdraws a purpose, effective immediately
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -154,6 +156,8 @@ export function can(
 
   switch (action) {
     case 'episode.read_own':
+    case 'consent.read_own':
+    case 'consent.update_own':
     case 'checkin.submit':
     case 'own_data.export':
     case 'own_data.delete':

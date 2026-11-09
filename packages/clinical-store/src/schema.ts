@@ -61,6 +61,17 @@ export interface ClinicalDatabase {
     attempts: Generated<number>;
     last_error: string | null;
   };
+  /** View: the latest decision per patient and purpose (migration 0001). Read-only. */
+  consent_current: {
+    id: string;
+    seq: string;
+    patient_id: string;
+    org_id: string;
+    purpose: ConsentPurpose;
+    status: ConsentStatus;
+    version: number;
+    decided_at: Date;
+  };
   consent: {
     id: string;
     patient_id: string;

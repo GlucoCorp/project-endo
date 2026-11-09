@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { AuditWriter, InMemoryAuditStore, verifyChain, type AuditEvent } from '@endo/audit';
-import { InMemoryIdempotentInvitationStore, InMemoryMembershipStore } from '@endo/clinical-store';
+import {
+  InMemoryConsentStore,
+  InMemoryIdempotentInvitationStore,
+  InMemoryMembershipStore,
+} from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   RouteDeclarationError,
@@ -34,7 +38,7 @@ async function setup(overrides: Partial<ApiDeps> = {}, roles: readonly Role[] = 
     sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
     memberships: new InMemoryMembershipStore(),
     now: () => new Date(),
-    loadConsents: () => Promise.resolve(new Set()),
+    consents: new InMemoryConsentStore(),
     logStream: { write: (l) => logs.push(l) },
     ...overrides,
   });
@@ -221,7 +225,7 @@ describe('deny by default: route policy enforcement (spec 2.5, 10.4)', () => {
       sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
       memberships: new InMemoryMembershipStore(),
       now: () => new Date(),
-      loadConsents: () => Promise.resolve(new Set()),
+      consents: new InMemoryConsentStore(),
     });
   }
 
