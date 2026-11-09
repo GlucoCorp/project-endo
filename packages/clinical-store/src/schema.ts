@@ -10,7 +10,7 @@ export const CONSENT_PURPOSES = [
 export type ConsentPurpose = (typeof CONSENT_PURPOSES)[number];
 export type ConsentStatus = 'granted' | 'declined' | 'revoked';
 
-/** Table shapes for Kysely. Match migrations/0001_enrolment_consent.sql. */
+/** Table shapes for Kysely. Match migrations/0001_enrolment_consent.sql and later. */
 export interface ClinicalDatabase {
   organization: { id: string; region: string; name: string; created_at: Generated<Date> };
   clinician: {
@@ -39,6 +39,16 @@ export interface ClinicalDatabase {
     claimed_at: Date | null;
     patient_id: string | null;
     revoked_at: Date | null;
+    /** Migration 0005: the coordinator transaction holding it (ADR-0021 section 6). */
+    reserved_by: string | null;
+    reserved_at: Date | null;
+  };
+  /** Migration 0005: transactions whose reservation was released, never to reserve again. */
+  enrolment_reservation_fence: {
+    transaction_id: string;
+    org_id: string;
+    invitation_id: string;
+    released_at: Generated<Date>;
   };
   idempotency_record: {
     org_id: string;
