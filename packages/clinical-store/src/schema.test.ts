@@ -41,6 +41,13 @@ describe('InMemoryInvitationStore (dev and tests)', () => {
     const store = new InMemoryMembershipStore().add('org', 'ref', m);
     expect(await store.find('org', 'ref')).toEqual(m);
     expect(await store.find('org', 'other')).toBeNull();
+    store
+      .add('org2', 'ref', { ...m, role: 'org_admin' })
+      .add('org3', 'ref', { ...m, active: false });
+    expect(await store.listActive('ref')).toEqual([
+      { orgId: 'org', role: 'clinician' },
+      { orgId: 'org2', role: 'org_admin' },
+    ]);
   });
 });
 

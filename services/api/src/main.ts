@@ -26,8 +26,19 @@ import {
 } from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
-import { ServiceTokenVerifier } from '@endo/service-kit';
+import { ServiceTokenVerifier, WorkloadTokenVerifier } from '@endo/service-kit';
 import { buildApi } from './app.ts';
+
+const PublicJwk = z.string().transform((s, ctx) => {
+  try {
+    return z
+      .object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string() })
+      .parse(JSON.parse(s));
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'invalid' });
+    return z.NEVER;
+  }
+});
 
 const Config = z.object({
   ENDO_ENV: Environment,
@@ -44,6 +55,10 @@ const Config = z.object({
   // Audit outbox relay as a member of endo_clinical_relay: a separate credential, because the API
   // role may only add events (ADR-0017). Required whenever the clinical store is configured.
   API_AUDIT_RELAY_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
+  // Clinic BFF (ADR-0019): its service-token key (clinician and org_admin only) and, separately,
+  // its workload key (membership lookup only). Both optional until the clinic BFF is deployed.
+  API_BFF_CLINIC_SERVICE_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -138,6 +153,25 @@ async function main(): Promise<void> {
     logLevel: config.ENDO_LOG_LEVEL,
     verifier: new ServiceTokenVerifier('api', {
       'bff-patient': { publicJwk: config.API_SERVICE_TOKEN_PUBLIC_KEY_JWK, roles: ['patient'] },
+      ...(config.API_BFF_CLINIC_SERVICE_PUBLIC_KEY_JWK
+        ? {
+            'bff-clinic': {
+              publicJwk: config.API_BFF_CLINIC_SERVICE_PUBLIC_KEY_JWK,
+              // Never glucorp_support: support access has its own path (spec 10.3).
+              roles: ['clinician', 'org_admin'],
+            },
+          }
+        : {}),
+    }),
+    workloadVerifier: new WorkloadTokenVerifier('api', {
+      ...(config.API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            'bff-clinic': {
+              publicJwk: config.API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.membership.resolve'],
+            },
+          }
+        : {}),
     }),
     audit: auditWriter,
     invitations,
