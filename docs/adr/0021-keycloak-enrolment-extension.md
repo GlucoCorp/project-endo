@@ -38,7 +38,8 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - The link carries the invitation token in the URL **fragment** (never sent to servers or logs). The landing page posts it to the patient BFF and immediately removes it from the address bar (`history.replaceState`).
 - Responses are `no-store` and `Referrer-Policy: no-referrer`. Opening the link (GET, link previews) never starts, consumes or confirms anything.
 - An explicit "Start" (POST with Origin and CSRF checks) asks the coordinator to create a transaction bound to a new unpredictable browser secret.
-- The BFF holds the secret in a `__Host-` cookie (Secure, HttpOnly, Path `/`, SameSite=Lax, 15 minutes). Every later step (status polling, continue, cancel) needs it. Several tabs and a replaced cookie are tested.
+- The BFF holds the secret in a `__Host-` cookie (Secure, HttpOnly, Path `/`, SameSite=Lax) whose lifetime covers the whole enrolment window (45 minutes). The coordinator enforces each state's own deadline (section 10) server-side; the cookie lifetime grants nothing by itself.
+- Every later step (status polling, continue, resume, cancel) needs it. Several tabs and a replaced cookie are tested.
 
 ### 5. Authenticated handoff into Keycloak (no trust in request parameters)
 
@@ -80,7 +81,7 @@ endo patient browser (top level)
 ```
 
 - With no handoff reference, `endo-enrolment` answers `attempted()`, so Keycloak goes on to the ordinary alternatives. There is no `CONDITIONAL` execution: Keycloak 26.8 clears sibling alternatives before evaluating a condition.
-- With a reference, it either succeeds or fails the whole flow. An invalid, expired or mismatched reference fails closed and never falls through to the SSO cookie.
+- With a reference, it either succeeds or ends the flow. An invalid, expired or mismatched reference fails closed with a terminal error page (`failureChallenge`), not a plain `failure()`. Keycloak can let a plain failure of an alternative fall through to the next one, and it must never fall through to the SSO cookie.
 - On success it ignores any existing authenticated user. It creates, or on a bound retry resumes, exactly one provisional user with an opaque username and the attribute `endo_enrolment=<transaction id>`.
 - A **resume** reference (section 11) authenticates only that same provisional user, with the passkey she has just registered.
 - Ordinary login (alternatives 2 and 3) refuses users who carry `endo_enrolment`, enforced by the extension's user-storage guard. Until activation (section 10), a provisional user cannot sign in any other way.
@@ -102,36 +103,40 @@ endo patient browser (top level)
 
 The coordinator's transition table (identity database), with each state's deadline:
 
-| From                                       | Event                                                                             | To                      | Side effects (idempotent, keyed by the transaction)            |
-| ------------------------------------------ | --------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------------- |
-| none                                       | patient presses Start (browser secret)                                            | `awaiting-confirmation` | code generated; invitation must be live and unreserved; 15 min |
-| `awaiting-confirmation`                    | clinician confirms (correct code, attestation)                                    | `confirmed`             | API `reserve` (section 6); siblings cancelled; 15 min          |
-| `confirmed`                                | Keycloak redeems the handoff                                                      | `redeemed`              | session tuple recorded; provisional user created; 15 min       |
-| `redeemed`                                 | extension post-commit hook, or reconciliation finds the credential                | `credential-committed`  | none; 30 min to consent                                        |
-| `credential-committed`                     | BFF callback with the expected subject                                            | `consent-pending`       | consent-pending BFF session (section 12)                       |
-| `consent-pending`                          | she records `self_tracking: granted` (all four decisions held in the transaction) | `activating`            | none yet                                                       |
-| `activating`                               | coordinator runs the activation steps in order                                    | `active`                | see below                                                      |
-| any non-terminal state before `activating` | deadline passes, patient cancels, clinician revokes, `self_tracking` declined     | `cancelling`            | access refused at once                                         |
-| `cancelling`                               | cleanup completes                                                                 | `cancelled`             | see section 11                                                 |
+| From                        | Event                                                                             | To                                             | Side effects (idempotent, keyed by the transaction)                                                                                                                            |
+| --------------------------- | --------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| none                        | patient presses Start (browser secret)                                            | `awaiting-confirmation`                        | code generated; invitation must be live and unreserved; 15 min                                                                                                                 |
+| `awaiting-confirmation`     | clinician confirms (correct code, attestation)                                    | `confirmed`                                    | API `reserve` (section 6); siblings cancelled; 15 min                                                                                                                          |
+| `confirmed`                 | Keycloak redeems the handoff                                                      | `redeemed`                                     | session tuple recorded; provisional user created; 15 min                                                                                                                       |
+| `redeemed`                  | extension post-commit hook, or reconciliation finds the credential                | `credential-committed`                         | none; 30 min to consent                                                                                                                                                        |
+| `redeemed`                  | BFF callback arrives before the commit notice                                     | `credential-committed`, then `consent-pending` | the coordinator reconciles at once by asking Keycloak whether the provisional user has the credential; if not, the callback is refused and the page offers "Continue" (resume) |
+| `credential-committed`      | BFF callback with the expected subject                                            | `consent-pending`                              | consent-pending BFF session (section 12)                                                                                                                                       |
+| `consent-pending`           | she records `self_tracking: granted` (all four decisions held in the transaction) | `claiming`                                     | none yet                                                                                                                                                                       |
+| `claiming`                  | API `claim` succeeds (durably recorded)                                           | `activating`                                   | patient record created and invitation claimed, in one clinical transaction                                                                                                     |
+| `claiming`                  | API `claim` is definitely refused (invitation revoked or expired)                 | `cancelling`                                   | access refused at once                                                                                                                                                         |
+| `claiming`                  | outcome unknown (timeout, lost response)                                          | `claiming`                                     | retried; the coordinator asks the API for the invitation's state before deciding                                                                                               |
+| `activating`                | coordinator runs the activation steps in order                                    | `active`                                       | see below                                                                                                                                                                      |
+| any state before `claiming` | deadline passes, patient cancels, clinician revokes, `self_tracking` declined     | `cancelling`                                   | access refused at once                                                                                                                                                         |
+| `cancelling`                | cleanup completes                                                                 | `cancelled`                                    | see section 11                                                                                                                                                                 |
 
-- **Activation steps, each idempotent and durably recorded before the next:**
-  1. API `claim` (which creates the patient record first, then claims the reserved invitation, in one clinical transaction);
-  2. identity: create the person with the issuer and subject, plus the patient link;
-  3. API: write all four consent decisions with their versions and times, and their audit events;
-  4. Keycloak finalisation through the extension's narrow endpoint: assign `patient`, remove the `endo_enrolment` quarantine, durably acknowledged.
+- **`claiming` is the last point where enrolment can still be cancelled.** Its only remote step is the API `claim`, which creates the patient record and claims the reserved invitation in one clinical transaction. A definite refusal cancels; an unknown outcome is resolved by asking the API, never by guessing.
+- **Activation is forward-only once the claim has succeeded.** These steps are each idempotent and durably recorded before the next:
+  1. identity: create the person with the issuer and subject, plus the patient link;
+  2. API: write all four consent decisions with their versions and times, and their audit events;
+  3. Keycloak finalisation through the extension's narrow endpoint: assign `patient`, remove the `endo_enrolment` quarantine, durably acknowledged.
 
-  A failed step is retried with backoff. The transaction stays `activating`, and access stays consent-pending, until all four succeed.
+  A failed step is retried with backoff and alerts if it stalls. The transaction stays `activating`, and access stays consent-pending, until all three succeed. Nothing in it can be refused by a revocation, because the invitation is already claimed.
 
-- **No clinical or identity records exist before `activating`.** Consent decisions are held only in the transaction until then.
+- **No clinical or identity records exist before `claiming` succeeds.** Consent decisions are held only in the transaction until then.
 
 ### 11. Cancellation and cleanup (per resource)
 
-- **Before `activating`:** cleanup deletes the provisional Keycloak user (and its credential and sessions) through the extension endpoint, releases or revokes the invitation, and wipes the code verifier and browser secret.
+- **Before the claim succeeds:** cleanup deletes the provisional Keycloak user (and its credential and sessions) through the extension endpoint, releases or revokes the invitation, and wipes the code verifier and browser secret.
   - The invitation is revoked when she declined or the clinician revoked it.
   - It is released (reservation cleared) when she cancelled or the deadline passed, so the clinic can use it again.
-- **Once `activating` has claimed the invitation,** cancellation is no longer possible. Activation only moves forward. A woman who changes her mind uses account deletion (REQ-009), which has its own retention rules.
+- **Once `claiming` has succeeded,** cancellation is no longer possible. Activation only moves forward. A woman who changes her mind uses account deletion (REQ-009), which has its own retention rules.
 - Cleanup is fenced: it runs only in `cancelling`, and activation steps check the state before writing. A remote write that finishes after cancellation is undone by the same cleanup, which is idempotent.
-- **Lost callback:** if the OIDC callback never reaches the BFF after `credential-committed`, the patient's page (browser secret still valid, 30 min) offers "Continue". That starts a **resume** handoff bound to the same transaction (section 7), and she authenticates with her new passkey. After the deadline, cleanup runs.
+- **Lost callback:** if the OIDC callback never reaches the BFF after `credential-committed`, the patient's page (browser secret still valid) offers "Continue" until the 30-minute consent deadline. That starts a **resume** handoff bound to the same transaction (section 7), and she authenticates with her new passkey. After the deadline, cleanup runs.
 - Stalled transactions raise an alert.
 
 ### 12. Consent-pending session
