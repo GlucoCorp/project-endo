@@ -1,8 +1,10 @@
 import type { FastifyInstance } from 'fastify';
+import type { AuditWriter } from '@endo/audit';
 import type { MembershipStore } from '@endo/clinical-store';
 
 export interface MembershipRouteDeps {
   readonly memberships: MembershipStore;
+  readonly audit: AuditWriter;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
@@ -57,6 +59,17 @@ export function registerMembershipRoutes(app: FastifyInstance, deps: MembershipR
     async (request) => {
       const { identity_ref } = request.body as { identity_ref: string };
       const active = await deps.memberships.listActive(identity_ref);
+      // Whose memberships were read: the opaque identity reference, never the result.
+      await deps.audit.write({
+        actor: { id: null, role: 'system' },
+        action: 'api.membership.resolved',
+        resource: { type: 'clinician_membership', id: identity_ref },
+        org_id: null,
+        purpose_of_use: 'operations',
+        outcome: 'success',
+        reason: null,
+        request_id: request.id,
+      });
       return { memberships: active.map((m) => ({ org_id: m.orgId, role: m.role })) };
     },
   );

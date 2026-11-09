@@ -117,7 +117,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   const app = await createApiInstance(deps);
   registerHealthRoutes(app);
   registerHelloRoutes(app);
-  registerMembershipRoutes(app, { memberships: deps.memberships });
+  registerMembershipRoutes(app, { memberships: deps.memberships, audit: deps.audit });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,
@@ -262,6 +262,28 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     }
     request.subject = subject;
     request.clinicianId = clinicianId;
+  });
+
+  // A workload request that was allowed and then failed is audited as an error (safe code only).
+  // The response is already sent, so a failure here is logged, never swallowed silently.
+  app.addHook('onResponse', async (request, reply) => {
+    const policy = request.routeOptions.config.policy;
+    if (policy?.kind === 'workload' && request.workload && reply.statusCode >= 400) {
+      await deps.audit
+        .write({
+          actor: { id: null, role: 'system' },
+          action: policy.action,
+          resource: { type: policy.resourceType, id: null },
+          org_id: null,
+          purpose_of_use: 'operations',
+          outcome: 'error',
+          reason: `http.status_${String(reply.statusCode)}`,
+          request_id: request.id,
+        })
+        .catch(() => {
+          request.log.error({ event: 'audit.write_failed' });
+        });
+    }
   });
 
   app.addHook('onResponse', async (request, reply) => {

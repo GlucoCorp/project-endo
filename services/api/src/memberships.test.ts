@@ -65,6 +65,11 @@ describe('ADR-0019 POST /internal/v1/memberships/resolve (clinic BFF, workload t
     });
     expect(await audit.readRange(1, 10)).toMatchObject([
       { action: 'api.membership.resolve', outcome: 'success', actor: { role: 'system' } },
+      {
+        action: 'api.membership.resolved',
+        outcome: 'success',
+        resource: { type: 'clinician_membership', id: PERSON },
+      },
     ]);
   });
 
@@ -85,8 +90,35 @@ describe('ADR-0019 POST /internal/v1/memberships/resolve (clinic BFF, workload t
     expect((await resolve({ authorization: `Bearer ${user}` })).statusCode).toBe(401);
   });
 
-  it('refuses a workload token without the scope, and audits the refusal', async () => {
-    const { resolve, clinic, audit } = await setup({
+  it('refuses a correctly signed caller without the scope (403), and reads nothing', async () => {
+    const other = await generateServiceKeyPair();
+    let reads = 0;
+    const { resolve, audit } = await setup({
+      workloadVerifier: new WorkloadTokenVerifier('api', {
+        'bff-clinic': { publicJwk: other.publicJwk, scopes: ['api.something.else'] },
+      }),
+      memberships: {
+        find: () => Promise.resolve(null),
+        listActive: () => {
+          reads += 1;
+          return Promise.resolve([]);
+        },
+      },
+    });
+    const token = await new WorkloadTokenSigner(other.privateJwk, 'bff-clinic').sign(
+      ['api.something.else'],
+      'api',
+    );
+    const res = await resolve({ authorization: `Bearer ${token}` });
+    expect(res.statusCode).toBe(403);
+    expect(reads).toBe(0);
+    expect(await audit.readRange(1, 10)).toMatchObject([
+      { outcome: 'denied', reason: 'authz.scope_missing' },
+    ]);
+  });
+
+  it('refuses a token signed by the wrong key (401), audited', async () => {
+    const { resolve, audit } = await setup({
       workloadVerifier: new WorkloadTokenVerifier('api', {
         'bff-clinic': {
           publicJwk: (await generateServiceKeyPair()).publicJwk,
@@ -94,14 +126,33 @@ describe('ADR-0019 POST /internal/v1/memberships/resolve (clinic BFF, workload t
         },
       }),
     });
-    const wrongKey = await new WorkloadTokenSigner(clinic.privateJwk, 'bff-clinic').sign(
+    const stranger = await generateServiceKeyPair();
+    const token = await new WorkloadTokenSigner(stranger.privateJwk, 'bff-clinic').sign(
       ['api.membership.resolve'],
       'api',
     );
-    expect((await resolve({ authorization: `Bearer ${wrongKey}` })).statusCode).toBe(401);
+    expect((await resolve({ authorization: `Bearer ${token}` })).statusCode).toBe(401);
     expect(await audit.readRange(1, 10)).toMatchObject([
       { outcome: 'denied', reason: 'authn.invalid' },
     ]);
+  });
+
+  it('audits an allowed request that then fails (validation, storage) as an error', async () => {
+    const { resolve, workload, audit } = await setup({
+      memberships: {
+        find: () => Promise.resolve(null),
+        listActive: () => Promise.reject(new Error('db down')),
+      },
+    });
+    expect((await resolve(await workload(), { identity_ref: 'x' })).statusCode).toBe(400);
+    expect((await resolve(await workload())).statusCode).toBe(500);
+    await new Promise((r) => setTimeout(r, 100)); // onResponse runs after inject() returns
+    const events = await audit.readRange(1, 10);
+    expect(events.filter((e) => e.outcome === 'error').map((e) => e.reason)).toEqual([
+      'http.status_400',
+      'http.status_500',
+    ]);
+    expect(events.some((e) => e.action === 'api.membership.resolved')).toBe(false);
   });
 
   it('fails closed with no workload verifier configured', async () => {

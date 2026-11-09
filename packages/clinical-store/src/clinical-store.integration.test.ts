@@ -661,10 +661,12 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
     try {
       await c.query('BEGIN');
       await c.query('SET LOCAL ROLE endo_clinical_membership_lookup');
-      await expect(c.query('SELECT id FROM patient_record')).rejects.toThrow(/permission denied/);
-      await expect(c.query('SELECT created_at FROM clinician')).rejects.toThrow(
-        /permission denied/,
-      );
+      // A savepoint per expected failure, so the second check really runs.
+      for (const sql of ['SELECT id FROM patient_record', 'SELECT created_at FROM clinician']) {
+        await c.query('SAVEPOINT probe');
+        await expect(c.query(sql)).rejects.toThrow(/permission denied/);
+        await c.query('ROLLBACK TO SAVEPOINT probe');
+      }
     } finally {
       await c.query('ROLLBACK');
       c.release();
