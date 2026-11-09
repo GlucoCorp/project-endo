@@ -14,16 +14,23 @@ import {
 import {
   OidcError,
   TRANSACTION_TTL_MS,
+  RefreshRejectedError,
   authorizationUrl,
+  logoutUrl,
+  refreshSession,
+  validateLogoutToken,
+  type SeenTokenIds,
   newBinding,
   exchangeCode,
   validateIdToken,
   type OidcConfig,
   type TransactionStore,
 } from './oidc.ts';
+import type { EnvelopeSealer } from '@endo/crypto';
 import type { Membership, Resolver } from './resolve.ts';
 import {
   OIDC_COOKIE,
+  REVALIDATE_AFTER_MS,
   SESSION_COOKIE,
   readCookie,
   type ClinicSession,
@@ -34,6 +41,8 @@ import {
 export type ClinicAuth =
   | { readonly kind: 'public'; readonly reason: 'liveness' }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
+  /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
+  | { readonly kind: 'backchannel' }
   /**
    * A signed-in clinician. Unless `allowPending`, the session must have an active organisation;
    * a `pending-org` session may only see its state, choose, or sign out (ADR-0019 section 5).
@@ -56,6 +65,7 @@ export function isClinicAuth(value: unknown): value is ClinicAuth {
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
   if (v.kind === 'public') return v.reason === 'liveness';
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
+  if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
   const allow = (v as { allowPending?: unknown }).allowPending;
   return allow === undefined || typeof allow === 'boolean';
@@ -67,8 +77,12 @@ export interface ClinicBffDeps {
   /** Keycloak's signing keys, from the configured JWKS URL (never from a token). */
   readonly keys: JWTVerifyGetKey;
   readonly transactions: TransactionStore;
+  /** Logout-token ids already used (replay protection). */
+  readonly logoutTokens: SeenTokenIds;
   readonly sessions: InMemoryClinicSessions;
   readonly resolver: Resolver;
+  /** Seals the Keycloak refresh token held in each session. */
+  readonly sealer: EnvelopeSealer;
   readonly fetch: typeof fetch;
   readonly now: () => Date;
   /** Exact origin of the portal, e.g. `https://clinic.example`; state-changing requests must match. */
@@ -81,6 +95,10 @@ const oidcCookie = (value: string, maxAgeSeconds: number) =>
   `${OIDC_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(maxAgeSeconds)}`;
 const sessionCookie = (value: string) =>
   `${SESSION_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+
+/** Binds a sealed refresh token to its Keycloak user, so it cannot be moved to another session. */
+const refreshContext = (issuer: string, subject: string) =>
+  ['bff-clinic', 'refresh', issuer, subject].join(':');
 
 /** Constant-time comparison of two secrets of possibly different length. */
 function sameSecret(a: string, b: string): boolean {
@@ -117,8 +135,45 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     ajv: { customOptions: { removeAdditional: false } },
   });
 
+  // In-flight revalidations, so concurrent requests on one session refresh only once.
+  const inFlight = new Map<string, Promise<'ok' | 'ended' | 'unavailable'>>();
+  const revalidate = (token: string, session: ClinicSession) => {
+    const running = inFlight.get(token);
+    if (running) return running;
+    const work = (async (): Promise<'ok' | 'ended' | 'unavailable'> => {
+      const context = refreshContext(session.issuer, session.subject);
+      try {
+        const current = await deps.sealer.open(session.refresh, context);
+        const { refreshToken } = await refreshSession(deps.oidc, current, deps.fetch);
+        await deps.sessions.recordRevalidation(
+          token,
+          await deps.sealer.seal(refreshToken, context),
+        );
+        return 'ok';
+      } catch (error) {
+        if (error instanceof RefreshRejectedError) {
+          await deps.sessions.revoke(token);
+          return 'ended';
+        }
+        return 'unavailable';
+      } finally {
+        inFlight.delete(token);
+      }
+    })();
+    inFlight.set(token, work);
+    return work;
+  };
+
   app.decorateRequest('session', null);
   app.decorateRequest('sessionToken', null);
+  // Only the back-channel logout route receives a form body (no new dependency for one field).
+  app.addContentTypeParser(
+    'application/x-www-form-urlencoded',
+    { parseAs: 'string', bodyLimit: 8 * 1024 },
+    (_req, body, done) => {
+      done(null, Object.fromEntries(new URLSearchParams(String(body))));
+    },
+  );
   enforceRouteDeclarations(app, 'auth', isClinicAuth);
   registerProblemHandlers(app);
 
@@ -147,6 +202,17 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     // Narrowed above: this is a session route.
     if (session.state !== 'active' && request.routeOptions.config.auth.allowPending !== true) {
       throw new ProblemError(403, 'authz.organisation_required', 'Choose an organisation first.');
+    }
+    // Keycloak session still alive? (ADR-0019 section 6.) Refresh at most every few minutes; one
+    // refresh per session at a time, because Keycloak rotates refresh tokens and refuses reuse.
+    if (deps.now().getTime() - session.validatedAt > REVALIDATE_AFTER_MS) {
+      const outcome = await revalidate(token as string, session);
+      if (outcome === 'ended') {
+        throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+      }
+      if (outcome === 'unavailable') {
+        throw new ProblemError(503, 'upstream.unavailable', 'Please try again shortly.');
+      }
     }
     // CSRF (ADR-0019 section 8): state-changing requests need the exact portal Origin (missing or
     // `null` refused) AND this session's synchronizer token. GETs never change state.
@@ -215,8 +281,12 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         if (q.error || !q.code || (q.iss !== undefined && q.iss !== deps.oidc.issuer)) {
           throw new OidcError();
         }
-        const { idToken } = await exchangeCode(deps.oidc, q.code, tx, deps.fetch);
+        const { idToken, refreshToken } = await exchangeCode(deps.oidc, q.code, tx, deps.fetch);
         const who = await validateIdToken(deps.oidc, idToken, tx, deps.keys, deps.now);
+        const refresh = await deps.sealer.seal(
+          refreshToken,
+          refreshContext(who.issuer, who.subject),
+        );
         const personId = await deps.resolver.person(who.issuer, who.subject);
         if (!personId) refuse();
         const memberships = await deps.resolver.memberships(personId);
@@ -226,6 +296,8 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
           issuer: who.issuer,
           subject: who.subject,
           sid: who.sid,
+          idToken,
+          refresh,
           memberships,
         });
         // Exactly one organisation: activate it now, through the same path as an explicit
@@ -315,6 +387,56 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       const rotated = await deps.sessions.resolve(next, { touch });
       if (!rotated) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
       return reply.header('set-cookie', sessionCookie(next)).send(view(rotated));
+    },
+  );
+
+  // Sign out (ADR-0019 section 6): CSRF-protected POST. Revoke locally FIRST, clear the cookie,
+  // then send the browser to Keycloak to end its session too.
+  app.post(
+    '/auth/logout',
+    { config: { auth: { kind: 'session', allowPending: true } } },
+    async (request, reply) => {
+      const session = request.session as ClinicSession;
+      await deps.sessions.revoke(request.sessionToken as string);
+      return reply
+        .header(
+          'set-cookie',
+          `${SESSION_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=0`,
+        )
+        .send({ logout_url: logoutUrl(deps.oidc, session.idToken) });
+    },
+  );
+
+  // Keycloak tells us a session ended: revoke every matching portal session. Idempotent.
+  app.post(
+    '/auth/backchannel-logout',
+    {
+      config: { auth: { kind: 'backchannel' } },
+      schema: {
+        // Unknown parameters must be ignored, not refused (Back-Channel Logout 1.0, section 2.5).
+        body: {
+          type: 'object',
+          required: ['logout_token'],
+          properties: { logout_token: { type: 'string', minLength: 1, maxLength: 4096 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { logout_token } = request.body as { logout_token: string };
+      let match: { sid?: string; sub?: string };
+      try {
+        match = await validateLogoutToken(
+          deps.oidc,
+          logout_token,
+          deps.keys,
+          deps.logoutTokens,
+          deps.now,
+        );
+      } catch {
+        throw new ProblemError(400, 'authn.logout_token_invalid', 'Invalid logout token.');
+      }
+      await deps.sessions.revokeMatching(deps.oidc.issuer, match);
+      return reply.code(200).send();
     },
   );
 

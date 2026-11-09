@@ -339,6 +339,9 @@ importers:
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit

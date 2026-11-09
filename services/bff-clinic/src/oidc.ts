@@ -15,6 +15,9 @@ export interface OidcConfig {
   readonly redirectUri: string;
   /** Exact `acr` a fresh clinician sign-in must carry (ADR-0019 section 3). */
   readonly requiredAcr: string;
+  /** RP-initiated logout (ADR-0019 section 6). */
+  readonly endSessionEndpoint: string;
+  readonly postLogoutRedirectUri: string;
 }
 
 /**
@@ -124,8 +127,62 @@ export async function exchangeCode(
   code: string,
   tx: OidcTransaction,
   fetchImpl: typeof fetch,
-): Promise<{ idToken: string }> {
-  const res = await fetchImpl(config.tokenEndpoint, {
+): Promise<{ idToken: string; refreshToken: string }> {
+  const res = await tokenRequest(config, fetchImpl, {
+    grant_type: 'authorization_code',
+    code,
+    redirect_uri: config.redirectUri,
+    code_verifier: tx.verifier,
+  });
+  if (!res.ok) throw new OidcError();
+  const body = (await res.json()) as { id_token?: unknown; refresh_token?: unknown };
+  if (typeof body.id_token !== 'string' || typeof body.refresh_token !== 'string') {
+    throw new OidcError();
+  }
+  return { idToken: body.id_token, refreshToken: body.refresh_token };
+}
+
+/** Keycloak said the refresh token is no longer valid: the Keycloak session has ended. */
+export class RefreshRejectedError extends Error {
+  constructor() {
+    super('authn.keycloak_session_ended');
+    this.name = 'RefreshRejectedError';
+  }
+}
+
+/**
+ * Revalidates the Keycloak session (ADR-0019 section 6): a refresh-token grant. Keycloak rotates
+ * refresh tokens and refuses reuse, so the caller must store the returned one. A 400/401 answer
+ * means the Keycloak session ended (RefreshRejectedError); anything else is an outage (OidcError).
+ */
+export async function refreshSession(
+  config: OidcConfig,
+  refreshToken: string,
+  fetchImpl: typeof fetch,
+): Promise<{ refreshToken: string }> {
+  let res: Response;
+  try {
+    res = await tokenRequest(config, fetchImpl, {
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    });
+  } catch {
+    throw new OidcError();
+  }
+  if (res.status === 400 || res.status === 401) throw new RefreshRejectedError();
+  if (!res.ok) throw new OidcError();
+  const body = (await res.json()) as { refresh_token?: unknown };
+  if (typeof body.refresh_token !== 'string') throw new OidcError();
+  return { refreshToken: body.refresh_token };
+}
+
+/** A token-endpoint call with client authentication (client_secret_basic). */
+function tokenRequest(
+  config: OidcConfig,
+  fetchImpl: typeof fetch,
+  params: Record<string, string>,
+): Promise<Response> {
+  return fetchImpl(config.tokenEndpoint, {
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
@@ -133,19 +190,10 @@ export async function exchangeCode(
         `${encodeURIComponent(config.clientId)}:${encodeURIComponent(config.clientSecret)}`,
       ).toString('base64')}`,
     },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: config.redirectUri,
-      code_verifier: tx.verifier,
-    }).toString(),
+    body: new URLSearchParams(params).toString(),
     redirect: 'error',
     signal: AbortSignal.timeout(5_000),
   });
-  if (!res.ok) throw new OidcError();
-  const body = (await res.json()) as { id_token?: unknown };
-  if (typeof body.id_token !== 'string') throw new OidcError();
-  return { idToken: body.id_token };
 }
 
 export interface VerifiedIdentity {
@@ -196,6 +244,84 @@ export async function validateIdToken(
       subject: payload.sub as string,
       sid: typeof sid === 'string' ? sid : null,
     };
+  } catch {
+    throw new OidcError();
+  }
+}
+
+/** Keycloak RP-initiated logout URL, with the session's ID token as a hint (ADR-0019 section 6). */
+export function logoutUrl(config: OidcConfig, idToken: string): string {
+  const url = new URL(config.endSessionEndpoint);
+  url.search = new URLSearchParams({
+    id_token_hint: idToken,
+    post_logout_redirect_uri: config.postLogoutRedirectUri,
+    client_id: config.clientId,
+  }).toString();
+  return url.toString();
+}
+
+const BACKCHANNEL_EVENT = 'http://schemas.openid.net/event/backchannel-logout';
+
+/**
+ * Remembers logout-token ids so a captured token cannot be replayed (dev store; the durable store
+ * comes with the session store). Entries expire with the token-age window.
+ */
+export class SeenTokenIds {
+  readonly #seen = new Map<string, number>();
+  readonly #now: () => number;
+
+  constructor(now: () => number = Date.now) {
+    this.#now = now;
+  }
+
+  /** True the first time an id is seen within the window; false for a replay. */
+  firstUse(jti: string): boolean {
+    const t = this.#now();
+    for (const [id, at] of this.#seen)
+      if (t - at > 2 * MAX_TOKEN_AGE_S * 1000) this.#seen.delete(id);
+    if (this.#seen.has(jti)) return false;
+    this.#seen.set(jti, t);
+    return true;
+  }
+}
+
+/**
+ * Validates a back-channel logout token (OpenID Connect Back-Channel Logout 1.0, section 2.6):
+ * signature by the configured JWKS, exact issuer, our audience, `iat` within the window, a `jti`
+ * not seen before, the back-channel logout event, NO `nonce`, and a `sid` or `sub`.
+ */
+export async function validateLogoutToken(
+  config: OidcConfig,
+  token: string,
+  keys: JWTVerifyGetKey,
+  seen: SeenTokenIds,
+  now: () => Date,
+): Promise<{ sid?: string; sub?: string }> {
+  try {
+    const { payload } = await jwtVerify(token, keys, {
+      issuer: config.issuer,
+      audience: config.clientId,
+      algorithms: ['RS256', 'ES256'],
+      clockTolerance: CLOCK_SKEW_S,
+      maxTokenAge: MAX_TOKEN_AGE_S,
+      requiredClaims: ['iss', 'aud', 'iat', 'exp', 'jti', 'events'],
+      currentDate: now(),
+    });
+    const events = payload['events'];
+    const sid = typeof payload['sid'] === 'string' ? payload['sid'] : undefined;
+    const sub = typeof payload.sub === 'string' && payload.sub.length > 0 ? payload.sub : undefined;
+    const isObject = (v: unknown): v is Record<string, unknown> =>
+      typeof v === 'object' && v !== null && !Array.isArray(v);
+    const ok =
+      isObject(events) &&
+      Object.prototype.hasOwnProperty.call(events, BACKCHANNEL_EVENT) &&
+      isObject(new Map(Object.entries(events)).get(BACKCHANNEL_EVENT)) &&
+      payload['nonce'] === undefined &&
+      (sid !== undefined || sub !== undefined) &&
+      typeof payload.jti === 'string' &&
+      seen.firstUse(payload.jti);
+    if (!ok) throw new OidcError();
+    return { ...(sid !== undefined ? { sid } : {}), ...(sub !== undefined ? { sub } : {}) };
   } catch {
     throw new OidcError();
   }

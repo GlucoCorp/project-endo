@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { isDeployedEnvironment, type EnvironmentName } from '@endo/config';
+import type { SealedValue } from '@endo/crypto';
 import type { Membership } from './resolve.ts';
 
 /** `__Host-` prefix: Secure, path=/, no Domain (spec 8.4). SameSite=Strict (ADR-0019 section 5). */
@@ -12,12 +13,20 @@ export const BACKGROUND_HEADER = 'x-endo-background';
 /** Spec 10.2: 15 minutes idle. 12 hours absolute (ADR-0015 realm setting). */
 export const CLINIC_IDLE_MS = 15 * 60 * 1000;
 export const CLINIC_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
+/** Revalidate with Keycloak at most this long after the last confirmation (ADR-0019 section 6). */
+export const REVALIDATE_AFTER_MS = 4 * 60 * 1000;
 
 export interface ClinicSession {
   readonly personId: string;
   readonly issuer: string;
   readonly subject: string;
   readonly sid: string | null;
+  /** Kept server-side only, as `id_token_hint` for Keycloak logout (ADR-0019 section 6). */
+  readonly idToken: string;
+  /** Keycloak refresh token, sealed with its own data key; never leaves the server. */
+  refresh: SealedValue;
+  /** When the Keycloak session was last confirmed alive (refresh grant). */
+  validatedAt: number;
   /** `pending-org` until one organisation is chosen (ADR-0019 section 5). */
   readonly state: 'pending-org' | 'active';
   readonly candidates: readonly Membership[];
@@ -32,6 +41,8 @@ export interface NewSession {
   readonly issuer: string;
   readonly subject: string;
   readonly sid: string | null;
+  readonly idToken: string;
+  readonly refresh: SealedValue;
   readonly memberships: readonly Membership[];
 }
 
@@ -64,6 +75,9 @@ export class InMemoryClinicSessions {
       issuer: s.issuer,
       subject: s.subject,
       sid: s.sid,
+      idToken: s.idToken,
+      refresh: s.refresh,
+      validatedAt: t,
       state: 'pending-org',
       candidates: [...s.memberships],
       active: null,
@@ -124,9 +138,39 @@ export class InMemoryClinicSessions {
     return Promise.resolve(s);
   }
 
+  /** Stores the rotated refresh token after a successful revalidation. */
+  recordRevalidation(token: string, refresh: SealedValue): Promise<void> {
+    const s = this.#sessions.get(token);
+    if (s) {
+      s.refresh = refresh;
+      s.validatedAt = this.#now();
+    }
+    return Promise.resolve();
+  }
+
   revoke(token: string): Promise<void> {
     this.#sessions.delete(token);
     return Promise.resolve();
+  }
+
+  /**
+   * Back-channel logout (ADR-0019 section 6): revokes every session of this issuer with the given
+   * Keycloak session id, or, when no sid is given, every session of the subject. Idempotent.
+   */
+  revokeMatching(issuer: string, match: { sid?: string; sub?: string }): Promise<number> {
+    let revoked = 0;
+    for (const [token, s] of this.#sessions) {
+      const hit =
+        s.issuer === issuer &&
+        (match.sid !== undefined
+          ? s.sid === match.sid
+          : match.sub !== undefined && s.subject === match.sub);
+      if (hit) {
+        this.#sessions.delete(token);
+        revoked += 1;
+      }
+    }
+    return Promise.resolve(revoked);
   }
 }
 
