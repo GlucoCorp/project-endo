@@ -7,6 +7,7 @@ import type { Kysely } from 'kysely';
 import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
 import {
   CLINICAL_MIGRATIONS_DIR,
+  PostgresInvitationReservationStore,
   PostgresInvitationStore,
   PostgresConsentStore,
   PostgresIdempotentInvitationStore,
@@ -327,6 +328,13 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       const hash = tokenHash();
       await invite(hash, { org: ORG_B, by: CLIN_B });
       const live = await findLiveInvitation(apiDb, hash);
+      expect(live?.reserved).toBe(false);
+      // Since migration 0005 a claim needs a reservation (ADR-0021 section 6).
+      await admin.query(`UPDATE enrolment_invitation SET reserved_by = $2 WHERE token_hash = $1`, [
+        hash,
+        randomUUID(),
+      ]);
+      expect((await findLiveInvitation(apiDb, hash))?.reserved).toBe(true);
       const claim = () =>
         withOrg(apiDb, ORG_B, (trx) =>
           trx
@@ -353,6 +361,10 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
 
       const claimed = tokenHash();
       await invite(claimed, { org: ORG_B, by: CLIN_B });
+      await admin.query(`UPDATE enrolment_invitation SET reserved_by = $2 WHERE token_hash = $1`, [
+        claimed,
+        randomUUID(),
+      ]);
       await admin.query(
         `UPDATE enrolment_invitation SET claimed_at = now(), patient_id = $2 WHERE token_hash = $1`,
         [claimed, PAT_B],
@@ -719,5 +731,246 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       await c.query('ROLLBACK');
       c.release();
     }
+  });
+
+  describe('REQ-001, RISK-S04 ADR-0021 invitation reservation: one serialisation point', () => {
+    let store: PostgresInvitationReservationStore;
+    beforeAll(() => {
+      store = new PostgresInvitationReservationStore(apiDb);
+    });
+
+    const newInvitation = async (org = ORG_A, by = CLIN_A) => {
+      const id = randomUUID();
+      await admin.query(
+        `INSERT INTO enrolment_invitation (id, org_id, created_by, token_hash, expires_at)
+         VALUES ($1, $2, $3, $4, now() + interval '7 days')`,
+        [id, org, by, tokenHash()],
+      );
+      return id;
+    };
+    const audit = (type: string) => ({ id: randomUUID(), type });
+    const audited = async (id: string) =>
+      (await admin.query('SELECT 1 FROM audit_outbox WHERE id = $1', [id])).rowCount;
+    const req = (invitationId: string, transactionId: string, type = 'reserve') => ({
+      orgId: ORG_A,
+      invitationId,
+      transactionId,
+      auditEvent: audit(type),
+    });
+
+    it('reserves once per transaction, refuses another transaction, and audits only changes', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      const first = req(inv, tx);
+      expect(await store.reserve(first)).toEqual({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'live', reservedBy: tx },
+      });
+      expect(await audited(first.auditEvent.id)).toBe(1);
+
+      const again = req(inv, tx);
+      expect(await store.reserve(again)).toMatchObject({ outcome: 'done', changed: false });
+      expect(await audited(again.auditEvent.id)).toBe(0);
+
+      expect(await store.reserve(req(inv, randomUUID()))).toEqual({
+        outcome: 'refused',
+        state: { status: 'live', reservedBy: tx },
+      });
+      const row = await admin.query<{ reserved_at: Date; now: Date }>(
+        'SELECT reserved_at, now() AS now FROM enrolment_invitation WHERE id = $1',
+        [inv],
+      );
+      // The trigger stamps the database clock, never the application's.
+      expect(row.rows[0]!.reserved_at.getTime()).toBeLessThanOrEqual(row.rows[0]!.now.getTime());
+    });
+
+    it('releases only its own reservation, after which another transaction may reserve', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      await store.reserve(req(inv, tx));
+      expect(await store.release(req(inv, randomUUID(), 'release'))).toMatchObject({
+        outcome: 'done',
+        changed: false,
+        state: { status: 'live', reservedBy: tx },
+      });
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'live', reservedBy: null },
+      });
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ changed: false });
+      expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'done' });
+    });
+
+    it('claims only for the holding transaction, creating the patient record, idempotently', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      const patientId = randomUUID();
+      const identityRef = randomUUID();
+      const claim = (transactionId: string) => ({
+        ...req(inv, transactionId, 'claim'),
+        patientId,
+        identityRef,
+      });
+      expect(await store.claim(claim(tx))).toMatchObject({ outcome: 'refused' });
+      await store.reserve(req(inv, tx));
+      expect(await store.claim(claim(randomUUID()))).toMatchObject({ outcome: 'refused' });
+
+      const won = claim(tx);
+      expect(await store.claim(won)).toEqual({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'claimed', reservedBy: tx, patientId },
+      });
+      expect(await audited(won.auditEvent.id)).toBe(1);
+      const rec = await admin.query(
+        'SELECT org_id, identity_ref FROM patient_record WHERE id = $1',
+        [patientId],
+      );
+      expect(rec.rows[0]).toEqual({ org_id: ORG_A, identity_ref: identityRef });
+
+      // An unknown outcome is retried: the same request answers the same, writing nothing.
+      expect(await store.claim(claim(tx))).toMatchObject({ outcome: 'done', changed: false });
+      expect(
+        await store.revoke({ orgId: ORG_A, invitationId: inv, auditEvent: audit('x') }),
+      ).toMatchObject({ outcome: 'refused', state: { status: 'claimed' } });
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ outcome: 'refused' });
+      expect(await store.state(ORG_A, inv)).toEqual({
+        status: 'claimed',
+        reservedBy: tx,
+        patientId,
+      });
+    });
+
+    it('lets a revocation win over a reservation, so the holder can no longer claim', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      await store.reserve(req(inv, tx));
+      const revoke = { orgId: ORG_A, invitationId: inv, auditEvent: audit('revoke') };
+      expect(await store.revoke(revoke)).toEqual({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'revoked', reservedBy: tx },
+      });
+      expect(await store.revoke({ ...revoke, auditEvent: audit('revoke') })).toMatchObject({
+        changed: false,
+      });
+      expect(
+        await store.claim({
+          ...req(inv, tx, 'claim'),
+          patientId: randomUUID(),
+          identityRef: randomUUID(),
+        }),
+      ).toEqual({ outcome: 'refused', state: { status: 'revoked', reservedBy: tx } });
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ changed: false });
+      expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'refused' });
+    });
+
+    it('orders a simultaneous claim and revocation: exactly one wins', async () => {
+      for (let i = 0; i < 5; i++) {
+        const inv = await newInvitation();
+        const tx = randomUUID();
+        await store.reserve(req(inv, tx));
+        const [claimed, revoked] = await Promise.all([
+          store.claim({
+            ...req(inv, tx, 'claim'),
+            patientId: randomUUID(),
+            identityRef: randomUUID(),
+          }),
+          store.revoke({ orgId: ORG_A, invitationId: inv, auditEvent: audit('revoke') }),
+        ]);
+        expect([claimed.outcome, revoked.outcome].sort()).toEqual(['done', 'refused']);
+        const final = await store.state(ORG_A, inv);
+        expect(final.status).toBe(claimed.outcome === 'done' ? 'claimed' : 'revoked');
+      }
+    });
+
+    it('refuses to reserve or claim an expired invitation, but still releases it', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      await store.reserve(req(inv, tx));
+      await admin.query(
+        `ALTER TABLE enrolment_invitation DISABLE TRIGGER enrolment_invitation_forward_only`,
+      );
+      await admin.query(
+        `UPDATE enrolment_invitation SET created_at = created_at - interval '8 days', expires_at = expires_at - interval '8 days' WHERE id = $1`,
+        [inv],
+      );
+      await admin.query(
+        `ALTER TABLE enrolment_invitation ENABLE TRIGGER enrolment_invitation_forward_only`,
+      );
+      expect(await store.state(ORG_A, inv)).toEqual({ status: 'expired', reservedBy: tx });
+      expect(
+        await store.claim({
+          ...req(inv, tx, 'claim'),
+          patientId: randomUUID(),
+          identityRef: randomUUID(),
+        }),
+      ).toMatchObject({ outcome: 'refused', state: { status: 'expired' } });
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ changed: true });
+      expect(await store.reserve(req(inv, tx))).toMatchObject({ outcome: 'refused' });
+      await expect(
+        asApi(ORG_A, (c) =>
+          c.query(`UPDATE enrolment_invitation SET reserved_by = $2 WHERE id = $1`, [inv, tx]),
+        ),
+      ).rejects.toThrow(/expired/);
+    });
+
+    it('sees nothing in another organisation (row-level security)', async () => {
+      const inv = await newInvitation(ORG_B, CLIN_B);
+      expect(await store.state(ORG_A, inv)).toEqual({ status: 'missing' });
+      expect(await store.reserve(req(inv, randomUUID()))).toEqual({
+        outcome: 'refused',
+        state: { status: 'missing' },
+      });
+      expect(
+        await store.revoke({ orgId: ORG_A, invitationId: inv, auditEvent: audit('x') }),
+      ).toMatchObject({ outcome: 'refused' });
+      expect(await store.release(req(inv, randomUUID()))).toMatchObject({ outcome: 'refused' });
+      expect(await store.state(ORG_B, inv)).toEqual({ status: 'live', reservedBy: null });
+    });
+
+    it('enforces the reservation rules in the database, whatever the caller', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      const sqlAsApi = (text: string, params: unknown[]) =>
+        asApi(ORG_A, (c) => c.query(text, params));
+      // No claim without a reservation.
+      await expect(
+        sqlAsApi(
+          `UPDATE enrolment_invitation SET claimed_at = now(), patient_id = $2 WHERE id = $1`,
+          [inv, PAT_A],
+        ),
+      ).rejects.toThrow(/needs its reservation/);
+      await store.reserve(req(inv, tx));
+      // A reservation never passes directly to another transaction.
+      await expect(
+        sqlAsApi(`UPDATE enrolment_invitation SET reserved_by = $2 WHERE id = $1`, [
+          inv,
+          randomUUID(),
+        ]),
+      ).rejects.toThrow(/reserve, release, claim or revoke/);
+      // A claim cannot swap the reservation it claims under.
+      await expect(
+        sqlAsApi(
+          `UPDATE enrolment_invitation SET claimed_at = now(), patient_id = $2, reserved_by = $3 WHERE id = $1`,
+          [inv, PAT_A, randomUUID()],
+        ),
+      ).rejects.toThrow(/needs its reservation/);
+      // reserved_at alone is not a transition, and the API cannot touch other columns.
+      await expect(
+        sqlAsApi(
+          `UPDATE enrolment_invitation SET reserved_at = now() - interval '1 day' WHERE id = $1`,
+          [inv],
+        ),
+      ).rejects.toThrow(/reserve, release, claim or revoke/);
+      await expect(
+        sqlAsApi(
+          `UPDATE enrolment_invitation SET expires_at = now() + interval '1 day' WHERE id = $1`,
+          [inv],
+        ),
+      ).rejects.toThrow(/permission denied/);
+    });
   });
 });

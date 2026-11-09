@@ -58,13 +58,14 @@ The identity service is the enrolment coordinator, as ADR-0017 intended. It owns
 - Every invitation mutation is one conditional update on that row:
   - **reserve:** live, unreserved, or already reserved by the same transaction;
   - **revoke:** sets `revoked_at` whether or not it is reserved;
-  - **claim:** live, `reserved_by` equal to the transaction, not revoked.
+  - **release:** clears this transaction's reservation if the invitation is not final; it never touches another transaction's;
+  - **claim:** live, `reserved_by` equal to the transaction, not revoked. It creates the pseudonymous patient record in the same database transaction. Its identity reference is the identity-vault person id that the coordinator generates before claiming and uses in activation step 1.
 - **Races:**
   - confirmation before revocation: the reservation stands, but a later revocation still wins, because the claim requires "not revoked";
   - revocation before claim: the claim fails, and the coordinator cancels the transaction and cleans up;
   - claim before revocation: the revocation is refused, because the invitation is final.
 
-  All three operations are idempotent per transaction, and the API stores each result durably. An unknown outcome is resolved by asking the API for the invitation's state.
+  All four operations are idempotent per transaction. Each locks the row, decides from its current state and makes at most one update, so the row itself is the durable record of the result. The database trigger also refuses a claim without a reservation, or a reservation passed directly from one transaction to another. An unknown outcome is resolved by asking the API for the invitation's state.
 
 - New starts on a reserved invitation are refused. Starts are served only while the invitation is live and unreserved.
 - Redemption into Keycloak is `confirmed → redeemed`, atomic in the coordinator. It records Keycloak's full authentication-session identity (root session id, client UUID, tab id). An identical retry gets the same answer; another session or a changed request is refused. A Keycloak restart never revives a used handoff.

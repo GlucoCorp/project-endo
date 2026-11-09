@@ -27,6 +27,15 @@ export type {
   SealedResponse,
 } from './idempotent.ts';
 export { OUTBOX_MAX_ATTEMPTS, relayAuditOutbox } from './outbox.ts';
+export { PostgresInvitationReservationStore } from './reservations.ts';
+export type {
+  AuditEvent,
+  ClaimRequest,
+  InvitationReservationStore,
+  InvitationState,
+  ReservationOutcome,
+  ReservationRequest,
+} from './reservations.ts';
 export { InMemoryConsentStore, PostgresConsentStore } from './consents.ts';
 export type { ConsentDecision, ConsentState, ConsentStore } from './consents.ts';
 export type { RelayResult } from './outbox.ts';

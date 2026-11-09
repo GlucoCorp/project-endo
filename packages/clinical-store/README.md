@@ -6,13 +6,14 @@
 
 ## Public API
 
-| Export                               | What it does                                                                                                                                    |
-| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ClinicalDatabase`                   | Kysely table types matching the migrations                                                                                                      |
-| `withOrg(db, orgId, fn)`             | Runs `fn` in a transaction with `app.org_id` set, which row-level security uses to isolate organisations. The setting ends with the transaction |
-| `findLiveInvitation(db, tokenHash)`  | The only cross-organisation lookup: finds an unclaimed, unexpired, unrevoked invitation by its token hash                                       |
-| `CONSENT_PURPOSES`, `ConsentPurpose` | Spec 13.1 purposes (kept identical to the database constraint by a test)                                                                        |
-| `CLINICAL_MIGRATIONS_DIR`            | SQL migrations; apply with `pnpm --filter @endo/clinical-store migrate` (`ENDO_CLINICAL_MIGRATION_DATABASE_URL`)                                |
+| Export                               | What it does                                                                                                                                                                   |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ClinicalDatabase`                   | Kysely table types matching the migrations                                                                                                                                     |
+| `withOrg(db, orgId, fn)`             | Runs `fn` in a transaction with `app.org_id` set, which row-level security uses to isolate organisations. The setting ends with the transaction                                |
+| `findLiveInvitation(db, tokenHash)`  | The only cross-organisation lookup: finds an unclaimed, unexpired, unrevoked invitation by its token hash; also says whether it is reserved                                    |
+| `PostgresInvitationReservationStore` | Reserve, release, revoke and claim an invitation for one enrolment transaction (ADR-0021 section 6); each locks the row, is idempotent per transaction and audits only changes |
+| `CONSENT_PURPOSES`, `ConsentPurpose` | Spec 13.1 purposes (kept identical to the database constraint by a test)                                                                                                       |
+| `CLINICAL_MIGRATIONS_DIR`            | SQL migrations; apply with `pnpm --filter @endo/clinical-store migrate` (`ENDO_CLINICAL_MIGRATION_DATABASE_URL`)                                                               |
 
 ## Rules
 
@@ -20,3 +21,4 @@
 - Every query that touches organisation data runs inside `withOrg`. With no organisation set, row-level security returns nothing.
 - Consent is append-only: one row per decision; the latest row per purpose is the current state.
 - Invitations store only the SHA-256 of the link token, are valid at most 7 days, and are claimed with a conditional update so a link works once.
+- Since migration 0005 a claim needs the claiming transaction's reservation, and a reservation never passes directly to another transaction; the trigger enforces both.
