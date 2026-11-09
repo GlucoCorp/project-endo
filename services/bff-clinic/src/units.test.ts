@@ -36,7 +36,7 @@ describe('HttpResolver (ADR-0019 section 4)', () => {
     };
     const fetchStub = (async (url: string, init?: RequestInit) => {
       const auth = new Headers(init?.headers).get('authorization') ?? undefined;
-      const target = url.startsWith('https://identity.test') ? verifiers.identity : verifiers.api;
+      const target = new URL(url).host === 'identity.test' ? verifiers.identity : verifiers.api;
       const caller = await target.verifyHeader(auth); // proves audience and scope per call
       seen.push({ url, scopes: caller.scopes });
       return respond(url);
