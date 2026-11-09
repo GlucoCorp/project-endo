@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient]
+        service: [api, bff-patient, identity]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +57,9 @@ jobs:
             docker run -d --name smoke "${common[@]}" -e API_PORT=8080 -e API_HOST=0.0.0.0 \
               -e ENDO_CLINICAL_RULESET_PATH=/app/clinical/rulesets/ruleset.1.0.0.yaml \
               -e API_SERVICE_TOKEN_PUBLIC_KEY_JWK endo-api:ci
+          elif [ "$SERVICE" = identity ]; then
+            docker run -d --name smoke "${common[@]}" -e IDENTITY_PORT=8080 -e IDENTITY_HOST=0.0.0.0 \
+              endo-identity:ci
           else
             docker run -d --name smoke "${common[@]}" -e BFF_PATIENT_PORT=8080 -e BFF_PATIENT_HOST=0.0.0.0 \
               -e BFF_PATIENT_DEV_SESSIONS_ENABLED=true -e BFF_PATIENT_API_BASE_URL=http://127.0.0.1:9 \
@@ -99,7 +102,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient]
+        service: [api, bff-patient, identity]
     env:
       IMAGE: ghcr.io/glucocorp/endo-${{ matrix.service }}
     steps:
