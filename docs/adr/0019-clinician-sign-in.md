@@ -66,7 +66,7 @@ Clinicians sign in to the standalone clinic portal with a passkey through Keyclo
 ### 8. CSRF
 
 - State-changing requests are POSTs and need both an `Origin` equal to the configured portal origin (missing or `null` is refused) and the per-session CSRF token in a header.
-- The token is delivered in the HTML of the page that bootstraps the session, never in a cookie or URL.
+- The token is delivered in the body of the same-origin, no-store session response (`GET /v1/session`, and again after every rotation), never in a cookie or URL. Cross-origin pages cannot read it: the BFF sends no CORS headers.
 - Exceptions:
   - the OIDC callback, a GET authenticated by the bound transaction;
   - the back-channel logout receiver, a server-to-server POST authenticated by the signed logout token.

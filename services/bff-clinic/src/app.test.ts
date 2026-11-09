@@ -82,6 +82,7 @@ async function setup(
     resolver,
     fetch: fetchStub,
     now: () => NOW,
+    portalOrigin: 'https://clinic.test',
   });
 
   /** Starts a login; returns the transaction cookie and the parameters sent to Keycloak. */
@@ -150,11 +151,12 @@ describe('ADR-0019 clinician sign-in: OIDC transaction, callback and session', (
       url: '/v1/session',
       headers: { cookie: session?.split(';')[0] ?? '' },
     });
-    expect(me.json()).toEqual({
+    expect(me.json()).toMatchObject({
       state: 'active',
-      organisations: [{ org_id: ORG_A, role: 'clinician' }],
+      organisations: [{ index: 0, org_id: ORG_A, role: 'clinician' }],
       active: { org_id: ORG_A, role: 'clinician' },
     });
+    expect(me.json<{ csrf_token: string }>().csrf_token).toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
   it('waits for a choice when the clinician belongs to several organisations', async () => {
@@ -286,5 +288,152 @@ describe('ADR-0019 clinician sign-in: OIDC transaction, callback and session', (
     expect((await app.inject({ url: '/v1/session' })).statusCode).toBe(401);
     expect((await app.inject({ url: '/auth/login?next=https://evil.test' })).statusCode).toBe(400);
     expect((await app.inject({ url: '/healthz' })).statusCode).toBe(200);
+  });
+});
+
+describe('ADR-0019 section 5 and 8: choosing an organisation, CSRF, rotation', () => {
+  const ORIGIN = 'https://clinic.test';
+  const cookieOf = (setCookie: string | string[] | undefined) =>
+    sessionFrom(setCookie)?.split(';')[0] ?? '';
+
+  /** Signs in a clinician with two organisations; returns the pending session cookie. */
+  async function pending(membershipReads?: Membership[][]) {
+    const two = [
+      { orgId: ORG_A, role: 'clinician' as const },
+      { orgId: ORG_B, role: 'org_admin' as const },
+    ];
+    const ctx = await setup({ memberships: two, ...(membershipReads ? { membershipReads } : {}) });
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = cookieOf(res.headers['set-cookie']);
+    const csrf = (await ctx.app.inject({ url: '/v1/session', headers: { cookie: session } })).json<{
+      csrf_token: string;
+    }>().csrf_token;
+    const choose = (
+      index: number,
+      opts: { cookie?: string; csrf?: string; origin?: string | null } = {},
+    ) =>
+      ctx.app.inject({
+        method: 'POST',
+        url: '/v1/session/organisation',
+        headers: {
+          cookie: opts.cookie ?? session,
+          'x-csrf-token': opts.csrf ?? csrf,
+          ...(opts.origin === null ? {} : { origin: opts.origin ?? ORIGIN }),
+        },
+        payload: { index },
+      });
+    return { ...ctx, session, csrf, choose };
+  }
+
+  it('a pending session may see its state but nothing that needs an organisation', async () => {
+    const { app, session } = await pending();
+    expect(
+      (await app.inject({ url: '/v1/session', headers: { cookie: session } })).statusCode,
+    ).toBe(200);
+    const ctx = await app.inject({ url: '/v1/context', headers: { cookie: session } });
+    expect(ctx.statusCode).toBe(403);
+    expect(ctx.json()).toMatchObject({
+      type: 'https://errors.glucorp.health/authz.organisation_required',
+    });
+  });
+
+  it('choosing rotates the session id and CSRF token; the old id stops working', async () => {
+    const { app, session, csrf, choose } = await pending();
+    const res = await choose(1);
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      state: 'active',
+      active: { org_id: ORG_B, role: 'org_admin' },
+    });
+    const next = cookieOf(res.headers['set-cookie']);
+    expect(next).not.toBe(session);
+    expect(res.json<{ csrf_token: string }>().csrf_token).not.toBe(csrf);
+    expect(
+      (await app.inject({ url: '/v1/context', headers: { cookie: session } })).statusCode,
+    ).toBe(401);
+    const ctx = await app.inject({ url: '/v1/context', headers: { cookie: next } });
+    expect(ctx.json()).toEqual({ org_id: ORG_B, role: 'org_admin' });
+  });
+
+  it('switching organisation rotates again, so a stale tab cannot act', async () => {
+    const { app, choose } = await pending();
+    const first = await choose(0);
+    const firstCookie = cookieOf(first.headers['set-cookie']);
+    const firstCsrf = first.json<{ csrf_token: string }>().csrf_token;
+    const second = await choose(1, { cookie: firstCookie, csrf: firstCsrf });
+    expect(second.statusCode).toBe(200);
+    // The tab still holding the first session is out.
+    expect((await choose(0, { cookie: firstCookie, csrf: firstCsrf })).statusCode).toBe(401);
+    const ctx = await app.inject({
+      url: '/v1/context',
+      headers: { cookie: cookieOf(second.headers['set-cookie']) },
+    });
+    expect(ctx.json()).toEqual({ org_id: ORG_B, role: 'org_admin' });
+  });
+
+  it('uses the CURRENT role at choice time, and refuses a membership revoked since sign-in', async () => {
+    const changed = await pending([
+      [
+        { orgId: ORG_A, role: 'clinician' },
+        { orgId: ORG_B, role: 'org_admin' },
+      ],
+      [{ orgId: ORG_A, role: 'org_admin' }],
+    ]);
+    expect((await changed.choose(0)).json()).toMatchObject({ active: { role: 'org_admin' } });
+    const revoked = await pending([
+      [
+        { orgId: ORG_A, role: 'clinician' },
+        { orgId: ORG_B, role: 'org_admin' },
+      ],
+      [{ orgId: ORG_A, role: 'clinician' }],
+    ]);
+    expect((await revoked.choose(1)).statusCode).toBe(403);
+  });
+
+  it.each([
+    ['no Origin', { origin: null }],
+    ['a null Origin', { origin: 'null' }],
+    ['another Origin', { origin: 'https://evil.test' }],
+    ['a wrong CSRF token', { csrf: 'x'.repeat(43) }],
+    ['an empty CSRF token', { csrf: '' }],
+  ] as const)('CSRF: refuses %s', async (_n, opts) => {
+    const { choose } = await pending();
+    const res = await choose(0, opts);
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('can choose any listed organisation, however many (no arbitrary index cap)', async () => {
+    const many = Array.from({ length: 101 }, (_v, i) => ({
+      orgId: `01900000-0000-7000-8000-${i.toString(16).padStart(12, '0')}`,
+      role: 'clinician' as const,
+    }));
+    const ctx = await setup({ memberships: many });
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    const session = cookieOf(res.headers['set-cookie']);
+    const csrf = (await ctx.app.inject({ url: '/v1/session', headers: { cookie: session } })).json<{
+      csrf_token: string;
+    }>().csrf_token;
+    const chosen = await ctx.app.inject({
+      method: 'POST',
+      url: '/v1/session/organisation',
+      headers: { cookie: session, 'x-csrf-token': csrf, origin: ORIGIN },
+      payload: { index: 100 },
+    });
+    expect(chosen.statusCode).toBe(200);
+    expect(chosen.json()).toMatchObject({ active: { org_id: many[100]?.orgId } });
+  });
+
+  it('accepts only an index into the server-side list', async () => {
+    const { app, session, csrf, choose } = await pending();
+    expect((await choose(5)).statusCode).toBe(400);
+    const forged = await app.inject({
+      method: 'POST',
+      url: '/v1/session/organisation',
+      headers: { cookie: session, 'x-csrf-token': csrf, origin: ORIGIN },
+      payload: { index: 0, org_id: ORG_B, role: 'org_admin' },
+    });
+    expect(forged.statusCode).toBe(400);
   });
 });

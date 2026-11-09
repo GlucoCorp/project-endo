@@ -220,3 +220,27 @@ describe('background requests never extend the idle limit (ADR-0019 section 5)',
     expect(await s.activate('gone', { orgId: ORG, role: 'clinician' })).toBeNull();
   });
 });
+
+describe('activation respects expiry and background requests (Codex review, slice 5)', () => {
+  const base = { personId: PERSON, issuer: 'i', subject: 's', sid: null, memberships: [] };
+
+  it('refuses to activate a session that went idle-expired meanwhile (e.g. during a slow lookup)', async () => {
+    let t = 0;
+    const s = new InMemoryClinicSessions('test', () => t);
+    const token = await s.create(base);
+    t = CLINIC_IDLE_MS + 1;
+    expect(await s.activate(token, { orgId: ORG, role: 'clinician' })).toBeNull();
+    expect(await s.resolve(token)).toBeNull();
+  });
+
+  it('a background activation rotates but does not extend the idle time', async () => {
+    let t = 0;
+    const s = new InMemoryClinicSessions('test', () => t);
+    const token = await s.create(base);
+    t = CLINIC_IDLE_MS - 1000;
+    const next = await s.activate(token, { orgId: ORG, role: 'clinician' }, { touch: false });
+    expect(next).not.toBeNull();
+    t = CLINIC_IDLE_MS + 1;
+    expect(await s.resolve(next ?? '', { touch: false })).toBeNull();
+  });
+});
