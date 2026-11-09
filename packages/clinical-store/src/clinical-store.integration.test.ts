@@ -260,21 +260,25 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
 
     it('ADR-0019 lists the active memberships of a person across organisations, and nothing else', async () => {
       const members = new PostgresMembershipStore(apiDb);
-      // The same person in a second organisation, and an inactive third membership.
+      // A person of its own (other tests rely on the seeded clinicians' memberships): active in
+      // two organisations, inactive in a third.
+      const person = randomUUID();
       const orgC = '01900000-0000-7000-8000-00000000000c';
       await admin.query(
         `INSERT INTO organization (id, region, name) VALUES ($1, 'ke', 'Clinic C')`,
         [orgC],
       );
-      await admin.query(
-        `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
-        [randomUUID(), ORG_B, IDREF_CLIN_A],
-      );
-      await admin.query(
-        `INSERT INTO clinician (id, org_id, identity_ref, role, active) VALUES ($1, $2, $3, 'clinician', false)`,
-        [randomUUID(), orgC, IDREF_CLIN_A],
-      );
-      expect(await members.listActive(IDREF_CLIN_A)).toEqual([
+      for (const [org, role, active] of [
+        [ORG_A, 'clinician', true],
+        [ORG_B, 'org_admin', true],
+        [orgC, 'clinician', false],
+      ] as const) {
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role, active) VALUES ($1, $2, $3, $4, $5)`,
+          [randomUUID(), org, person, role, active],
+        );
+      }
+      expect(await members.listActive(person)).toEqual([
         { orgId: ORG_A, role: 'clinician' },
         { orgId: ORG_B, role: 'org_admin' },
       ]);
