@@ -225,7 +225,14 @@ describe('background requests never extend the idle limit (ADR-0019 section 5)',
 });
 
 describe('activation respects expiry and background requests (Codex review, slice 5)', () => {
-  const base = { personId: PERSON, issuer: 'i', subject: 's', sid: null, memberships: [] };
+  const base = {
+    personId: PERSON,
+    issuer: 'i',
+    subject: 's',
+    sid: null,
+    idToken: 'id.token.x',
+    memberships: [],
+  };
 
   it('refuses to activate a session that went idle-expired meanwhile (e.g. during a slow lookup)', async () => {
     let t = 0;
