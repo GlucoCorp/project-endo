@@ -51,10 +51,7 @@ describe('service tokens (ADR-0006, RISK-S01)', () => {
 
   it('rejects the wrong audience', async () => {
     const { privateJwk, publicJwk } = await generateServiceKeyPair();
-    const token = await new ServiceTokenSigner(privateJwk, 'bff-patient').sign(
-      claims,
-      'identity' as never,
-    );
+    const token = await new ServiceTokenSigner(privateJwk, 'bff-patient').sign(claims, 'identity');
     const v = new ServiceTokenVerifier('api', {
       'bff-patient': { publicJwk: publicJwk, roles: ['patient'] },
     });

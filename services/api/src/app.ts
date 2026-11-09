@@ -117,6 +117,8 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     logController: new LogController({ disableRequestLogging: true }),
     return503OnClosing: true,
     routerOptions: { ignoreTrailingSlash: false, caseSensitive: true },
+    // Spec 12.3: reject unknown input instead of silently dropping it (Fastify strips by default).
+    ajv: { customOptions: { removeAdditional: false } },
   });
 
   app.decorateRequest('subject', null);
