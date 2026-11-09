@@ -4,8 +4,10 @@ import type { Membership } from './resolve.ts';
 
 /** `__Host-` prefix: Secure, path=/, no Domain (spec 8.4). SameSite=Strict (ADR-0019 section 5). */
 export const SESSION_COOKIE = '__Host-endo_clinic_session';
-/** The OIDC transaction cookie: Lax, because the callback is a cross-site top-level GET. */
+/** The browser-binding cookie for sign-in attempts: Lax, because the callback is cross-site. */
 export const OIDC_COOKIE = '__Host-endo_clinic_oidc';
+/** Requests the portal makes on its own (polling) send this header; they never extend idle time. */
+export const BACKGROUND_HEADER = 'x-endo-background';
 
 /** Spec 10.2: 15 minutes idle. 12 hours absolute (ADR-0015 realm setting). */
 export const CLINIC_IDLE_MS = 15 * 60 * 1000;
@@ -51,21 +53,20 @@ export class InMemoryClinicSessions {
   }
 
   /**
-   * After a valid callback: a FRESH session id and CSRF token (never the transaction id). With
-   * exactly one membership the session is active at once; otherwise it waits for a choice.
+   * After a valid callback: a FRESH session id and CSRF token (never the transaction id), always
+   * `pending-org`. Activation, even automatic, goes through `activate` (ADR-0019 section 5).
    */
   create(s: NewSession): Promise<string> {
     const token = random();
     const t = this.#now();
-    const only = s.memberships.length === 1 ? (s.memberships[0] ?? null) : null;
     this.#sessions.set(token, {
       personId: s.personId,
       issuer: s.issuer,
       subject: s.subject,
       sid: s.sid,
-      state: only ? 'active' : 'pending-org',
+      state: 'pending-org',
       candidates: [...s.memberships],
-      active: only,
+      active: null,
       csrfToken: random(),
       createdAt: t,
       lastSeenAt: t,
@@ -73,8 +74,34 @@ export class InMemoryClinicSessions {
     return Promise.resolve(token);
   }
 
-  /** Async like the durable store will be. */
-  resolve(token: string): Promise<ClinicSession | null> {
+  /**
+   * Activates one organisation with a membership the caller has just RE-READ, and rotates the
+   * session id and CSRF token: the old id stops working at once (ADR-0019 section 5). The absolute
+   * deadline is kept. Returns the new token, or null if the old session is gone.
+   */
+  activate(token: string, membership: Membership): Promise<string | null> {
+    const s = this.#sessions.get(token);
+    if (!s) return Promise.resolve(null);
+    this.#sessions.delete(token);
+    const next = random();
+    this.#sessions.set(next, {
+      ...s,
+      state: 'active',
+      active: membership,
+      csrfToken: random(),
+      lastSeenAt: this.#now(),
+    });
+    return Promise.resolve(next);
+  }
+
+  /**
+   * Async like the durable store will be. `touch: false` checks expiry without counting the
+   * request as activity, so background polling cannot keep a session alive (ADR-0019 section 5).
+   */
+  resolve(
+    token: string,
+    opts: { touch: boolean } = { touch: true },
+  ): Promise<ClinicSession | null> {
     const s = this.#sessions.get(token);
     if (!s) return Promise.resolve(null);
     const t = this.#now();
@@ -82,7 +109,7 @@ export class InMemoryClinicSessions {
       this.#sessions.delete(token);
       return Promise.resolve(null);
     }
-    s.lastSeenAt = t;
+    if (opts.touch) s.lastSeenAt = t;
     return Promise.resolve(s);
   }
 

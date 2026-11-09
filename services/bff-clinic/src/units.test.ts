@@ -6,6 +6,12 @@ import {
 } from '@endo/service-kit';
 import { HttpResolver, ResolverError } from './resolve.ts';
 import {
+  MAX_PENDING_TRANSACTIONS,
+  OidcError,
+  TRANSACTION_TTL_MS,
+  TransactionStore,
+} from './oidc.ts';
+import {
   CLINIC_ABSOLUTE_MS,
   CLINIC_IDLE_MS,
   InMemoryClinicSessions,
@@ -152,5 +158,65 @@ describe('readCookie', () => {
     expect(readCookie(`${SESSION_COOKIE}=${v}; ${SESSION_COOKIE}=${v}`, SESSION_COOKIE)).toBeNull();
     expect(readCookie(`${SESSION_COOKIE}=short`, SESSION_COOKIE)).toBeNull();
     expect(readCookie(undefined, SESSION_COOKIE)).toBeNull();
+  });
+});
+
+describe('TransactionStore (ADR-0019 section 1)', () => {
+  it('prunes expired attempts and refuses beyond its capacity', () => {
+    let t = 0;
+    const store = new TransactionStore(() => t);
+    for (let i = 0; i < 3; i++) store.create('b');
+    t = TRANSACTION_TTL_MS + 1;
+    store.create('b'); // prunes the three expired ones first
+    expect(store.size).toBe(1);
+    for (let i = 1; i < MAX_PENDING_TRANSACTIONS; i++) store.create('b');
+    expect(() => store.create('b')).toThrow(OidcError);
+  });
+
+  it('refuses an expired attempt and a missing binding or state', () => {
+    let t = 0;
+    const store = new TransactionStore(() => t);
+    const tx = store.create('b');
+    expect(() => store.consume(null, tx.state)).toThrow(OidcError);
+    t = TRANSACTION_TTL_MS + 1;
+    expect(() => store.consume('b', tx.state)).toThrow(OidcError);
+  });
+});
+
+describe('background requests never extend the idle limit (ADR-0019 section 5)', () => {
+  it('expires a session that only sees background checks', async () => {
+    let t = 0;
+    const s = new InMemoryClinicSessions('test', () => t);
+    const token = await s.create({
+      personId: PERSON,
+      issuer: 'i',
+      subject: 's',
+      sid: null,
+      memberships: [],
+    });
+    for (let i = 0; i < 20; i++) {
+      t += 60_000;
+      if (t <= CLINIC_IDLE_MS) expect(await s.resolve(token, { touch: false })).not.toBeNull();
+    }
+    expect(await s.resolve(token, { touch: false })).toBeNull();
+  });
+
+  it('activation rotates the id and CSRF token and keeps the absolute deadline', async () => {
+    const s = new InMemoryClinicSessions('test');
+    const old = await s.create({
+      personId: PERSON,
+      issuer: 'i',
+      subject: 's',
+      sid: null,
+      memberships: [],
+    });
+    const before = await s.resolve(old);
+    const next = await s.activate(old, { orgId: ORG, role: 'clinician' });
+    expect(next).not.toBeNull();
+    expect(await s.resolve(old)).toBeNull();
+    const after = await s.resolve(next ?? '');
+    expect(after?.csrfToken).not.toBe(before?.csrfToken);
+    expect(after?.createdAt).toBe(before?.createdAt);
+    expect(await s.activate('gone', { orgId: ORG, role: 'clinician' })).toBeNull();
   });
 });

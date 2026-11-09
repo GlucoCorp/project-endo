@@ -17,9 +17,13 @@ export interface OidcConfig {
   readonly requiredAcr: string;
 }
 
-/** One sign-in attempt, bound to the browser by an unpredictable id held only in a cookie. */
+/**
+ * One sign-in attempt. `binding` is the browser's binding value (held only in its cookie), so a
+ * callback from another browser can never complete it; several tabs of one browser share the
+ * binding but each attempt has its own `state`.
+ */
 export interface OidcTransaction {
-  readonly id: string;
+  readonly binding: string;
   readonly state: string;
   readonly nonce: string;
   readonly verifier: string;
@@ -27,10 +31,13 @@ export interface OidcTransaction {
 }
 
 export const TRANSACTION_TTL_MS = 10 * 60 * 1000;
+/** Upper bound on pending attempts (dev store); beyond it new logins are refused. */
+export const MAX_PENDING_TRANSACTIONS = 10_000;
 const MAX_TOKEN_AGE_S = 5 * 60;
 const CLOCK_SKEW_S = 30;
 
 const random = () => randomBytes(32).toString('base64url');
+export const newBinding = random;
 
 export class OidcError extends Error {
   /** Safe, generic code; never the reason details (which could help an attacker). */
@@ -43,7 +50,7 @@ export class OidcError extends Error {
 
 /**
  * In-memory transactions for dev and tests; refused in staging and production (ADR-0019 section
- * 5: the durable store needs atomic compare-and-set across replicas).
+ * 5: the durable store needs atomic compare-and-set across replicas). Keyed by `state`.
  */
 export class TransactionStore {
   readonly #tx = new Map<string, OidcTransaction>();
@@ -53,30 +60,42 @@ export class TransactionStore {
     this.#now = now;
   }
 
-  create(): OidcTransaction {
+  #prune(): void {
+    const t = this.#now();
+    for (const [state, tx] of this.#tx) {
+      if (t - tx.createdAt > TRANSACTION_TTL_MS) this.#tx.delete(state);
+    }
+  }
+
+  create(binding: string): OidcTransaction {
+    this.#prune();
+    if (this.#tx.size >= MAX_PENDING_TRANSACTIONS) throw new OidcError();
     const tx: OidcTransaction = {
-      id: random(),
+      binding,
       state: random(),
       nonce: random(),
       verifier: random(),
       createdAt: this.#now(),
     };
-    this.#tx.set(tx.id, tx);
+    this.#tx.set(tx.state, tx);
     return tx;
   }
 
   /**
-   * Consumes the transaction atomically, once: it must exist under the cookie's id, carry the
-   * returned `state`, and be unexpired. Any mismatch also discards it.
+   * Consumes the attempt named by `state` atomically, once. It must belong to this browser's
+   * binding and be unexpired; a binding mismatch leaves it for its real owner.
    */
-  consume(id: string | null, state: string | null): OidcTransaction {
-    if (!id || !state) throw new OidcError();
-    const tx = this.#tx.get(id);
-    this.#tx.delete(id);
-    if (!tx || tx.state !== state || this.#now() - tx.createdAt > TRANSACTION_TTL_MS) {
-      throw new OidcError();
-    }
+  consume(binding: string | null, state: string | null): OidcTransaction {
+    if (!binding || !state) throw new OidcError();
+    const tx = this.#tx.get(state);
+    if (!tx || tx.binding !== binding) throw new OidcError();
+    this.#tx.delete(state);
+    if (this.#now() - tx.createdAt > TRANSACTION_TTL_MS) throw new OidcError();
     return tx;
+  }
+
+  get size(): number {
+    return this.#tx.size;
   }
 }
 
@@ -168,7 +187,8 @@ export async function validateIdToken(
       nowS - payload['auth_time'] <= MAX_TOKEN_AGE_S + CLOCK_SKEW_S &&
       payload['auth_time'] - nowS <= CLOCK_SKEW_S &&
       payload['acr'] === config.requiredAcr &&
-      (audiences.length === 1 || payload['azp'] === config.clientId);
+      // azp, when present, must be us; with several audiences it is required (OIDC Core 3.1.3.7).
+      (payload['azp'] === undefined ? audiences.length === 1 : payload['azp'] === config.clientId);
     if (!ok) throw new OidcError();
     const sid = payload['sid'];
     return {

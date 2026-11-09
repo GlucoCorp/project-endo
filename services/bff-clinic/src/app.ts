@@ -1,4 +1,4 @@
-import Fastify, { LogController, type FastifyInstance, type FastifyReply } from 'fastify';
+import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import type { JWTVerifyGetKey } from 'jose';
 import {
@@ -14,6 +14,7 @@ import {
   OidcError,
   TRANSACTION_TTL_MS,
   authorizationUrl,
+  newBinding,
   exchangeCode,
   validateIdToken,
   type OidcConfig,
@@ -70,9 +71,11 @@ const oidcCookie = (value: string, maxAgeSeconds: number) =>
 const sessionCookie = (value: string) =>
   `${SESSION_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict`;
 
-/** Generic refusal: never says which check failed (ADR-0019 section 4). */
-function refuse(reply: FastifyReply): never {
-  void reply.header('set-cookie', oidcCookie('', 0));
+/**
+ * Generic refusal: never says which check failed (ADR-0019 section 4). The binding cookie is left
+ * alone, so other tabs' sign-in attempts in this browser can still complete.
+ */
+function refuse(): never {
   throw new ProblemError(
     401,
     'authn.sign_in_failed',
@@ -118,7 +121,9 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   app.addHook('onRequest', async (request) => {
     if (request.routeOptions.config.auth?.kind !== 'session') return;
     const token = readCookie(request.headers.cookie, SESSION_COOKIE);
-    const session = token ? await deps.sessions.resolve(token) : null;
+    // Background polling checks the session without counting as activity (ADR-0019 section 5).
+    const touch = request.headers['x-endo-background'] !== '1'; // BACKGROUND_HEADER
+    const session = token ? await deps.sessions.resolve(token, { touch }) : null;
     if (!session) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
     request.session = session;
   });
@@ -134,10 +139,12 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       config: { auth: { kind: 'oidc', step: 'start' } },
       schema: { querystring: { type: 'object', additionalProperties: false, maxProperties: 0 } },
     },
-    async (_request, reply) => {
-      const tx = deps.transactions.create();
+    async (request, reply) => {
+      // One binding per browser, shared by its tabs; each attempt has its own state.
+      const binding = readCookie(request.headers.cookie, OIDC_COOKIE) ?? newBinding();
+      const tx = deps.transactions.create(binding);
       return reply
-        .header('set-cookie', oidcCookie(tx.id, TRANSACTION_TTL_MS / 1000))
+        .header('set-cookie', oidcCookie(binding, TRANSACTION_TTL_MS / 1000))
         .redirect(authorizationUrl(deps.oidc, tx), 302);
     },
   );
@@ -176,20 +183,34 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         const { idToken } = await exchangeCode(deps.oidc, q.code, tx, deps.fetch);
         const who = await validateIdToken(deps.oidc, idToken, tx, deps.keys, deps.now);
         const personId = await deps.resolver.person(who.issuer, who.subject);
-        if (!personId) refuse(reply);
+        if (!personId) refuse();
         const memberships = await deps.resolver.memberships(personId);
-        if (memberships.length === 0) refuse(reply);
-        const token = await deps.sessions.create({
+        if (memberships.length === 0) refuse();
+        let token = await deps.sessions.create({
           personId,
           issuer: who.issuer,
           subject: who.subject,
           sid: who.sid,
           memberships,
         });
+        // Exactly one organisation: activate it now, through the same path as an explicit
+        // choice: re-read the membership, take its CURRENT role, rotate the session id.
+        if (memberships.length === 1) {
+          const chosen = memberships[0];
+          const current = (await deps.resolver.memberships(personId)).find(
+            (m) => m.orgId === chosen?.orgId,
+          );
+          const rotated = current ? await deps.sessions.activate(token, current) : null;
+          if (!rotated) {
+            await deps.sessions.revoke(token);
+            refuse();
+          }
+          token = rotated;
+        }
         // A same-origin page completes the navigation, so the Strict session cookie is sent on
         // the next request (the callback itself arrives cross-site).
         return await reply
-          .header('set-cookie', [oidcCookie('', 0), sessionCookie(token)])
+          .header('set-cookie', sessionCookie(token))
           .type('text/html; charset=utf-8')
           .send(
             '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/">' +
@@ -197,7 +218,7 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
           );
       } catch (error) {
         if (error instanceof ProblemError) throw error;
-        return refuse(reply);
+        return refuse();
       }
     },
   );

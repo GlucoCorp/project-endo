@@ -26,6 +26,8 @@ const nowS = Math.floor(NOW.getTime() / 1000);
 async function setup(
   opts: {
     memberships?: Membership[];
+    /** Answers for successive membership reads (overrides `memberships`). */
+    membershipReads?: Membership[][];
     person?: string | null;
     claims?: (nonce: string) => Record<string, unknown>;
     tokenStatus?: number;
@@ -65,7 +67,10 @@ async function setup(
             : opts.person
           : null,
       ),
-    memberships: () => Promise.resolve(opts.memberships ?? [{ orgId: ORG_A, role: 'clinician' }]),
+    memberships: () =>
+      Promise.resolve(
+        opts.membershipReads?.shift() ?? opts.memberships ?? [{ orgId: ORG_A, role: 'clinician' }],
+      ),
   };
   const sessions = new InMemoryClinicSessions('test', () => NOW.getTime());
   const app = await buildClinicBff({
@@ -80,17 +85,30 @@ async function setup(
   });
 
   /** Starts a login; returns the transaction cookie and the parameters sent to Keycloak. */
-  const start = async () => {
-    const res = await app.inject({ url: '/auth/login' });
+  const start = async (browserCookie?: string) => {
+    const res = await app.inject({
+      url: '/auth/login',
+      headers: browserCookie ? { cookie: browserCookie } : {},
+    });
     const location = new URL(String(res.headers.location));
     const cookie = String(res.headers['set-cookie']).split(';')[0] ?? '';
     issueNonce = location.searchParams.get('nonce') ?? '';
-    return { res, location, cookie, state: location.searchParams.get('state') ?? '' };
+    return {
+      res,
+      location,
+      cookie,
+      state: location.searchParams.get('state') ?? '',
+      nonce: issueNonce,
+    };
   };
   const callback = (query: string, cookie?: string) =>
     app.inject({ url: `/auth/callback?${query}`, headers: cookie ? { cookie } : {} });
   const exchanged = () => lastExchange;
-  return { app, start, callback, exchanged, sessions };
+  /** Which login the stand-in Keycloak is answering (its token carries that login's nonce). */
+  const answer = (nonce: string) => {
+    issueNonce = nonce;
+  };
+  return { app, start, callback, exchanged, answer, sessions };
 }
 
 const sessionFrom = (setCookie: string | string[] | undefined) =>
@@ -167,8 +185,8 @@ describe('ADR-0019 clinician sign-in: OIDC transaction, callback and session', (
     const { start, callback } = await setup();
     const a = await start();
     expect((await callback(`code=c1&state=wrong`, a.cookie)).statusCode).toBe(401);
-    // The mismatch also discarded the transaction: the right state no longer works.
-    expect((await callback(`code=c1&state=${a.state}`, a.cookie)).statusCode).toBe(401);
+    // A wrong state does not destroy the real attempt.
+    expect((await callback(`code=c1&state=${a.state}`, a.cookie)).statusCode).toBe(200);
     const b = await start();
     expect((await callback(`code=c1&state=${b.state}`, b.cookie)).statusCode).toBe(200);
     expect((await callback(`code=c1&state=${b.state}`, b.cookie)).statusCode).toBe(401); // replay
@@ -185,7 +203,57 @@ describe('ADR-0019 clinician sign-in: OIDC transaction, callback and session', (
     ).toBe(401);
   });
 
+  it('two tabs in one browser can each complete their own sign-in', async () => {
+    const { start, callback, answer } = await setup();
+    const tabA = await start();
+    const tabB = await start(tabA.cookie); // same browser: the binding cookie is reused
+    expect(tabB.cookie).toBe(tabA.cookie);
+    expect(tabA.state).not.toBe(tabB.state);
+    answer(tabB.nonce);
+    expect((await callback(`code=c1&state=${tabB.state}`, tabB.cookie)).statusCode).toBe(200);
+    answer(tabA.nonce);
+    expect((await callback(`code=c1&state=${tabA.state}`, tabA.cookie)).statusCode).toBe(200);
+  });
+
+  it('refuses a callback from another browser, and leaves the attempt for its owner', async () => {
+    const { start, callback } = await setup();
+    const mine = await start();
+    const other = await start(); // a different browser gets a different binding
+    expect(other.cookie).not.toBe(mine.cookie);
+    expect((await callback(`code=c1&state=${mine.state}`, other.cookie)).statusCode).toBe(401);
+  });
+
+  it('activates a single organisation with its CURRENT role, re-read at activation', async () => {
+    const { start, callback, app } = await setup({
+      membershipReads: [
+        [{ orgId: ORG_A, role: 'clinician' }],
+        [{ orgId: ORG_A, role: 'org_admin' }],
+      ],
+    });
+    const { cookie, state } = await start();
+    const res = await callback(`code=c1&state=${state}`, cookie);
+    const me = await app.inject({
+      url: '/v1/session',
+      headers: { cookie: sessionFrom(res.headers['set-cookie'])?.split(';')[0] ?? '' },
+    });
+    expect(me.json()).toMatchObject({ active: { org_id: ORG_A, role: 'org_admin' } });
+  });
+
+  it('refuses when the only membership is revoked between resolution and activation', async () => {
+    const { start, callback } = await setup({
+      membershipReads: [[{ orgId: ORG_A, role: 'clinician' }], []],
+    });
+    const { cookie, state } = await start();
+    const res = await callback(`code=c1&state=${state}`, cookie);
+    expect(res.statusCode).toBe(401);
+    expect(sessionFrom(res.headers['set-cookie'])).toBeUndefined();
+  });
+
   it.each([
+    [
+      'a mismatched azp',
+      (n: string) => ({ nonce: n, auth_time: nowS, acr: '1', azp: 'another-client' }),
+    ],
     ['a wrong nonce', (n: string) => ({ nonce: `${n}x`, auth_time: nowS, acr: '1' })],
     ['a missing nonce', () => ({ auth_time: nowS, acr: '1' })],
     ['an SSO (not fresh) acr', (n: string) => ({ nonce: n, auth_time: nowS, acr: '0' })],
