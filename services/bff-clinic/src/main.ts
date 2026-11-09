@@ -37,6 +37,8 @@ const Config = z.object({
   BFF_CLINIC_API_BASE_URL: HttpUrl,
   // Its own workload key (ADR-0018); never shared with the service-token key.
   BFF_CLINIC_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk,
+  // Exact portal origin; state-changing requests must carry it (ADR-0019 section 8).
+  BFF_CLINIC_PORTAL_ORIGIN: z.url({ protocol: /^https?$/ }).refine((u) => new URL(u).origin === u),
 });
 
 async function main(): Promise<void> {
@@ -73,6 +75,7 @@ async function main(): Promise<void> {
     }),
     fetch,
     now: () => new Date(),
+    portalOrigin: config.BFF_CLINIC_PORTAL_ORIGIN,
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

@@ -1,3 +1,4 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import type { JWTVerifyGetKey } from 'jose';
@@ -20,7 +21,7 @@ import {
   type OidcConfig,
   type TransactionStore,
 } from './oidc.ts';
-import type { Resolver } from './resolve.ts';
+import type { Membership, Resolver } from './resolve.ts';
 import {
   OIDC_COOKIE,
   SESSION_COOKIE,
@@ -33,7 +34,11 @@ import {
 export type ClinicAuth =
   | { readonly kind: 'public'; readonly reason: 'liveness' }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
-  | { readonly kind: 'session' };
+  /**
+   * A signed-in clinician. Unless `allowPending`, the session must have an active organisation;
+   * a `pending-org` session may only see its state, choose, or sign out (ADR-0019 section 5).
+   */
+  | { readonly kind: 'session'; readonly allowPending?: boolean };
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -41,6 +46,8 @@ declare module 'fastify' {
   }
   interface FastifyRequest {
     session: ClinicSession | null;
+    /** The current session id, so a route can rotate it. */
+    sessionToken: string | null;
   }
 }
 
@@ -49,7 +56,9 @@ export function isClinicAuth(value: unknown): value is ClinicAuth {
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
   if (v.kind === 'public') return v.reason === 'liveness';
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
-  return v.kind === 'session';
+  if (v.kind !== 'session') return false;
+  const allow = (v as { allowPending?: unknown }).allowPending;
+  return allow === undefined || typeof allow === 'boolean';
 }
 
 export interface ClinicBffDeps {
@@ -62,6 +71,8 @@ export interface ClinicBffDeps {
   readonly resolver: Resolver;
   readonly fetch: typeof fetch;
   readonly now: () => Date;
+  /** Exact origin of the portal, e.g. `https://clinic.example`; state-changing requests must match. */
+  readonly portalOrigin: string;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -70,6 +81,13 @@ const oidcCookie = (value: string, maxAgeSeconds: number) =>
   `${OIDC_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(maxAgeSeconds)}`;
 const sessionCookie = (value: string) =>
   `${SESSION_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict`;
+
+/** Constant-time comparison of two secrets of possibly different length. */
+function sameSecret(a: string, b: string): boolean {
+  const x = createHash('sha256').update(a).digest();
+  const y = createHash('sha256').update(b).digest();
+  return timingSafeEqual(x, y);
+}
 
 /**
  * Generic refusal: never says which check failed (ADR-0019 section 4). The binding cookie is left
@@ -100,6 +118,7 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   });
 
   app.decorateRequest('session', null);
+  app.decorateRequest('sessionToken', null);
   enforceRouteDeclarations(app, 'auth', isClinicAuth);
   registerProblemHandlers(app);
 
@@ -125,7 +144,23 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     const touch = request.headers['x-endo-background'] !== '1'; // BACKGROUND_HEADER
     const session = token ? await deps.sessions.resolve(token, { touch }) : null;
     if (!session) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+    // Narrowed above: this is a session route.
+    if (session.state !== 'active' && request.routeOptions.config.auth.allowPending !== true) {
+      throw new ProblemError(403, 'authz.organisation_required', 'Choose an organisation first.');
+    }
+    // CSRF (ADR-0019 section 8): state-changing requests need the exact portal Origin (missing or
+    // `null` refused) AND this session's synchronizer token. GETs never change state.
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      if (request.headers.origin !== deps.portalOrigin) {
+        throw new ProblemError(403, 'csrf.origin_mismatch', 'Request refused.');
+      }
+      const sent = request.headers['x-csrf-token'];
+      if (typeof sent !== 'string' || !sameSecret(sent, session.csrfToken)) {
+        throw new ProblemError(403, 'csrf.token_invalid', 'Request refused.');
+      }
+    }
     request.session = session;
+    request.sessionToken = token;
   });
 
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
@@ -223,15 +258,64 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     },
   );
 
-  // What the portal needs to render: never identity data, only state and organisations.
-  app.get('/v1/session', { config: { auth: { kind: 'session' } } }, (request) => {
-    const s = request.session;
-    return {
-      state: s?.state ?? 'pending-org',
-      organisations: (s?.candidates ?? []).map((m) => ({ org_id: m.orgId, role: m.role })),
-      active: s?.active ? { org_id: s.active.orgId, role: s.active.role } : null,
-    };
+  /** What the portal renders: state, organisations and its CSRF token; never identity data. */
+  const view = (s: ClinicSession) => ({
+    state: s.state,
+    organisations: s.candidates.map((m, index) => ({ index, org_id: m.orgId, role: m.role })),
+    active: s.active ? { org_id: s.active.orgId, role: s.active.role } : null,
+    // Delivered in this same-origin, no-store response body: never in a cookie or URL.
+    csrf_token: s.csrfToken,
   });
+
+  app.get('/v1/session', { config: { auth: { kind: 'session', allowPending: true } } }, (request) =>
+    view(request.session as ClinicSession),
+  );
+
+  // The active organisation and role, for the portal header. Requires an active organisation.
+  app.get('/v1/context', { config: { auth: { kind: 'session' } } }, (request) => {
+    const active = (request.session as ClinicSession).active as Membership;
+    return { org_id: active.orgId, role: active.role };
+  });
+
+  // Choose, or switch, the organisation (ADR-0019 section 5). The browser sends only an index into
+  // the server-side candidate list; the membership is re-read and its CURRENT role used; the
+  // session id and CSRF token rotate, so tabs holding the old id stop working.
+  app.post(
+    '/v1/session/organisation',
+    {
+      config: { auth: { kind: 'session', allowPending: true } },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['index'],
+          properties: { index: { type: 'integer', minimum: 0, maximum: 99 } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const session = request.session as ClinicSession;
+      const oldToken = request.sessionToken as string;
+      const { index } = request.body as { index: number };
+      const candidate = session.candidates.at(index);
+      if (!candidate) throw new ProblemError(400, 'request.invalid', 'Unknown organisation.');
+      const current = (await deps.resolver.memberships(session.personId)).find(
+        (m) => m.orgId === candidate.orgId,
+      );
+      if (!current) {
+        throw new ProblemError(
+          403,
+          'authz.membership_inactive',
+          'That organisation is not available.',
+        );
+      }
+      const next = await deps.sessions.activate(oldToken, current);
+      if (!next) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+      const rotated = await deps.sessions.resolve(next);
+      if (!rotated) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+      return reply.header('set-cookie', sessionCookie(next)).send(view(rotated));
+    },
+  );
 
   app.addHook('onResponse', async (request, reply) => {
     request.log.info({
