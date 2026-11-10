@@ -205,7 +205,7 @@ resource "kubernetes_deployment_v1" "keycloak" {
     create = "10m"
     update = "10m"
   }
-  depends_on = [kubernetes_stateful_set_v1.postgres]
+  depends_on = [kubernetes_job_v1.pg_roles]
 }
 
 resource "kubernetes_service_v1" "keycloak" {

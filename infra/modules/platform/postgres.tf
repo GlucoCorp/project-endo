@@ -1,10 +1,9 @@
 # PostgreSQL (spec 8.3, 11.1, 17.3).
 # - shared profile: separate instances for clinical, identity (+ Keycloak) and audit data (spec 2.4).
 # - local profile: one instance with separate databases and roles, to fit a small dev machine.
-# Every database is owned by its own role and closed to PUBLIC. The audit database also gets
-# `audit_api`, a login role that is a member of endo_audit_app (SELECT and INSERT only, ADR-0013).
-# The clinical database gets `clinical_api` (member of endo_clinical_app) and endo_clinical_lookup,
-# which owns the one cross-organisation lookup; neither group role can log in (ADR-0017).
+# Every database is owned by its own role and closed to PUBLIC. Login roles (audit_api,
+# clinical_api, clinical_relay, identity_api, identity_relay) are members of their store's group
+# role and can connect only to their own database. The pg_roles Job keeps all of this in place.
 
 locals {
   pg_instances = var.profile == "local" ? {
@@ -141,61 +140,135 @@ resource "kubernetes_secret_v1" "clinical_api_url" {
   }
 }
 
-resource "kubernetes_config_map_v1" "pg_init" {
+# Databases, owners and login roles are reconciled by a Job on every apply whose scripts changed,
+# on new and existing volumes alike (infra/modules/platform/postgres-roles/README.md). Group
+# roles come from each store's bootstrap/roles.sql, the only list of them.
+locals {
+  repo_root  = "${path.module}/../../.."
+  role_order = jsondecode(file("${path.module}/postgres-roles/order.json"))
+  # instance -> ordered SQL files (paths from the repository root)
+  pg_role_files = {
+    for inst, dbs in local.pg_instances :
+    inst => concat(local.role_order.common, flatten([for db in dbs : local.role_order.databases[db]]))
+  }
+}
+
+resource "kubernetes_config_map_v1" "pg_roles" {
   for_each = local.pg_instances
   metadata {
-    name      = "postgres-${each.key}-init"
+    name      = "postgres-${each.key}-roles"
     namespace = local.ns
   }
-  # Built from a list of lines: template loop directives inside a heredoc leave indentation behind,
-  # and the shell only ends the inner heredoc on a line that is exactly "EOSQL".
-  data = {
-    "10-databases.sh" = join("\n", concat(
-      [
-        "#!/bin/sh",
-        "# Runs once, on first initialisation of the data directory.",
-        "set -eu",
-        "psql -v ON_ERROR_STOP=1 --username \"$POSTGRES_USER\" --dbname postgres <<EOSQL",
-        "REVOKE ALL ON DATABASE postgres FROM PUBLIC;",
-      ],
-      flatten([for db in each.value : [
-        "CREATE ROLE ${db}_owner LOGIN PASSWORD '$${${upper(db)}_OWNER_PASSWORD}';",
-        "CREATE DATABASE ${db} OWNER ${db}_owner;",
-        "REVOKE ALL ON DATABASE ${db} FROM PUBLIC;",
-        "GRANT CONNECT, CREATE, TEMPORARY ON DATABASE ${db} TO ${db}_owner;",
-      ]]),
-      contains(each.value, "audit") ? [
-        "CREATE ROLE endo_audit_app NOLOGIN;",
-        "CREATE ROLE audit_api LOGIN PASSWORD '$${AUDIT_API_PASSWORD}' IN ROLE endo_audit_app;",
-        "GRANT CONNECT ON DATABASE audit TO audit_api;",
-      ] : [],
-      # Same roles as packages/clinical-store/bootstrap/roles.sql (plain statements: this script
-      # runs once, and the shell would expand the $$ in that file's DO block).
-      contains(each.value, "clinical") ? [
-        "CREATE ROLE endo_clinical_app NOLOGIN;",
-        "CREATE ROLE endo_clinical_lookup NOLOGIN;",
-        "GRANT endo_clinical_lookup TO clinical_owner;",
-        "CREATE ROLE clinical_api LOGIN PASSWORD '$${CLINICAL_API_PASSWORD}' IN ROLE endo_clinical_app;",
-        "GRANT CONNECT ON DATABASE clinical TO clinical_api;",
-        "CREATE ROLE endo_clinical_membership_lookup NOLOGIN;",
-        "GRANT endo_clinical_membership_lookup TO clinical_owner;",
-        "CREATE ROLE endo_clinical_relay NOLOGIN;",
-        "CREATE ROLE clinical_relay LOGIN PASSWORD '$${CLINICAL_RELAY_PASSWORD}' IN ROLE endo_clinical_relay;",
-        "GRANT CONNECT ON DATABASE clinical TO clinical_relay;",
-      ] : [],
-      # Same roles as packages/identity-store/bootstrap/roles.sql. Only the identity service logs
-      # in, as identity_api, and its outbox relay as identity_relay.
-      contains(each.value, "identity") ? [
-        "CREATE ROLE endo_identity_app NOLOGIN;",
-        "CREATE ROLE identity_api LOGIN PASSWORD '$${IDENTITY_API_PASSWORD}' IN ROLE endo_identity_app;",
-        "GRANT CONNECT ON DATABASE identity TO identity_api;",
-        "CREATE ROLE endo_identity_relay NOLOGIN;",
-        "CREATE ROLE identity_relay LOGIN PASSWORD '$${IDENTITY_RELAY_PASSWORD}' IN ROLE endo_identity_relay;",
-        "GRANT CONNECT ON DATABASE identity TO identity_relay;",
-      ] : [],
-      ["EOSQL", ""],
-    ))
+  # Helpers keep their names (the scripts include them with \ir); ordered files are keyed by their
+  # repository path with "/" replaced, so files with the same name never collide.
+  data = merge(
+    { for f in local.role_order.helpers : basename(f) => file("${local.repo_root}/${f}") },
+    { for f in local.pg_role_files[each.key] : replace(f, "/", "__") => file("${local.repo_root}/${f}") },
+  )
+}
+
+resource "kubernetes_job_v1" "pg_roles" {
+  for_each = local.pg_instances
+  metadata {
+    # A new name whenever the scripts change, so the Job runs again; otherwise it is left alone.
+    name      = "postgres-${each.key}-roles-${substr(sha256(jsonencode(kubernetes_config_map_v1.pg_roles[each.key].data)), 0, 10)}"
+    namespace = local.ns
   }
+  spec {
+    backoff_limit = 6
+    template {
+      metadata {
+        labels = {
+          app                                        = "postgres-roles"
+          "endo.glucorp.health/postgres-${each.key}" = "client"
+        }
+      }
+      spec {
+        restart_policy                  = "OnFailure"
+        automount_service_account_token = false
+        security_context {
+          run_as_non_root = true
+          run_as_user     = 70
+          run_as_group    = 70
+          seccomp_profile {
+            type = "RuntimeDefault"
+          }
+        }
+        container {
+          name              = "reconcile"
+          image             = var.images.postgres
+          image_pull_policy = "IfNotPresent"
+          command = concat(
+            ["psql", "-X", "-q", "-v", "ON_ERROR_STOP=1", "--dbname", "postgres"],
+            flatten([for f in local.pg_role_files[each.key] : ["-f", "/sql/${replace(f, "/", "__")}"]]),
+          )
+          env {
+            name  = "PGHOST"
+            value = "postgres-${each.key}"
+          }
+          env {
+            name  = "PGUSER"
+            value = "endo_admin"
+          }
+          env {
+            name  = "HOME"
+            value = "/tmp"
+          }
+          env {
+            name = "PGPASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.pg_bootstrap[each.key].metadata[0].name
+                key  = "POSTGRES_PASSWORD"
+              }
+            }
+          }
+          # Login passwords, read by the scripts with \getenv (never on the command line).
+          env_from {
+            secret_ref {
+              name = kubernetes_secret_v1.pg_bootstrap[each.key].metadata[0].name
+            }
+          }
+          resources {
+            requests = { cpu = "10m", memory = "16Mi" }
+            limits   = { memory = "64Mi" }
+          }
+          security_context {
+            allow_privilege_escalation = local.hardened.allow_privilege_escalation
+            read_only_root_filesystem  = true
+            run_as_non_root            = true
+            capabilities {
+              drop = local.hardened.capabilities_drop
+            }
+          }
+          volume_mount {
+            name       = "sql"
+            mount_path = "/sql"
+            read_only  = true
+          }
+          volume_mount {
+            name       = "tmp"
+            mount_path = "/tmp"
+          }
+        }
+        volume {
+          name = "sql"
+          config_map {
+            name = kubernetes_config_map_v1.pg_roles[each.key].metadata[0].name
+          }
+        }
+        volume {
+          name = "tmp"
+          empty_dir {}
+        }
+      }
+    }
+  }
+  wait_for_completion = true
+  timeouts {
+    create = "5m"
+  }
+  depends_on = [kubernetes_stateful_set_v1.postgres]
 }
 
 resource "kubernetes_stateful_set_v1" "postgres" {
@@ -244,9 +317,14 @@ resource "kubernetes_stateful_set_v1" "postgres" {
             name  = "PGDATA"
             value = "/var/lib/postgresql/data/pgdata"
           }
-          env_from {
-            secret_ref {
-              name = kubernetes_secret_v1.pg_bootstrap[each.key].metadata[0].name
+          # Only its own superuser password: login passwords go to the roles Job alone.
+          env {
+            name = "POSTGRES_PASSWORD"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.pg_bootstrap[each.key].metadata[0].name
+                key  = "POSTGRES_PASSWORD"
+              }
             }
           }
           port {
@@ -290,11 +368,6 @@ resource "kubernetes_stateful_set_v1" "postgres" {
             name       = "tmp"
             mount_path = "/tmp"
           }
-          volume_mount {
-            name       = "init"
-            mount_path = "/docker-entrypoint-initdb.d"
-            read_only  = true
-          }
         }
         volume {
           name = "run"
@@ -303,13 +376,6 @@ resource "kubernetes_stateful_set_v1" "postgres" {
         volume {
           name = "tmp"
           empty_dir {}
-        }
-        volume {
-          name = "init"
-          config_map {
-            name         = kubernetes_config_map_v1.pg_init[each.key].metadata[0].name
-            default_mode = "0555"
-          }
         }
       }
     }
