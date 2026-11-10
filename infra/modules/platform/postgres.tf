@@ -170,8 +170,12 @@ resource "kubernetes_config_map_v1" "pg_roles" {
 resource "kubernetes_job_v1" "pg_roles" {
   for_each = local.pg_instances
   metadata {
-    # A new name whenever the scripts change, so the Job runs again; otherwise it is left alone.
-    name      = "postgres-${each.key}-roles-${substr(sha256(jsonencode(kubernetes_config_map_v1.pg_roles[each.key].data)), 0, 10)}"
+    # A new name whenever the scripts or the passwords change, so the Job runs again (including
+    # on rotation); otherwise it is left alone. Only a truncated hash of the secret is used.
+    name = "postgres-${each.key}-roles-${substr(sha256(jsonencode([
+      kubernetes_config_map_v1.pg_roles[each.key].data,
+      sha256(jsonencode(kubernetes_secret_v1.pg_bootstrap[each.key].data)),
+    ])), 0, 10)}"
     namespace = local.ns
   }
   spec {
@@ -268,7 +272,14 @@ resource "kubernetes_job_v1" "pg_roles" {
   timeouts {
     create = "5m"
   }
-  depends_on = [kubernetes_stateful_set_v1.postgres]
+  # Postgres must be running and reachable: its Service, DNS and both network policies.
+  depends_on = [
+    kubernetes_stateful_set_v1.postgres,
+    kubernetes_service_v1.postgres,
+    kubernetes_network_policy_v1.allow_dns,
+    kubernetes_network_policy_v1.postgres_ingress,
+    kubernetes_network_policy_v1.postgres_client_egress,
+  ]
 }
 
 resource "kubernetes_stateful_set_v1" "postgres" {
@@ -308,6 +319,8 @@ resource "kubernetes_stateful_set_v1" "postgres" {
             "-c", "max_connections=${var.profile == "local" ? "50" : "100"}",
             "-c", "password_encryption=scram-sha-256",
             "-c", "log_statement=none", # never log SQL text: it can contain data (spec 2.3)
+            # nor the text of a failed statement (data, or a password in ALTER ROLE)
+            "-c", "log_min_error_statement=panic",
           ]
           env {
             name  = "POSTGRES_USER"

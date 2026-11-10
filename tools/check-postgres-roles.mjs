@@ -27,12 +27,29 @@ const files = [...order.common, ...Object.values(order.databases).flat()];
 const sqlText = files.map((f) => readFileSync(join(ROOT, f), 'utf8')).join('\n');
 const passwordVars = [...new Set([...sqlText.matchAll(/\\getenv pw ([A-Z_]+)/g)].map((m) => m[1]))];
 
-/** Login role -> its database, read from the scripts' `\set role` / `\set db` lines. */
+/**
+ * Read from the scripts, in order: login role -> its database, and login role -> the group roles
+ * it must be a direct member of (`\set group`, plus grant-owner.sql for the clinical owner).
+ */
 const logins = new Map();
-for (const f of Object.values(order.databases).flat()) {
-  const text = readFileSync(join(ROOT, f), 'utf8');
-  const db = /\\set db (\w+)/.exec(text)?.[1];
-  for (const m of text.matchAll(/\\set role (\w+)/g)) if (db) logins.set(m[1], db);
+const expectedGroups = new Map();
+for (const [db, dbFiles] of Object.entries(order.databases)) {
+  for (const f of dbFiles) {
+    let role;
+    for (const line of readFileSync(join(ROOT, f), 'utf8').split('\n')) {
+      const r = /^\\set role (\w+)/.exec(line);
+      if (r) {
+        role = r[1];
+        logins.set(role, db);
+        expectedGroups.set(role, new Set());
+      }
+      const g = /^\\set group (\w+)/.exec(line);
+      if (g && role) expectedGroups.get(role).add(g[1]);
+      // bootstrap/grant-owner.sql grants group roles to the database owner.
+      const o = /^GRANT (\w+) TO :"owner";/.exec(line);
+      if (o) expectedGroups.get(`${db}_owner`).add(o[1]);
+    }
+  }
 }
 
 const fresh = () => randomBytes(18).toString('hex');
@@ -97,6 +114,40 @@ const attrs = execFileSync(
 ).trim();
 check(attrs === '', `logins with extra attributes: ${attrs}`);
 
+// Direct memberships are exactly the intended ones, and no service login can act as any owner.
+const MEMBERSHIPS =
+  "SELECT r.rolname || '=' || coalesce(string_agg(g.rolname, ',' ORDER BY g.rolname), '') " +
+  'FROM pg_roles r LEFT JOIN pg_auth_members m ON m.member = r.oid ' +
+  'LEFT JOIN pg_roles g ON g.oid = m.roleid ' +
+  "WHERE r.rolname = ANY (string_to_array(:'roles', ',')) GROUP BY r.rolname;";
+const actual = execFileSync(
+  'psql',
+  ['-X', '-At', '-v', `roles=${[...logins.keys()].join(',')}`, admin],
+  {
+    input: MEMBERSHIPS,
+    encoding: 'utf8',
+  },
+)
+  .trim()
+  .split(/\r?\n/)
+  .map((l) => l.split('='));
+check(actual.length === logins.size, `expected ${logins.size} logins, found ${actual.length}`);
+for (const [role, groups] of actual) {
+  const want = [...(expectedGroups.get(role) ?? [])].sort().join(',');
+  check(groups === want, `${role} is a member of [${groups}], expected [${want}]`);
+}
+const OWNER_REACH =
+  "SELECT l || ' -> ' || o FROM unnest(string_to_array(:'services', ',')) AS l, " +
+  "unnest(string_to_array(:'owners', ',')) AS o WHERE pg_has_role(l, o, 'USAGE');";
+const owners = [...logins.keys()].filter((r) => r.endsWith('_owner'));
+const services = [...logins.keys()].filter((r) => !r.endsWith('_owner'));
+const reach = execFileSync(
+  'psql',
+  ['-X', '-At', '-v', `services=${services.join(',')}`, '-v', `owners=${owners.join(',')}`, admin],
+  { input: OWNER_REACH, encoding: 'utf8' },
+).trim();
+check(reach === '', `service logins that can act as an owner: ${reach}`);
+
 // Rotation: a new password works after the next run, and the old one stops working.
 const [rotRole, rotDb] = [...logins].find(([r]) => !r.endsWith('_owner'));
 const oldPw = passwords[envVarOf(rotRole)];
@@ -121,5 +172,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 console.log(
-  `Postgres role scripts OK (${logins.size} logins, ${databases.length} databases, idempotent, rotation, missing-password stop).`,
+  `Postgres role scripts OK (${logins.size} logins, ${databases.length} databases, memberships, idempotent, rotation, missing-password stop).`,
 );
