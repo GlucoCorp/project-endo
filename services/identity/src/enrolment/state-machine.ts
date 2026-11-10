@@ -231,13 +231,16 @@ export function transition(
       if (tx.status !== 'claiming') return refuse('wrong-state');
       if (event.result === 'unknown') return unchanged(tx);
       if (event.result === 'succeeded') return move('activating', { cancelRequested: null });
-      return move('cancelling', { cancelReason: tx.cancelRequested ?? 'claim-refused' });
+      return move('cancelling', {
+        cancelReason: tx.cancelRequested ?? 'claim-refused',
+        cancelRequested: null,
+      });
 
     case 'cancel-resolved':
       if (tx.status !== 'claiming' || tx.cancelRequested === null) return refuse('wrong-state');
       return event.result === 'claimed'
         ? move('activating', { cancelRequested: null })
-        : move('cancelling', { cancelReason: tx.cancelRequested });
+        : move('cancelling', { cancelReason: tx.cancelRequested, cancelRequested: null });
 
     case 'activation-step-done':
       if (tx.status === 'active') return unchanged(tx);

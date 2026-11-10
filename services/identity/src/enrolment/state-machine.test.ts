@@ -223,6 +223,7 @@ describe('REQ-001, RISK-S05 ADR-0021 enrolment state machine (section 10)', () =
     expect(run(requested, [[7, { type: 'cancel-resolved', result: 'released' }]])).toMatchObject({
       status: 'cancelling',
       cancelReason: 'clinician-revoked',
+      cancelRequested: null,
     });
     expect(run(requested, [[7, { type: 'cancel-resolved', result: 'claimed' }]])).toMatchObject({
       status: 'activating',

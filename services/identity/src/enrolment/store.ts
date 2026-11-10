@@ -77,12 +77,16 @@ export class PostgresEnrolmentStore {
   /**
    * Applies one event. The row is locked, the state machine decides, and a change is written with
    * its audit event (built from the before and after states) in the same transaction. A refusal
-   * or a change-free repeat writes nothing.
+   * or a change-free repeat writes nothing. `clock` is read after the lock is held, so a request
+   * that waited for the lock is judged at the time it actually runs (deadlines).
+   *
+   * The database refuses the change unless its audit event names this transaction as its
+   * resource (`resource.id`).
    */
   apply(
     id: string,
     event: EnrolmentEvent,
-    now: Date,
+    clock: () => Date,
     audit: (before: EnrolmentTransaction, after: EnrolmentTransaction) => OutboxEvent,
   ): Promise<ApplyResult> {
     return this.#db.transaction().execute(async (trx) => {
@@ -94,7 +98,7 @@ export class PostgresEnrolmentStore {
         .executeTakeFirst();
       if (!row) return { ok: false, reason: 'not-found' } as const;
       const before = toStored(row).tx;
-      const result = transition(before, event, now);
+      const result = transition(before, event, clock());
       if (!result.ok || !result.changed) return result;
       const after = result.tx;
       await trx

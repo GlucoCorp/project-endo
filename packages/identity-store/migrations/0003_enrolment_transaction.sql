@@ -1,14 +1,46 @@
--- Enrolment transactions (ADR-0021 sections 1, 3, 10; REQ-001, RISK-S04, RISK-S05).
+-- Enrolment transactions (ADR-0021 sections 1, 3, 10, 14; REQ-001, RISK-S04, RISK-S05).
 --
 -- The identity service coordinates each patient enrolment as one transaction. Its pure state
 -- machine (services/identity/src/enrolment/state-machine.ts) decides every transition; this table
--- keeps the result, and refuses anything that machine could never produce:
--- - only the transitions of the ADR-0021 section 10 table, and terminal states never change;
+-- keeps the result and refuses anything that machine could never produce, whatever the caller:
+-- - only the transitions of the ADR-0021 section 10 table; terminal states never change;
 -- - the transaction's identity (invitation, organisation, start, absolute deadline, browser
 --   binding) never changes;
--- - `version` and `updated_at` are set by the database, so a writer cannot fake either.
+-- - a deadline in every pre-claim state, never past the absolute deadline, and changed only
+--   by a transition;
+-- - decisions and claim ids set only on consent, in full, and never again; the provisional
+--   subject set only on redemption; cancellation reasons written once;
+-- - activation steps one at a time, and `active` only after all three;
+-- - no insert or update without its audit event in the identity outbox, in the same database
+--   transaction (section 14);
+-- - `version` and `updated_at` set by the database.
 -- No identity data is stored here: opaque ids, a SHA-256 of the browser secret, the code's MAC
 -- under its own wrapped key, and her consent decisions until activation writes them.
+
+DO $migration$
+DECLARE
+  s text := current_schema();
+BEGIN
+  -- Her four decisions, exactly: {purpose: {status, version, decided_at}}.
+  EXECUTE format($f$
+    CREATE FUNCTION enrolment_decisions_valid(d jsonb) RETURNS boolean
+    LANGUAGE sql IMMUTABLE SET search_path = %I, pg_temp AS $b$
+      SELECT jsonb_typeof(d) = 'object'
+        AND octet_length(d::text) <= 2048
+        AND d ?& ARRAY['self_tracking', 'share_with_care_team', 'research_deidentified',
+                       'org_aggregate_reporting']
+        AND (SELECT count(*) FROM jsonb_object_keys(d)) = 4
+        AND (SELECT bool_and(
+               jsonb_typeof(v) = 'object'
+               AND v->>'status' IN ('granted', 'declined')
+               AND jsonb_typeof(v->'version') = 'number'
+               AND (v->>'version')::numeric >= 1
+               AND jsonb_typeof(v->'decided_at') = 'string')
+             FROM jsonb_each(d) AS e(k, v))
+    $b$
+  $f$, s);
+END;
+$migration$;
 
 CREATE TABLE enrolment_transaction (
   id                   uuid        PRIMARY KEY,
@@ -27,8 +59,7 @@ CREATE TABLE enrolment_transaction (
   code_wrapped_key     text        CHECK (char_length(code_wrapped_key) <= 1024),
   code_mac             text        CHECK (char_length(code_mac) <= 128),
   provisional_subject  text        CHECK (char_length(provisional_subject) BETWEEN 1 AND 255),
-  decisions            jsonb       CHECK (decisions IS NULL OR (jsonb_typeof(decisions) = 'object'
-                         AND octet_length(decisions::text) <= 2048)),
+  decisions            jsonb       CHECK (decisions IS NULL OR enrolment_decisions_valid(decisions)),
   person_id            uuid,
   patient_id           uuid,
   cancel_requested     text        CHECK (cancel_requested IN ('deadline', 'patient-cancelled',
@@ -41,13 +72,18 @@ CREATE TABLE enrolment_transaction (
   version              integer     NOT NULL DEFAULT 1,
   updated_at           timestamptz NOT NULL DEFAULT now(),
   CHECK (expires_at > started_at AND expires_at <= started_at + interval '60 minutes'),
+  -- A deadline exactly in the pre-claim states, never past the absolute deadline.
+  CHECK ((status IN ('awaiting-confirmation', 'confirmed', 'redeemed', 'credential-committed',
+           'consent-pending')) = (state_deadline IS NOT NULL)),
+  CHECK (state_deadline IS NULL OR state_deadline <= expires_at),
   CHECK ((code_wrapped_key IS NULL) = (code_mac IS NULL)),
-  CHECK (code_mac IS NULL OR status = 'awaiting-confirmation'),
-  CHECK (status <> 'awaiting-confirmation' OR code_mac IS NOT NULL),
+  CHECK ((status = 'awaiting-confirmation') = (code_mac IS NOT NULL)),
   CHECK (status NOT IN ('claiming', 'activating', 'active')
          OR (decisions IS NOT NULL AND person_id IS NOT NULL AND patient_id IS NOT NULL)),
   CHECK ((status IN ('cancelling', 'cancelled')) = (cancel_reason IS NOT NULL)),
-  CHECK (cancel_requested IS NULL OR status = 'claiming')
+  CHECK (cancel_requested IS NULL OR status = 'claiming'),
+  CHECK (status IN ('activating', 'active') OR activation_step = 0),
+  CHECK (status <> 'active' OR activation_step = 3)
 );
 
 CREATE INDEX enrolment_transaction_invitation_idx ON enrolment_transaction (invitation_id)
@@ -56,11 +92,36 @@ CREATE INDEX enrolment_transaction_binding_idx ON enrolment_transaction (binding
 -- For the deadline sweep: open pre-claim transactions by deadline.
 CREATE INDEX enrolment_transaction_deadline_idx ON enrolment_transaction (state_deadline)
   WHERE state_deadline IS NOT NULL;
+-- For the audit check below: outbox events by the resource they describe.
+CREATE INDEX audit_outbox_resource_idx ON audit_outbox ((event->'resource'->>'id'));
 
 DO $migration$
 DECLARE
   s text := current_schema();
 BEGIN
+  -- Every transaction starts awaiting confirmation, at (about) the database's own time.
+  EXECUTE format($f$
+    CREATE FUNCTION enrolment_transaction_start() RETURNS trigger
+    LANGUAGE plpgsql SET search_path = %I, pg_temp AS $b$
+    BEGIN
+      IF NEW.status <> 'awaiting-confirmation' THEN
+        RAISE EXCEPTION 'an enrolment transaction starts awaiting confirmation'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      IF abs(extract(epoch FROM NEW.started_at - clock_timestamp())) > 60 THEN
+        RAISE EXCEPTION 'enrolment transaction start time is not now'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      IF NEW.state_deadline > NEW.started_at + interval '15 minutes' THEN
+        RAISE EXCEPTION 'enrolment deadline cannot be moved' USING ERRCODE = 'check_violation';
+      END IF;
+      NEW.version := 1;
+      NEW.updated_at := clock_timestamp();
+      RETURN NEW;
+    END;
+    $b$
+  $f$, s);
+
   EXECUTE format($f$
     CREATE FUNCTION enrolment_transaction_guard() RETURNS trigger
     LANGUAGE plpgsql SET search_path = %I, pg_temp AS $b$
@@ -88,21 +149,53 @@ BEGIN
         RAISE EXCEPTION 'enrolment transition %% -> %% is not allowed', OLD.status, NEW.status
           USING ERRCODE = 'check_violation';
       END IF;
-      -- Activation steps only move forward, one at a time.
-      IF NEW.activation_step < OLD.activation_step
-         OR NEW.activation_step > OLD.activation_step + 1 THEN
+
+      -- Deadlines change only with a transition into a pre-claim state, at most 30 minutes ahead.
+      IF NEW.state_deadline IS DISTINCT FROM OLD.state_deadline AND NEW.state_deadline IS NOT NULL
+         AND (NEW.status = OLD.status
+              OR NEW.state_deadline > clock_timestamp() + interval '30 minutes') THEN
+        RAISE EXCEPTION 'enrolment deadline cannot be moved' USING ERRCODE = 'check_violation';
+      END IF;
+
+      -- Written once, at their own step.
+      IF NEW.provisional_subject IS DISTINCT FROM OLD.provisional_subject
+         AND NOT (OLD.status = 'confirmed' AND NEW.status = 'redeemed'
+                  AND OLD.provisional_subject IS NULL) THEN
+        RAISE EXCEPTION 'enrolment provisional subject is written once, at redemption'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      IF (NEW.decisions IS DISTINCT FROM OLD.decisions
+          OR NEW.person_id IS DISTINCT FROM OLD.person_id
+          OR NEW.patient_id IS DISTINCT FROM OLD.patient_id)
+         AND NOT (OLD.status = 'consent-pending' AND NEW.status = 'claiming'
+                  AND OLD.decisions IS NULL AND OLD.person_id IS NULL
+                  AND OLD.patient_id IS NULL) THEN
+        RAISE EXCEPTION 'enrolment decisions and claim ids are written once, at consent'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      IF OLD.cancel_reason IS NOT NULL AND NEW.cancel_reason IS DISTINCT FROM OLD.cancel_reason THEN
+        RAISE EXCEPTION 'enrolment cancellation reason is written once'
+          USING ERRCODE = 'check_violation';
+      END IF;
+      -- A cancel request is set once during claiming and cleared only by leaving claiming.
+      IF NEW.cancel_requested IS DISTINCT FROM OLD.cancel_requested
+         AND NOT ((OLD.cancel_requested IS NULL AND NEW.status = 'claiming')
+                  OR (NEW.cancel_requested IS NULL AND NEW.status <> 'claiming')) THEN
+        RAISE EXCEPTION 'enrolment cancel request is written once'
+          USING ERRCODE = 'check_violation';
+      END IF;
+
+      -- Activation: one step at a time, only while activating; active needs all three.
+      IF NEW.activation_step <> OLD.activation_step
+         AND NOT (OLD.status = 'activating' AND NEW.activation_step = OLD.activation_step + 1) THEN
         RAISE EXCEPTION 'enrolment activation steps move forward one at a time'
           USING ERRCODE = 'check_violation';
       END IF;
-      -- Once recorded, the consent decisions and the ids generated for claiming never change.
-      IF (OLD.decisions IS NOT NULL AND NEW.decisions IS DISTINCT FROM OLD.decisions)
-         OR (OLD.person_id IS NOT NULL AND NEW.person_id IS DISTINCT FROM OLD.person_id)
-         OR (OLD.patient_id IS NOT NULL AND NEW.patient_id IS DISTINCT FROM OLD.patient_id)
-         OR (OLD.provisional_subject IS NOT NULL
-             AND NEW.provisional_subject IS DISTINCT FROM OLD.provisional_subject) THEN
-        RAISE EXCEPTION 'enrolment transaction records are written once'
+      IF NEW.status = 'active' AND OLD.activation_step <> 2 THEN
+        RAISE EXCEPTION 'enrolment is active only after every activation step'
           USING ERRCODE = 'check_violation';
       END IF;
+
       NEW.version := OLD.version + 1;
       NEW.updated_at := clock_timestamp();
       RETURN NEW;
@@ -110,20 +203,22 @@ BEGIN
     $b$
   $f$, s);
 
-  -- Every transaction starts awaiting confirmation, at (about) the database's own time.
+  -- At commit: every insert or update of a transaction has an audit event about it, queued in
+  -- the same database transaction (ADR-0021 section 14). Runs with the owner's rights, because
+  -- the service role cannot read the outbox.
   EXECUTE format($f$
-    CREATE FUNCTION enrolment_transaction_start() RETURNS trigger
-    LANGUAGE plpgsql SET search_path = %I, pg_temp AS $b$
+    CREATE FUNCTION enrolment_transaction_audited() RETURNS trigger
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = %I, pg_temp AS $b$
     BEGIN
-      IF NEW.status <> 'awaiting-confirmation' THEN
-        RAISE EXCEPTION 'an enrolment transaction starts awaiting confirmation'
+      IF NOT EXISTS (
+        SELECT FROM audit_outbox AS o
+        WHERE o.event->'resource'->>'id' = NEW.id::text
+          AND o.xmin = pg_current_xact_id()::xid
+      ) THEN
+        RAISE EXCEPTION 'enrolment change without its audit event'
           USING ERRCODE = 'check_violation';
       END IF;
-      IF abs(extract(epoch FROM NEW.started_at - clock_timestamp())) > 60 THEN
-        RAISE EXCEPTION 'enrolment transaction start time is not now'
-          USING ERRCODE = 'check_violation';
-      END IF;
-      RETURN NEW;
+      RETURN NULL;
     END;
     $b$
   $f$, s);
@@ -134,8 +229,13 @@ CREATE TRIGGER enrolment_transaction_start BEFORE INSERT ON enrolment_transactio
   FOR EACH ROW EXECUTE FUNCTION enrolment_transaction_start();
 CREATE TRIGGER enrolment_transaction_guard BEFORE UPDATE ON enrolment_transaction
   FOR EACH ROW EXECUTE FUNCTION enrolment_transaction_guard();
+CREATE CONSTRAINT TRIGGER enrolment_transaction_audited
+  AFTER INSERT OR UPDATE ON enrolment_transaction
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION enrolment_transaction_audited();
 
 REVOKE ALL ON enrolment_transaction FROM PUBLIC;
+REVOKE ALL ON FUNCTION enrolment_transaction_audited() FROM PUBLIC;
 GRANT SELECT ON enrolment_transaction TO endo_identity_app;
 GRANT INSERT (id, invitation_id, org_id, status, started_at, expires_at, state_deadline,
   binding_hash, code_wrapped_key, code_mac) ON enrolment_transaction TO endo_identity_app;

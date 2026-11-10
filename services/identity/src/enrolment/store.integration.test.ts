@@ -87,21 +87,25 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     await admin.end();
   });
 
-  const audit = (action: string): OutboxEvent => ({ id: uuidv7(), action });
+  const audit = (action: string, txId: string): OutboxEvent => ({
+    id: uuidv7(),
+    action,
+    resource: { type: 'enrolment_transaction', id: txId },
+  });
   const auditStep = (_: EnrolmentTransaction, after: EnrolmentTransaction) =>
-    audit(`identity.enrolment.${after.status}`);
+    audit(`identity.enrolment.${after.status}`, after.id);
   const queued = async (id: string) =>
     (await relay.query('SELECT 1 FROM audit_outbox WHERE id = $1', [id])).rowCount;
 
   async function newTransaction(now = new Date()) {
     const tx = startTransaction({ id: uuidv7(), invitationId: uuidv7(), orgId: uuidv7(), now });
-    const started = audit('identity.enrolment.started');
+    const started = audit('identity.enrolment.started', tx.id);
     await store.create(tx, { bindingHash: binding(), code: sealed }, started);
     return { tx, started };
   }
 
   async function step(id: string, event: EnrolmentEvent, now = new Date()) {
-    const r = await store.apply(id, event, now, auditStep);
+    const r = await store.apply(id, event, () => now, auditStep);
     if (!r.ok) throw new Error(`${event.type} refused: ${r.reason}`);
     return r;
   }
@@ -151,22 +155,22 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       await store.apply(
         tx.id,
         { type: 'redeem', provisionalSubject: SUBJECT },
-        new Date(),
+        () => new Date(),
         auditStep,
       ),
     ).toEqual({ ok: false, reason: 'wrong-state' });
     const cancel = await store.apply(
       tx.id,
       { type: 'cancel', reason: 'patient-cancelled' },
-      new Date(),
+      () => new Date(),
       auditStep,
     );
     expect(cancel).toMatchObject({ ok: true, changed: true });
-    const event = audit('repeat');
+    const event = audit('repeat', tx.id);
     const repeat = await store.apply(
       tx.id,
       { type: 'cancel', reason: 'deadline' },
-      new Date(),
+      () => new Date(),
       () => event,
     );
     expect(repeat).toMatchObject({
@@ -176,7 +180,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     });
     expect(await queued(event.id)).toBe(0);
     expect((await store.get(tx.id))?.version).toBe(2);
-    expect(await store.apply(uuidv7(), { type: 'confirm' }, new Date(), auditStep)).toEqual({
+    expect(await store.apply(uuidv7(), { type: 'confirm' }, () => new Date(), auditStep)).toEqual({
       ok: false,
       reason: 'not-found',
     });
@@ -186,7 +190,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     const { tx } = await newTransaction();
     const results = await Promise.all(
       Array.from({ length: 5 }, () =>
-        store.apply(tx.id, { type: 'confirm' }, new Date(), auditStep),
+        store.apply(tx.id, { type: 'confirm' }, () => new Date(), auditStep),
       ),
     );
     expect(results.filter((r) => r.ok && r.changed)).toHaveLength(1);
@@ -205,17 +209,174 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
   });
 
   describe('the database refuses what the state machine never produces', () => {
+    /** One admin transaction: a direct UPDATE, plus an audit event naming the transaction. */
+    async function asAdminWithAudit(txId: string, text: string, params: unknown[] = []) {
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query(text, [txId, ...params]);
+        await c.query('INSERT INTO audit_outbox (id, event) VALUES ($1, $2)', [
+          uuidv7(),
+          JSON.stringify(audit('test.direct', txId)),
+        ]);
+        await c.query('COMMIT');
+      } catch (error) {
+        await c.query('ROLLBACK');
+        throw error;
+      } finally {
+        c.release();
+      }
+    }
+
+    const cancelColumns = {
+      status: 'cancelling',
+      cancel_reason: 'deadline',
+      state_deadline: null,
+      code_mac: null,
+      code_wrapped_key: null,
+    };
+
+    it('refuses any change without its audit event in the same transaction', async () => {
+      const { tx } = await newTransaction();
+      await expect(
+        db
+          .updateTable('enrolment_transaction')
+          .set(cancelColumns)
+          .where('id', '=', tx.id)
+          .execute(),
+      ).rejects.toThrow(/without its audit event/);
+      // An event about another transaction does not count.
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await trx
+            .insertInto('audit_outbox')
+            .values({ id: uuidv7(), event: JSON.stringify(audit('x', uuidv7())) })
+            .execute();
+          await trx
+            .updateTable('enrolment_transaction')
+            .set(cancelColumns)
+            .where('id', '=', tx.id)
+            .execute();
+        }),
+      ).rejects.toThrow(/without its audit event/);
+      expect((await store.get(tx.id))?.tx.status).toBe('awaiting-confirmation');
+    });
+
+    it('keeps deadlines: present before claiming, never moved or past the absolute deadline', async () => {
+      const { tx } = await newTransaction();
+      await expect(
+        asAdminWithAudit(
+          tx.id,
+          "UPDATE enrolment_transaction SET status = 'confirmed', code_mac = NULL, code_wrapped_key = NULL, state_deadline = NULL WHERE id = $1",
+        ),
+      ).rejects.toThrow(/check constraint/);
+      await expect(
+        asAdminWithAudit(
+          tx.id,
+          "UPDATE enrolment_transaction SET state_deadline = state_deadline + interval '1 minute' WHERE id = $1",
+        ),
+      ).rejects.toThrow(/cannot be moved|not allowed/);
+      await expect(
+        asAdminWithAudit(
+          tx.id,
+          "UPDATE enrolment_transaction SET status = 'confirmed', code_mac = NULL, code_wrapped_key = NULL, state_deadline = expires_at + interval '1 minute' WHERE id = $1",
+        ),
+      ).rejects.toThrow(/check constraint|cannot be moved/);
+    });
+
+    it('accepts decisions only in full, and only at consent', async () => {
+      const { tx } = await newTransaction();
+      await expect(
+        asAdminWithAudit(tx.id, "UPDATE enrolment_transaction SET decisions = '{}' WHERE id = $1"),
+      ).rejects.toThrow(/check constraint|written once|not allowed/);
+      await step(tx.id, { type: 'confirm' });
+      await step(tx.id, { type: 'redeem', provisionalSubject: SUBJECT });
+      await step(tx.id, { type: 'callback', subject: SUBJECT, credentialCommitted: true });
+      const at = new Date().toISOString();
+      const three = JSON.stringify({
+        self_tracking: { status: 'granted', version: 1, decided_at: at },
+        share_with_care_team: { status: 'granted', version: 1, decided_at: at },
+        research_deidentified: { status: 'declined', version: 1, decided_at: at },
+      });
+      await expect(
+        asAdminWithAudit(
+          tx.id,
+          "UPDATE enrolment_transaction SET status = 'claiming', state_deadline = NULL, decisions = $2, person_id = gen_random_uuid(), patient_id = gen_random_uuid() WHERE id = $1",
+          [three],
+        ),
+      ).rejects.toThrow(/check constraint/);
+    });
+
+    it('never skips activation, and never rewrites a cancellation reason', async () => {
+      const { tx } = await newTransaction();
+      const now = new Date();
+      for (const e of [
+        { type: 'confirm' },
+        { type: 'redeem', provisionalSubject: SUBJECT },
+        { type: 'callback', subject: SUBJECT, credentialCommitted: true },
+        { type: 'consent', decisions: decisions(now), personId: uuidv7(), patientId: uuidv7() },
+        { type: 'claim-result', result: 'succeeded' },
+      ] as EnrolmentEvent[])
+        await step(tx.id, e);
+      await expect(
+        asAdminWithAudit(tx.id, "UPDATE enrolment_transaction SET status = 'active' WHERE id = $1"),
+      ).rejects.toThrow(/every activation step|check constraint/);
+
+      const { tx: other } = await newTransaction();
+      await step(other.id, { type: 'cancel', reason: 'patient-cancelled' });
+      await expect(
+        asAdminWithAudit(
+          other.id,
+          "UPDATE enrolment_transaction SET status = 'cancelled', cancel_reason = 'deadline' WHERE id = $1",
+        ),
+      ).rejects.toThrow(/written once/);
+    });
+
+    it('writes a cancel request once and clears it when claiming ends', async () => {
+      const { tx } = await newTransaction();
+      const now = new Date();
+      for (const e of [
+        { type: 'confirm' },
+        { type: 'redeem', provisionalSubject: SUBJECT },
+        { type: 'callback', subject: SUBJECT, credentialCommitted: true },
+        { type: 'consent', decisions: decisions(now), personId: uuidv7(), patientId: uuidv7() },
+        { type: 'cancel', reason: 'clinician-revoked' },
+      ] as EnrolmentEvent[])
+        await step(tx.id, e);
+      await expect(
+        asAdminWithAudit(
+          tx.id,
+          "UPDATE enrolment_transaction SET cancel_requested = 'patient-cancelled' WHERE id = $1",
+        ),
+      ).rejects.toThrow(/written once/);
+      const done = await step(tx.id, { type: 'cancel-resolved', result: 'released' });
+      expect(done.tx).toMatchObject({
+        status: 'cancelling',
+        cancelReason: 'clinician-revoked',
+        cancelRequested: null,
+      });
+    });
+
+    it('judges deadlines at the time the locked change runs, not when it was requested', async () => {
+      const { tx } = await newTransaction();
+      const late = new Date(tx.startedAt.getTime() + 16 * 60_000);
+      // The request was made in time, but the clock read under the lock is past the deadline.
+      expect(await store.apply(tx.id, { type: 'confirm' }, () => late, auditStep)).toEqual({
+        ok: false,
+        reason: 'expired',
+      });
+    });
+
     it('refuses a transition outside the section 10 table', async () => {
       const { tx } = await newTransaction();
       await expect(
         admin.query(`UPDATE enrolment_transaction SET status = 'active' WHERE id = $1`, [tx.id]),
       ).rejects.toThrow(/not allowed|check constraint/);
-      await expect(
-        admin.query(
-          `UPDATE enrolment_transaction SET status = 'cancelling', cancel_reason = 'deadline', code_mac = NULL, code_wrapped_key = NULL WHERE id = $1`,
-          [tx.id],
-        ),
-      ).resolves.toBeDefined();
+      // A legal transition, written directly, still needs its audit event in the same transaction.
+      await asAdminWithAudit(
+        tx.id,
+        `UPDATE enrolment_transaction SET status = 'cancelling', cancel_reason = 'deadline', state_deadline = NULL, code_mac = NULL, code_wrapped_key = NULL WHERE id = $1`,
+      );
       await expect(
         admin.query(
           `UPDATE enrolment_transaction SET status = 'awaiting-confirmation' WHERE id = $1`,
@@ -278,7 +439,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
         store.create(
           { ...tx, status: 'confirmed' },
           { bindingHash: binding(), code: sealed },
-          audit('x'),
+          audit('x', tx.id),
         ),
       ).rejects.toThrow(/starts awaiting confirmation|check constraint/);
       const old = new Date(Date.now() - 10 * 60_000);
@@ -286,7 +447,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
         store.create(
           startTransaction({ id: uuidv7(), invitationId: uuidv7(), orgId: uuidv7(), now: old }),
           { bindingHash: binding(), code: sealed },
-          audit('x'),
+          audit('x', uuidv7()),
         ),
       ).rejects.toThrow(/start time is not now/);
       const { tx: kept } = await newTransaction();
