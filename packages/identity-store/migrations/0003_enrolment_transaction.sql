@@ -92,8 +92,8 @@ CREATE TABLE enrolment_transaction (
 );
 
 -- One row per enrolment change in the current database transaction (see the guard below). Only
--- the owner's functions write it; the service role has no privileges on it. Rows are removed at
--- commit by the audit check, and vanish with a rollback.
+-- the owner's functions write it; the service role has no privileges on it. A mark lasts until its
+-- database transaction has ended (later changes clear old marks), and vanishes with a rollback.
 CREATE TABLE enrolment_change_mark (
   xact            xid8 NOT NULL,
   transaction_id  uuid NOT NULL,
@@ -120,6 +120,9 @@ BEGIN
     CREATE FUNCTION enrolment_mark_change(p_id uuid) RETURNS void
     LANGUAGE plpgsql SECURITY DEFINER SET search_path = %I, pg_temp AS $b$
     BEGIN
+      -- Marks stay until their database transaction has ended (even if the audit check is made
+      -- to run early). Marks of transactions that have certainly ended are cleared here.
+      DELETE FROM enrolment_change_mark WHERE xact < pg_snapshot_xmin(pg_current_snapshot());
       INSERT INTO enrolment_change_mark (xact, transaction_id)
       VALUES (pg_current_xact_id(), p_id) ON CONFLICT DO NOTHING;
       IF NOT FOUND THEN
@@ -254,8 +257,6 @@ BEGIN
         RAISE EXCEPTION 'enrolment change without its audit event'
           USING ERRCODE = 'check_violation';
       END IF;
-      DELETE FROM enrolment_change_mark
-        WHERE xact = pg_current_xact_id() AND transaction_id = NEW.id;
       RETURN NULL;
     END;
     $b$

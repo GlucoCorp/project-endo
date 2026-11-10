@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
 import { uuidv7 } from '@endo/domain';
 import { IDENTITY_MIGRATIONS_DIR, type IdentityDatabase } from '@endo/identity-store';
@@ -352,6 +352,29 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
                 .as('x'),
             )
             .execute();
+          await trx
+            .updateTable('enrolment_transaction')
+            .set({ status: 'redeemed', provisional_subject: SUBJECT })
+            .where('id', '=', tx.id)
+            .execute();
+        }),
+      ).rejects.toThrow(/one enrolment change per database transaction/);
+    });
+
+    it('still allows one change if the audit check is forced to run early', async () => {
+      const { tx } = await newTransaction();
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await trx
+            .insertInto('audit_outbox')
+            .values({ id: uuidv7(), event: JSON.stringify(audit('x', tx.id)) })
+            .execute();
+          await trx
+            .updateTable('enrolment_transaction')
+            .set({ status: 'confirmed', code_mac: null, code_wrapped_key: null })
+            .where('id', '=', tx.id)
+            .execute();
+          await sql`SET CONSTRAINTS enrolment_transaction_audited IMMEDIATE`.execute(trx);
           await trx
             .updateTable('enrolment_transaction')
             .set({ status: 'redeemed', provisional_subject: SUBJECT })
