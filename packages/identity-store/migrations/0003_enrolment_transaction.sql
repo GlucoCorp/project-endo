@@ -91,6 +91,16 @@ CREATE TABLE enrolment_transaction (
   CHECK ((status = 'active') = (activation_step = 3))
 );
 
+-- One row per enrolment change in the current database transaction (see the guard below). Only
+-- the owner's functions write it; the service role has no privileges on it. Rows are removed at
+-- commit by the audit check, and vanish with a rollback.
+CREATE TABLE enrolment_change_mark (
+  xact            xid8 NOT NULL,
+  transaction_id  uuid NOT NULL,
+  PRIMARY KEY (xact, transaction_id)
+);
+REVOKE ALL ON enrolment_change_mark FROM PUBLIC;
+
 CREATE INDEX enrolment_transaction_invitation_idx ON enrolment_transaction (invitation_id)
   WHERE status NOT IN ('active', 'cancelled');
 CREATE INDEX enrolment_transaction_binding_idx ON enrolment_transaction (binding_hash);
@@ -104,6 +114,22 @@ DO $migration$
 DECLARE
   s text := current_schema();
 BEGIN
+  -- Records one change of an enrolment transaction in this database transaction, and refuses a
+  -- second (savepoints included: the mark rolls back with its change).
+  EXECUTE format($f$
+    CREATE FUNCTION enrolment_mark_change(p_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = %I, pg_temp AS $b$
+    BEGIN
+      INSERT INTO enrolment_change_mark (xact, transaction_id)
+      VALUES (pg_current_xact_id(), p_id) ON CONFLICT DO NOTHING;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'one enrolment change per database transaction'
+          USING ERRCODE = 'check_violation';
+      END IF;
+    END;
+    $b$
+  $f$, s);
+
   -- Every transaction starts awaiting confirmation, at (about) the database's own time.
   EXECUTE format($f$
     CREATE FUNCTION enrolment_transaction_start() RETURNS trigger
@@ -120,7 +146,7 @@ BEGIN
       IF NEW.state_deadline > NEW.started_at + interval '15 minutes' THEN
         RAISE EXCEPTION 'enrolment deadline cannot be moved' USING ERRCODE = 'check_violation';
       END IF;
-      PERFORM set_config('endo_enrolment.changed_' || replace(NEW.id::text, '-', ''), '1', true);
+      PERFORM enrolment_mark_change(NEW.id);
       NEW.version := 1;
       NEW.updated_at := clock_timestamp();
       RETURN NEW;
@@ -140,13 +166,8 @@ BEGIN
       IF OLD.status IN ('active', 'cancelled') THEN
         RAISE EXCEPTION 'enrolment transaction is final' USING ERRCODE = 'check_violation';
       END IF;
-      -- One change per database transaction, so every change has its own audit event. The mark is
-      -- transaction-local: it covers savepoints, and goes away with a rolled-back change.
-      IF current_setting('endo_enrolment.changed_' || replace(OLD.id::text, '-', ''), true) = '1' THEN
-        RAISE EXCEPTION 'one enrolment change per database transaction'
-          USING ERRCODE = 'check_violation';
-      END IF;
-      PERFORM set_config('endo_enrolment.changed_' || replace(OLD.id::text, '-', ''), '1', true);
+      -- One change per database transaction, so every change has its own audit event.
+      PERFORM enrolment_mark_change(OLD.id);
       IF NOT (
         (OLD.status, NEW.status) IN (
           ('awaiting-confirmation', 'confirmed'), ('awaiting-confirmation', 'cancelling'),
@@ -233,6 +254,8 @@ BEGIN
         RAISE EXCEPTION 'enrolment change without its audit event'
           USING ERRCODE = 'check_violation';
       END IF;
+      DELETE FROM enrolment_change_mark
+        WHERE xact = pg_current_xact_id() AND transaction_id = NEW.id;
       RETURN NULL;
     END;
     $b$
@@ -251,6 +274,9 @@ CREATE CONSTRAINT TRIGGER enrolment_transaction_audited
 
 REVOKE ALL ON enrolment_transaction FROM PUBLIC;
 REVOKE ALL ON FUNCTION enrolment_transaction_audited() FROM PUBLIC;
+-- The triggers call it with the caller's rights; calling it directly only adds a mark (stricter).
+REVOKE ALL ON FUNCTION enrolment_mark_change(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION enrolment_mark_change(uuid) TO endo_identity_app;
 GRANT SELECT ON enrolment_transaction TO endo_identity_app;
 GRANT INSERT (id, invitation_id, org_id, status, started_at, expires_at, state_deadline,
   binding_hash, code_wrapped_key, code_mac) ON enrolment_transaction TO endo_identity_app;

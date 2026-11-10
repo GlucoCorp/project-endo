@@ -324,6 +324,43 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       expect((await store.get(tx.id))?.tx.status).toBe('cancelling');
     });
 
+    it('keeps change marks out of the service role reach', async () => {
+      await expect(db.deleteFrom('enrolment_change_mark' as never).execute()).rejects.toThrow(
+        /permission denied/,
+      );
+      const { tx } = await newTransaction();
+      // The old session-setting trick no longer clears anything.
+      await expect(
+        db.transaction().execute(async (trx) => {
+          await trx
+            .insertInto('audit_outbox')
+            .values({ id: uuidv7(), event: JSON.stringify(audit('x', tx.id)) })
+            .execute();
+          await trx
+            .updateTable('enrolment_transaction')
+            .set({ status: 'confirmed', code_mac: null, code_wrapped_key: null })
+            .where('id', '=', tx.id)
+            .execute();
+          await trx
+            .selectNoFrom((eb) =>
+              eb
+                .fn('set_config', [
+                  eb.val(`endo_enrolment.changed_${tx.id.replaceAll('-', '')}`),
+                  eb.val('0'),
+                  eb.lit(true),
+                ])
+                .as('x'),
+            )
+            .execute();
+          await trx
+            .updateTable('enrolment_transaction')
+            .set({ status: 'redeemed', provisional_subject: SUBJECT })
+            .where('id', '=', tx.id)
+            .execute();
+        }),
+      ).rejects.toThrow(/one enrolment change per database transaction/);
+    });
+
     it('refuses any change without its audit event in the same transaction', async () => {
       const { tx } = await newTransaction();
       await expect(
