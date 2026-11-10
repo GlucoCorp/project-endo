@@ -206,7 +206,7 @@ Each scope belongs to one caller, and a valid token alone is never enough: every
 ## Implementation slices
 
 1. Coordinator state machine and transaction store in the identity service (section 10 table), with code HMAC, shared attempt counter, limits and outbox; clinical migration 0005 for the invitation reservation (section 6).
-2. Patient BFF landing, start, status and continue, with the browser secret.
+2. Patient BFF landing, start, status and continue, with the browser secret. Built so far: the API coordinator reads, `find` (by link token hash) and `state`, scope `api.enrolment.coordinate` for the identity service only (`API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK`). Reserve, release, revoke and claim come with slices 3 and 6.
 3. Clinician confirm in the clinic BFF and API, with attestation and audit.
 4. Handoff and redemption, with the binding checks.
 5. Java extension (authenticator, guarded action, post-commit hook), its build pipeline and realm changes.
