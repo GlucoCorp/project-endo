@@ -216,9 +216,10 @@ export function transition(
 
     case 'consent':
       if (tx.status !== 'consent-pending') return refuse('wrong-state');
-      // All four decisions, each with its version and time, or nothing (section 10).
+      // Declining self-tracking ends enrolment at once, whatever else she has answered.
+      if (declinesSelfTracking(event.decisions, now)) return cancel(tx, 'declined');
+      // Going on needs all four decisions, each with its version and time (section 10).
       if (!completeDecisions(event.decisions, now)) return refuse('incomplete-consent');
-      if (event.decisions.self_tracking.status !== 'granted') return cancel(tx, 'declined');
       return move('claiming', {
         stateDeadline: null,
         decisions: event.decisions,
@@ -277,11 +278,17 @@ function cancel(tx: EnrolmentTransaction, reason: CancelReason): TransitionResul
  */
 function completeDecisions(d: unknown, now: Date): boolean {
   if (typeof d !== 'object' || d === null) return false;
-  const entries = new Map(Object.entries(d));
+  const entries = new Map<string, unknown>(Object.entries(d));
   return (
     entries.size === CONSENT_PURPOSES.length &&
     CONSENT_PURPOSES.every((purpose) => validChoice(entries.get(purpose), now))
   );
+}
+
+function declinesSelfTracking(d: unknown, now: Date): boolean {
+  if (typeof d !== 'object' || d === null) return false;
+  const c: unknown = new Map<string, unknown>(Object.entries(d)).get('self_tracking');
+  return validChoice(c, now) && (c as ConsentChoice).status === 'declined';
 }
 
 function validChoice(c: unknown, now: Date): boolean {

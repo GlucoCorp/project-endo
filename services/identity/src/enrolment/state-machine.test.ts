@@ -169,6 +169,23 @@ describe('REQ-001, RISK-S05 ADR-0021 enrolment state machine (section 10)', () =
     expect(claiming().decisions).toEqual(ALL_GRANTED);
   });
 
+  it('cancels on a self-tracking decline even before the other decisions are answered', () => {
+    const tx = run(start(), toConsentPending);
+    const onlyDecline = { self_tracking: choice('declined') } as unknown as ConsentDecisions;
+    expect(transition(tx, { ...consent, decisions: onlyDecline }, at(5))).toMatchObject({
+      ok: true,
+      tx: { status: 'cancelling', cancelReason: 'declined' },
+    });
+    // A malformed decline is not a decline.
+    const malformed = {
+      self_tracking: { ...choice('declined'), version: 0 },
+    } as unknown as ConsentDecisions;
+    expect(transition(tx, { ...consent, decisions: malformed }, at(5))).toEqual({
+      ok: false,
+      reason: 'incomplete-consent',
+    });
+  });
+
   it('cancels at once when she declines self-tracking', () => {
     const tx = run(start(), toConsentPending);
     const r = transition(
