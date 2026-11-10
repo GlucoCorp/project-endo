@@ -166,11 +166,39 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     ).toBe(false);
   });
 
-  it('rejects malformed bodies', async () => {
-    const { post } = await setup();
-    expect((await post('find', { token_hash: TOKEN })).statusCode).toBe(400);
-    expect((await post('find', { token_hash: HASH, extra: 1 })).statusCode).toBe(400);
+  it('rejects malformed bodies without echoing them anywhere', async () => {
+    const { post, audit, logs } = await setup();
+    const bad = await post('find', { token_hash: TOKEN });
+    expect(bad.statusCode).toBe(400);
+    const extra = await post('find', { token_hash: HASH, extra: 1 });
+    expect(extra.statusCode).toBe(400);
     expect((await post('state', { org_id: 'x', invitation_id: INVITATION })).statusCode).toBe(400);
+    const recorded =
+      bad.body + extra.body + JSON.stringify(await audit.readRange(1, 50)) + logs.join('');
+    expect(recorded).not.toContain('SYNTHETIC_PHI_MARKER');
+    expect(recorded).not.toContain(HASH);
+  });
+
+  it('keeps the hash out of responses, logs and audit when the store fails', async () => {
+    const failing: EnrolmentCoordination = {
+      find: () => Promise.reject(new Error(`store failed for ${HASH} SYNTHETIC_PHI_MARKER`)),
+      state: () => Promise.reject(new Error('store failed SYNTHETIC_PHI_MARKER')),
+    };
+    const { post, audit, logs } = await setup(failing);
+    const res = await post('find', { token_hash: HASH });
+    expect(res.statusCode).toBe(500);
+    const state = await post('state', { org_id: ORG, invitation_id: INVITATION });
+    expect(state.statusCode).toBe(500);
+    const recorded =
+      res.body + state.body + JSON.stringify(await audit.readRange(1, 50)) + logs.join('');
+    expect(recorded).not.toContain('SYNTHETIC_PHI_MARKER');
+    expect(recorded).not.toContain(HASH);
+    // The failure itself is audited, as an error with a safe code.
+    expect(await audit.readRange(1, 50)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ action: 'api.enrolment.invitation.find', outcome: 'error' }),
+      ]),
+    );
   });
 
   it('does not exist without a clinical store (fail closed)', async () => {
