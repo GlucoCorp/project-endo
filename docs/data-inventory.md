@@ -138,6 +138,32 @@ The only store with names, emails and phone numbers, all encrypted under each pe
 | `patient_link.org_id`             | Organisation of that record                              | as above                              | as above                                                     | S1          |
 | `patient_link.created_at`         | When linked                                              | as above                              | as above                                                     | S1          |
 
+### Enrolment transactions — `packages/identity-store/migrations/0003`
+
+The identity service coordinates each enrolment here (ADR-0021). No identity fields: opaque ids, hashes, a MAC and her consent choices. Retention: `TODO_LEGAL` (proposed: 90 days after it ends, for audit correlation; the audit log keeps the history).
+
+| Column                                      | Purpose                                                                                               | Legal basis                                       | Retention                | Sensitivity |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------ | ----------- |
+| `enrolment_transaction.id`                  | Enrolment transaction id                                                                              | Contract / consent to use the service (enrolment) | `TODO_LEGAL` (see above) | S0          |
+| `enrolment_transaction.invitation_id`       | Invitation being enrolled (clinical store id)                                                         | as above                                          | as above                 | S0          |
+| `enrolment_transaction.org_id`              | Organisation of that invitation                                                                       | as above                                          | as above                 | S0          |
+| `enrolment_transaction.status`              | State in the ADR-0021 section 10 machine                                                              | as above                                          | as above                 | S0          |
+| `enrolment_transaction.started_at`          | When she pressed Start                                                                                | as above                                          | as above                 | S0          |
+| `enrolment_transaction.expires_at`          | Absolute deadline: 60 minutes after Start                                                             | as above                                          | as above                 | S0          |
+| `enrolment_transaction.state_deadline`      | Deadline of the current pre-claim state                                                               | as above                                          | as above                 | S0          |
+| `enrolment_transaction.binding_hash`        | SHA-256 of the browser secret that binds the transaction to her browser; the secret is never stored   | as above                                          | as above                 | S0          |
+| `enrolment_transaction.code_wrapped_key`    | Data key of the confirmation code's MAC, wrapped by `kms/identity`; cleared after confirmation        | as above                                          | as above                 | S0          |
+| `enrolment_transaction.code_mac`            | HMAC of the 6-digit code under that key; the code itself is never stored; cleared after confirmation  | as above                                          | as above                 | S0          |
+| `enrolment_transaction.provisional_subject` | Keycloak subject of the provisional user                                                              | as above                                          | as above                 | S1          |
+| `enrolment_transaction.decisions`           | Her four consent decisions (status, version, time) until activation writes them to the clinical store | as above                                          | as above                 | S1          |
+| `enrolment_transaction.person_id`           | Identity-vault person id generated before claiming                                                    | as above                                          | as above                 | S1          |
+| `enrolment_transaction.patient_id`          | Clinical patient record id generated before claiming                                                  | as above                                          | as above                 | S1          |
+| `enrolment_transaction.cancel_requested`    | Why a cancellation was requested during claiming (code)                                               | as above                                          | as above                 | S0          |
+| `enrolment_transaction.cancel_reason`       | Why it was cancelled (code)                                                                           | as above                                          | as above                 | S0          |
+| `enrolment_transaction.activation_step`     | Activation steps done (0 to 3)                                                                        | as above                                          | as above                 | S0          |
+| `enrolment_transaction.version`             | Changes so far (set by the database)                                                                  | as above                                          | as above                 | S0          |
+| `enrolment_transaction.updated_at`          | Last change (database clock)                                                                          | as above                                          | as above                 | S0          |
+
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
