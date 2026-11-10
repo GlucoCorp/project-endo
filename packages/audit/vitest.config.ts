@@ -7,6 +7,8 @@ export default defineConfig({
   test: {
     // Generous: packages test in parallel with coverage, and cold imports are slow on dev machines.
     testTimeout: 15_000,
+    // Integration setup creates a schema and runs migrations; slow when packages run in parallel.
+    hookTimeout: 60_000,
     coverage: {
       provider: 'v8',
       include: ['src/**'],

@@ -1,4 +1,5 @@
 import type { Generated } from 'kysely';
+import type { AuditOutboxTable } from '@endo/db';
 
 /** Spec 13.1 consent purposes. Order is not significant. */
 export const CONSENT_PURPOSES = [
@@ -62,15 +63,7 @@ export interface ClinicalDatabase {
     created_at: Generated<Date>;
     expires_at: Generated<Date>;
   };
-  audit_outbox: {
-    id: string;
-    seq: Generated<string>;
-    event: unknown;
-    created_at: Generated<Date>;
-    published_at: Date | null;
-    attempts: Generated<number>;
-    last_error: string | null;
-  };
+  audit_outbox: AuditOutboxTable;
   /** View: the latest decision per patient and purpose (migration 0001). Read-only. */
   consent_current: {
     id: string;

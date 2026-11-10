@@ -138,6 +138,10 @@ The only store with names, emails and phone numbers, all encrypted under each pe
 | `patient_link.org_id`             | Organisation of that record                              | as above                              | as above                                                     | S1          |
 | `patient_link.created_at`         | When linked                                              | as above                              | as above                                                     | S1          |
 
+### Identity audit outbox — `packages/identity-store/migrations/0002`
+
+Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
+
 ## Other stores
 
 Not yet created. Entries are added in the same PR as each migration (spec 0 rule 9).

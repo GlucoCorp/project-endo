@@ -63,22 +63,28 @@ jobs:
         run: |
           pnpm --filter @endo/bff-clinic exec playwright install --only-shell chromium
           pnpm --filter @endo/bff-clinic test:e2e
+      # One database per store, as deployed (spec 5.2): stores never share tables or migration history.
+      - name: Create one database per store
+        run: |
+          for db in audit_ci clinical_ci identity_ci; do
+            psql postgres://endo_test:endo_test@localhost:5432/endo_test -v ON_ERROR_STOP=1 -q -c "CREATE DATABASE $db"
+          done
       - name: Audit migrations apply cleanly and are idempotent
         env:
-          ENDO_AUDIT_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/endo_test
+          ENDO_AUDIT_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/audit_ci
         run: |
           pnpm --filter @endo/audit migrate
           pnpm --filter @endo/audit migrate
       - name: Clinical migrations apply cleanly and are idempotent
         env:
-          ENDO_CLINICAL_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/endo_test
+          ENDO_CLINICAL_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/clinical_ci
         run: |
           psql "$ENDO_CLINICAL_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f packages/clinical-store/bootstrap/roles.sql
           pnpm --filter @endo/clinical-store migrate
           pnpm --filter @endo/clinical-store migrate
       - name: Identity migrations apply cleanly and are idempotent
         env:
-          ENDO_IDENTITY_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/endo_test
+          ENDO_IDENTITY_MIGRATION_DATABASE_URL: postgres://endo_test:endo_test@localhost:5432/identity_ci
         run: |
           psql "$ENDO_IDENTITY_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f packages/identity-store/bootstrap/roles.sql
           pnpm --filter @endo/identity-store migrate

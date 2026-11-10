@@ -9,12 +9,16 @@ import type pg from 'pg';
  * - Files are `NNNN_snake_name.sql`, applied in order, each in its own transaction.
  * - The SHA-256 of each applied file is recorded. Editing an applied migration is an error:
  *   migrations are immutable once applied; write a new one (expand/migrate/contract).
- * - A Postgres advisory lock stops two deployers migrating the same database at once.
+ * - A Postgres advisory lock stops two deployers migrating the same schema at once. It is keyed
+ *   by schema, so migrations of unrelated schemas in one database (test suites) never queue
+ *   behind each other. Deployments use one schema per database, so nothing changes there.
  */
 
 const FILE_RE = /^(\d{4})_[a-z0-9_]+\.sql$/;
-// Arbitrary constant: "endo" + "migr" as ASCII, fits in a signed 64-bit lock key.
-const LOCK_KEY = '7310598722425860722';
+// Advisory lock keyed by the schema being migrated (current_schema: the first search_path entry).
+// The key is computed once, before any migration runs: a migration may change search_path, and
+// the unlock must release exactly the lock that was taken.
+const LOCK_KEY = "SELECT hashtextextended('endo-migrate:' || current_schema(), 0)::text AS key";
 
 export class MigrationError extends Error {
   constructor(message: string) {
@@ -43,8 +47,10 @@ export async function runMigrations(pool: pg.Pool, dir: string): Promise<Migrati
   const client = await pool.connect();
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
+  let key: string | undefined;
   try {
-    await client.query('SELECT pg_advisory_lock($1::bigint)', [LOCK_KEY]);
+    key = (await client.query<{ key: string }>(LOCK_KEY)).rows[0]?.key;
+    await client.query('SELECT pg_advisory_lock($1::bigint)', [key]);
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         name       text PRIMARY KEY,
@@ -83,7 +89,8 @@ export async function runMigrations(pool: pg.Pool, dir: string): Promise<Migrati
       applied.push(name);
     }
   } finally {
-    await client.query('SELECT pg_advisory_unlock($1::bigint)', [LOCK_KEY]).catch(() => undefined);
+    if (key !== undefined)
+      await client.query('SELECT pg_advisory_unlock($1::bigint)', [key]).catch(() => undefined);
     client.release();
   }
   return { applied, alreadyApplied };

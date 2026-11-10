@@ -47,3 +47,4 @@ TB1: internet / BFF        TB2: BFF / API (mTLS planned)        TB3: API / data 
 - Dev sessions are in-memory and created at process start; no real authentication yet.
 - Audit store is durable PostgreSQL; health-data writes will audit in the same transaction (outbox) from M1.
 - No rate limiting or CSRF tokens yet (no mutating routes exist).
+- Database roles are created by the Postgres first-boot script only; on an existing volume a new role (such as `identity_relay`) is added by the manual step in `infra/README.md`. A role reconciliation job must exist before the first deployed environment, or a missing relay login would leave audit events queued (spec 2.6).

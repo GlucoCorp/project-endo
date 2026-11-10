@@ -5,7 +5,7 @@ import { defineConfig } from 'vitest/config';
 // Locally without a test database, those files are left out of the coverage denominator.
 const dbCode = process.env['ENDO_TEST_DATABASE_URL']
   ? []
-  : ['src/migrate.ts', 'src/pool.ts', 'src/test-support.ts'];
+  : ['src/migrate.ts', 'src/outbox.ts', 'src/pool.ts', 'src/test-support.ts'];
 
 export default defineConfig({
   test: {

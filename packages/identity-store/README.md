@@ -12,6 +12,10 @@
 | `PostgresPersonKeyStore`  | Durable per-person data keys for `FieldCipher` with `kms/identity`. `destroy` deletes the key and leaves a tombstone; the database then refuses a new key for that person |
 | `IDENTITY_MIGRATIONS_DIR` | SQL migrations; apply with `pnpm --filter @endo/identity-store migrate` (`ENDO_IDENTITY_MIGRATION_DATABASE_URL`) after `bootstrap/roles.sql`                              |
 
+## Audit outbox (migration 0002)
+
+`audit_outbox` holds audit events written in the same transaction as the change they describe. Only `endo_identity_relay` reads and acknowledges them, through `relayAuditOutbox` from `@endo/db`. The identity service can only add events. Run `bootstrap/roles.sql` again on existing clusters to create the relay role.
+
 ## Rules
 
 - Every identity field is stored encrypted under the person's own key (`FieldCipher`, `kms/identity`). Never store a plaintext name, email or phone.
