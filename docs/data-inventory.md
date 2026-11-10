@@ -163,8 +163,20 @@ The identity service coordinates each enrolment here (ADR-0021). No identity fie
 | `enrolment_transaction.activation_step`     | Activation steps done (0 to 3)                                                                        | as above                                                          | as above                                                       | S0          |
 | `enrolment_transaction.version`             | Changes so far (set by the database)                                                                  | as above                                                          | as above                                                       | S0          |
 | `enrolment_transaction.updated_at`          | Last change (database clock)                                                                          | as above                                                          | as above                                                       | S0          |
-| `enrolment_change_mark.xact`                | Database transaction that changed an enrolment transaction (one change each)                          | Legal obligation / legitimate interest (complete audit, spec 2.6) | Until a later change after that database transaction has ended | S0          |
-| `enrolment_change_mark.transaction_id`      | The enrolment transaction it changed                                                                  | as above                                                          | as above                                                       | S0          |
+| `enrolment_change_mark.xact`                | Database transaction that changed an enrolment transaction or invitation guard (one change each)      | Legal obligation / legitimate interest (complete audit, spec 2.6) | Until a later change after that database transaction has ended | S0          |
+| `enrolment_change_mark.transaction_id`      | The enrolment transaction, or the invitation of the guard, it changed                                 | as above                                                          | as above                                                       | S0          |
+
+### Invitation code guard — `packages/identity-store/migrations/0004`
+
+Wrong confirmation codes per invitation and the 15-minute lock after the fifth (ADR-0021 section 3). Opaque id, a count and a time; never the typed code. Retention: `TODO_LEGAL` (proposed: as the enrolment transactions above).
+
+| Column                                      | Purpose                                             | Legal basis                                                                    | Retention                | Sensitivity |
+| ------------------------------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------ | ----------- |
+| `enrolment_invitation_guard.invitation_id`  | Invitation the count belongs to (clinical store id) | Legitimate interest (protecting the enrolment against code guessing, RISK-S05) | `TODO_LEGAL` (see above) | S0          |
+| `enrolment_invitation_guard.wrong_attempts` | Wrong codes since the last lock (0 to 4)            | as above                                                                       | as above                 | S0          |
+| `enrolment_invitation_guard.locked_until`   | End of the current or last lock (database clock)    | as above                                                                       | as above                 | S0          |
+| `enrolment_invitation_guard.version`        | Changes so far (set by the database)                | as above                                                                       | as above                 | S0          |
+| `enrolment_invitation_guard.updated_at`     | Last change (database clock)                        | as above                                                                       | as above                 | S0          |
 
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 

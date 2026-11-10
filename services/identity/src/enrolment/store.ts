@@ -1,8 +1,9 @@
 import type { Kysely, Selectable, Transaction } from 'kysely';
 import type { IdentityDatabase } from '@endo/identity-store';
-import type { SealedCode } from './code.ts';
+import type { CodeBinding, SealedCode } from './code.ts';
 import {
   ENROLMENT_STATUSES,
+  isOverdue,
   transition,
   type CancelReason,
   type ConsentDecisions,
@@ -23,6 +24,50 @@ export interface StoredTransaction {
   readonly code: SealedCode | null;
   readonly version: number;
 }
+
+/** Every event except confirmation, which only a matching code can cause (`confirmByCode`). */
+export type ApplicableEvent = Exclude<EnrolmentEvent, { readonly type: 'confirm' }>;
+
+/** Wrong entries allowed per invitation; the database enforces the same number (migration 0004). */
+export const WRONG_CODE_LIMIT = 5;
+
+/** What the clinician typed, for the invitation they selected (ADR-0021 section 3). */
+export interface CodeEntry {
+  readonly invitationId: string;
+  /** The clinician's organisation; only that organisation's transactions are candidates. */
+  readonly orgId: string;
+  readonly code: string;
+}
+
+/** Audit events of a code check, built by the caller, who knows the clinician and attestation. */
+export type CodeCheckAudit =
+  | {
+      readonly kind: 'confirmed' | 'cancelled';
+      readonly before: EnrolmentTransaction;
+      readonly after: EnrolmentTransaction;
+    }
+  | { readonly kind: 'wrong-code'; readonly invitationId: string; readonly wrongAttempts: number }
+  | { readonly kind: 'locked'; readonly invitationId: string; readonly lockedUntil: Date };
+
+export type CodeCheckResult =
+  | {
+      readonly outcome: 'confirmed';
+      readonly tx: EnrolmentTransaction;
+      readonly cancelled: readonly string[];
+    }
+  | { readonly outcome: 'wrong'; readonly remaining: number }
+  /** Locked now (`cancelled` lists what the lock ended) or already locked (`cancelled` empty). */
+  | {
+      readonly outcome: 'locked';
+      readonly lockedUntil: Date;
+      readonly cancelled: readonly string[];
+    };
+
+export type CodeMatcher = (
+  code: string,
+  binding: CodeBinding,
+  sealed: SealedCode,
+) => Promise<boolean>;
 
 export type ApplyResult =
   | { readonly ok: true; readonly changed: boolean; readonly tx: EnrolmentTransaction }
@@ -85,10 +130,13 @@ export class PostgresEnrolmentStore {
    */
   apply(
     id: string,
-    event: EnrolmentEvent,
+    event: ApplicableEvent,
     clock: () => Date,
     audit: (before: EnrolmentTransaction, after: EnrolmentTransaction) => OutboxEvent,
   ): Promise<ApplyResult> {
+    // Checked at run time too: nothing confirms a transaction without its code check.
+    if ((event as EnrolmentEvent).type === 'confirm')
+      return Promise.reject(new Error('confirmation goes through confirmByCode'));
     return this.#db.transaction().execute(async (trx) => {
       const row = await trx
         .selectFrom('enrolment_transaction')
@@ -100,29 +148,86 @@ export class PostgresEnrolmentStore {
       const before = toStored(row).tx;
       const result = transition(before, event, clock());
       if (!result.ok || !result.changed) return result;
-      const after = result.tx;
-      await trx
-        .updateTable('enrolment_transaction')
-        .set({
-          status: after.status,
-          state_deadline: after.stateDeadline,
-          // The code is never needed (or shown) again once confirmation is over (section 3).
-          ...(after.status === 'awaiting-confirmation'
-            ? {}
-            : { code_wrapped_key: null, code_mac: null }),
-          provisional_subject: after.provisionalSubject,
-          decisions:
-            after.decisions === null ? null : JSON.stringify(encodeDecisions(after.decisions)),
-          person_id: after.personId,
-          patient_id: after.patientId,
-          cancel_requested: after.cancelRequested,
-          cancel_reason: after.cancelReason,
-          activation_step: after.activationStep,
-        })
-        .where('id', '=', id)
-        .execute();
-      await queue(trx, audit(before, after));
+      await write(trx, result.tx, audit(before, result.tx));
       return result;
+    });
+  }
+
+  /**
+   * The clinician's code check (ADR-0021 section 3), in one database transaction serialised on
+   * the invitation's guard row (lock order everywhere: guard row, then transaction rows):
+   * - locked invitation: refused, nothing counted;
+   * - the code matches a live transaction of this organisation awaiting confirmation: it is
+   *   confirmed (its code cleared) and its siblings are cancelled (`sibling-confirmed`);
+   * - otherwise one wrong entry is counted; the fifth locks the invitation for 15 minutes and
+   *   cancels every transaction awaiting confirmation (`code-lockout`).
+   * Every candidate is compared, so timing does not tell which one matched. A transaction past
+   * its deadline is not a candidate. The database enforces the counter and the lock.
+   *
+   * The API's reservation of the invitation follows the confirmation (section 6); if it is
+   * refused, the coordinator cancels the confirmed transaction.
+   */
+  confirmByCode(
+    entry: CodeEntry,
+    matches: CodeMatcher,
+    clock: () => Date,
+    audit: (e: CodeCheckAudit) => OutboxEvent,
+  ): Promise<CodeCheckResult> {
+    return this.#db.transaction().execute(async (trx): Promise<CodeCheckResult> => {
+      await trx
+        .insertInto('enrolment_invitation_guard')
+        .values({ invitation_id: entry.invitationId })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      const guard = await trx
+        .selectFrom('enrolment_invitation_guard')
+        .select(['wrong_attempts', 'locked_until'])
+        .where('invitation_id', '=', entry.invitationId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const now = clock();
+      if (guard.locked_until !== null && guard.locked_until > now)
+        return { outcome: 'locked', lockedUntil: guard.locked_until, cancelled: [] };
+
+      const pending = await awaiting(trx, entry.invitationId, entry.orgId);
+      let match: StoredTransaction | null = null;
+      for (const s of pending) {
+        if (s.code === null || isOverdue(s.tx, now)) continue;
+        const binding = { invitationId: entry.invitationId, transactionId: s.tx.id };
+        if ((await matches(entry.code, binding, s.code)) && match === null) match = s;
+      }
+
+      if (match !== null) {
+        const before = match.tx;
+        const confirmed = transition(before, { type: 'confirm' }, now);
+        if (!confirmed.ok) throw new Error('a matching transaction could not be confirmed');
+        await write(trx, confirmed.tx, audit({ kind: 'confirmed', before, after: confirmed.tx }));
+        const siblings = pending.filter((s) => s.tx.id !== before.id);
+        const cancelled = await cancelAll(trx, siblings, 'sibling-confirmed', now, audit);
+        return { outcome: 'confirmed', tx: confirmed.tx, cancelled };
+      }
+
+      const counted = await trx
+        .updateTable('enrolment_invitation_guard')
+        .set((eb) => ({ wrong_attempts: eb('wrong_attempts', '+', 1) }))
+        .where('invitation_id', '=', entry.invitationId)
+        .returning(['wrong_attempts', 'locked_until'])
+        .executeTakeFirstOrThrow();
+      const lockedUntil = counted.locked_until;
+      if (lockedUntil === null || lockedUntil.getTime() === guard.locked_until?.getTime()) {
+        const wrongAttempts = counted.wrong_attempts;
+        await queue(
+          trx,
+          audit({ kind: 'wrong-code', invitationId: entry.invitationId, wrongAttempts }),
+        );
+        return { outcome: 'wrong', remaining: WRONG_CODE_LIMIT - wrongAttempts };
+      }
+      // The fifth wrong entry: the database has locked the invitation. Every transaction of it
+      // awaiting confirmation ends, whatever its organisation; the database checks none is left.
+      await queue(trx, audit({ kind: 'locked', invitationId: entry.invitationId, lockedUntil }));
+      const all = await awaiting(trx, entry.invitationId, null);
+      const cancelled = await cancelAll(trx, all, 'code-lockout', now, audit);
+      return { outcome: 'locked', lockedUntil, cancelled };
     });
   }
 
@@ -144,6 +249,66 @@ export class PostgresEnrolmentStore {
       .execute();
     return rows.map((r) => r.id);
   }
+}
+
+/** Writes a transition decided by the state machine, with its audit event. */
+async function write(
+  trx: Transaction<IdentityDatabase>,
+  after: EnrolmentTransaction,
+  event: OutboxEvent,
+): Promise<void> {
+  await trx
+    .updateTable('enrolment_transaction')
+    .set({
+      status: after.status,
+      state_deadline: after.stateDeadline,
+      // The code is never needed (or shown) again once confirmation is over (section 3).
+      ...(after.status === 'awaiting-confirmation'
+        ? {}
+        : { code_wrapped_key: null, code_mac: null }),
+      provisional_subject: after.provisionalSubject,
+      decisions: after.decisions === null ? null : JSON.stringify(encodeDecisions(after.decisions)),
+      person_id: after.personId,
+      patient_id: after.patientId,
+      cancel_requested: after.cancelRequested,
+      cancel_reason: after.cancelReason,
+      activation_step: after.activationStep,
+    })
+    .where('id', '=', after.id)
+    .execute();
+  await queue(trx, event);
+}
+
+/** Transactions of an invitation awaiting confirmation (of one organisation, or all), locked. */
+async function awaiting(
+  trx: Transaction<IdentityDatabase>,
+  invitationId: string,
+  orgId: string | null,
+): Promise<StoredTransaction[]> {
+  let q = trx
+    .selectFrom('enrolment_transaction')
+    .selectAll()
+    .where('invitation_id', '=', invitationId)
+    .where('status', '=', 'awaiting-confirmation');
+  if (orgId !== null) q = q.where('org_id', '=', orgId);
+  return (await q.orderBy('id').forUpdate().execute()).map(toStored);
+}
+
+async function cancelAll(
+  trx: Transaction<IdentityDatabase>,
+  pending: readonly StoredTransaction[],
+  reason: CancelReason,
+  now: Date,
+  audit: (e: CodeCheckAudit) => OutboxEvent,
+): Promise<string[]> {
+  const cancelled: string[] = [];
+  for (const { tx: before } of pending) {
+    const r = transition(before, { type: 'cancel', reason }, now);
+    if (!r.ok || !r.changed) continue;
+    await write(trx, r.tx, audit({ kind: 'cancelled', before, after: r.tx }));
+    cancelled.push(before.id);
+  }
+  return cancelled;
 }
 
 async function queue(trx: Transaction<IdentityDatabase>, event: OutboxEvent): Promise<void> {

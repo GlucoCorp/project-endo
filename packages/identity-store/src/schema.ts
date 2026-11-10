@@ -45,6 +45,14 @@ export interface IdentityDatabase {
     version: Generated<number>;
     updated_at: Generated<Date>;
   };
+  /** Migration 0004 (ADR-0021 section 3). Wrong codes per invitation; the fifth locks it. */
+  enrolment_invitation_guard: {
+    invitation_id: string;
+    wrong_attempts: Generated<number>;
+    locked_until: Generated<Date | null>;
+    version: Generated<number>;
+    updated_at: Generated<Date>;
+  };
   patient_link: {
     person_id: string;
     patient_record_id: string;
