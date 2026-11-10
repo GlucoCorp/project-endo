@@ -1,6 +1,6 @@
 # ADR-0023: The always-on dev environment runs on our own machine, reached over WireGuard
 
-- Status: accepted (product owner, 2026-11-10: "switch from Oracle to an open-source option")
+- Status: accepted (product owner, 2026-11-10: "switch from Oracle to an open-source option"); **building it is deferred** while one person builds alone (the `local` environment covers that)
 - Date: 2026-11-10
 - Supersedes: the `shared-dev` row of ADR-0014 (Oracle Cloud Always Free)
 - Requirements/Risks: spec 0 rule 2, 2.1, 12.5, 17.1, 17.3; spec Section 24 item 16; RISK-I01, RISK-T04
