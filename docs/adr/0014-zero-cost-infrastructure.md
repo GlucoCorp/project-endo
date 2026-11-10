@@ -1,6 +1,6 @@
 # ADR-0014: Zero-cost infrastructure — OpenTofu, k3s, OpenBao
 
-- Status: accepted
+- Status: accepted; the `shared-dev` environment is superseded by ADR-0023 (self-hosted, WireGuard)
 - Date: 2026-11-08
 - Requirements/Risks: spec 8.1, 11.1, 12.5, 12.6, 17.1–17.4; RISK-T02, RISK-I01
 
@@ -30,11 +30,11 @@ We build the **self-hosted stack** from spec 17.3 first. It costs nothing, and i
 
 ### Environments
 
-| Environment     | Where                                                                                                                     | Cost | Purpose                                                                                                                                                                                          |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `local`         | k3d (k3s in Docker) on the developer machine                                                                              | free | Offline development. **Slim profile:** one Postgres instance with separate `clinical`, `identity`, `audit` and `keycloak` databases and separate roles, tight memory limits, OpenBao in dev mode |
-| `shared-dev`    | k3s on one **Oracle Cloud Always Free** Ampere A1 VM (4 OCPU, 24 GB)                                                      | free | Always-on, reachable over HTTPS (Let's Encrypt + DuckDNS, both free). **Full profile:** separate Postgres instances per store (spec 2.4), OpenBao in server mode                                 |
-| `aws-reference` | Spec 17.2 modules, written and checked (`tofu validate`, Checkov), **never applied** until there is a customer or funding | free | Keeps the AWS path ready                                                                                                                                                                         |
+| Environment     | Where                                                                                                                              | Cost | Purpose                                                                                                                                                                                          |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `local`         | k3d (k3s in Docker) on the developer machine                                                                                       | free | Offline development. **Slim profile:** one Postgres instance with separate `clinical`, `identity`, `audit` and `keycloak` databases and separate roles, tight memory limits, OpenBao in dev mode |
+| `shared-dev`    | **Superseded by ADR-0023:** k3s on a machine the organisation owns, reached only over WireGuard (was: Oracle Cloud Always Free VM) | free | Always-on for the team. **Full profile:** separate Postgres instances per store (spec 2.4), OpenBao in server mode                                                                               |
+| `aws-reference` | Spec 17.2 modules, written and checked (`tofu validate`, Checkov), **never applied** until there is a customer or funding          | free | Keeps the AWS path ready                                                                                                                                                                         |
 
 All environments use **synthetic data only** (spec 0 rule 2, 17.1). Production hosting for real patient data is decided at pilot time (spec Section 24 item 8).
 
@@ -52,7 +52,7 @@ All environments use **synthetic data only** (spec 0 rule 2, 17.1). Production h
 
 ## Consequences
 
-- **Oracle account:** creating one is a human step (it needs a card for identity checks; Always Free resources never bill unless the account is upgraded). Oracle may reclaim Always Free VMs that stay almost idle for 7 days; the cluster's scheduled jobs keep it above that threshold.
+- **Oracle account (superseded by ADR-0023, no longer needed):** creating one is a human step (it needs a card for identity checks; Always Free resources never bill unless the account is upgraded). Oracle may reclaim Always Free VMs that stay almost idle for 7 days; the cluster's scheduled jobs keep it above that threshold.
 - **Free Oracle capacity:** Ampere A1 capacity in some regions is sometimes exhausted. Pick a region with capacity, or retry.
 - **RAM on the dev machine:** the local profile is sized for about 2 GB inside Docker.
 - **Spec deviations:** OpenBao instead of Vault and deferring MinIO are recorded here and in spec Section 24.
@@ -73,4 +73,4 @@ All environments use **synthetic data only** (spec 0 rule 2, 17.1). Production h
 | Helm                          | 4.3.1   | Apache-2.0                                     | winget; hash matched get.helm.sh                           |
 | Provider hashicorp/kubernetes | 3.4.0   | MPL-2.0 (reviewed)                             | 3.5.0 under 7 days                                         |
 | Provider hashicorp/random     | 3.9.1   | MPL-2.0 (reviewed)                             |                                                            |
-| Provider oracle/oci           | 9.11.0  | MPL-2.0 (reviewed)                             | 9.12.x under 7 days                                        |
+| Provider oracle/oci           | dropped | n/a                                            | Never pinned; not needed since ADR-0023                    |

@@ -7,7 +7,7 @@ Zero-cost infrastructure (ADR-0014): **OpenTofu** modules deploying the spec 17.
 | `k3d/endo-local.yaml`    | Local k3s cluster in Docker, bound to 127.0.0.1                                                    |
 | `modules/platform/`      | Namespaces (Pod Security `restricted`), default-deny network policies, Postgres, Keycloak, OpenBao |
 | `envs/local/`            | Local environment (slim profile, ~1.8 GB RAM)                                                      |
-| `envs/shared-dev/`       | Planned: always-on k3s on an Oracle Cloud Always Free VM (needs an Oracle account)                 |
+| `envs/shared-dev/`       | Planned: always-on k3s on a machine the organisation owns, reached only over WireGuard (ADR-0023)  |
 | `dev/docker-compose.yml` | Older quick database stack for ad-hoc tests                                                        |
 
 ## Local environment

@@ -5,7 +5,7 @@ variable "namespace" {
 }
 
 variable "profile" {
-  description = "local = slim single-node dev (one Postgres instance, OpenBao dev mode); shared = always-on dev on the free Oracle VM."
+  description = "local = slim single-node dev (one Postgres instance, OpenBao dev mode); shared = always-on dev on the organisation's own machine (ADR-0023)."
   type        = string
   validation {
     condition     = contains(["local", "shared"], var.profile)
