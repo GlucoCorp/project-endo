@@ -13,7 +13,7 @@ const HASH = 'a'.repeat(64);
 async function client(respond: (req: Request) => Response | Promise<Response>) {
   const keys = await generateServiceKeyPair();
   const seen: Request[] = [];
-  const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fake = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
     const req = new Request(input, init);
     seen.push(req);
     return respond(req);
