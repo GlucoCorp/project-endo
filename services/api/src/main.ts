@@ -20,7 +20,9 @@ import {
   InMemoryMembershipStore,
   PostgresConsentStore,
   PostgresIdempotentInvitationStore,
+  PostgresInvitationReservationStore,
   PostgresMembershipStore,
+  findLiveInvitation,
   relayAuditOutbox,
   type ClinicalDatabase,
   type ConsentStore,
@@ -31,6 +33,7 @@ import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
 import { ServiceTokenVerifier, WorkloadTokenVerifier } from '@endo/service-kit';
 import { buildApi } from './app.ts';
+import type { EnrolmentCoordination } from './routes/coordinator.ts';
 
 const PublicJwk = z.string().transform((s, ctx) => {
   try {
@@ -62,6 +65,8 @@ const Config = z.object({
   // its workload key (membership lookup only). Both optional until the clinic BFF is deployed.
   API_BFF_CLINIC_SERVICE_PUBLIC_KEY_JWK: PublicJwk.optional(),
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
+  API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -101,6 +106,7 @@ async function main(): Promise<void> {
   let invitations: IdempotentInvitationStore;
   let memberships: MembershipStore;
   let consents: ConsentStore;
+  let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
   // Queued events carry their outbox id; the audit store assigns its own.
@@ -118,6 +124,11 @@ async function main(): Promise<void> {
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
+    const reservations = new PostgresInvitationReservationStore(db);
+    coordination = {
+      find: (tokenHash) => findLiveInvitation(db, tokenHash),
+      state: (orgId, invitationId) => reservations.state(orgId, invitationId),
+    };
     if (!config.API_AUDIT_RELAY_DATABASE_URL) {
       throw new Error('API_AUDIT_RELAY_DATABASE_URL is required with API_CLINICAL_DATABASE_URL.');
     }
@@ -178,6 +189,14 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      ...(config.API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            identity: {
+              publicJwk: config.API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.enrolment.coordinate'],
+            },
+          }
+        : {}),
     }),
     audit: auditWriter,
     invitations,
@@ -188,6 +207,7 @@ async function main(): Promise<void> {
     relayOutbox,
     now: () => new Date(),
     consents,
+    ...(coordination ? { coordination } : {}),
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 
