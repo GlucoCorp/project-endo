@@ -12,6 +12,7 @@ import {
   PostgresConsentStore,
   PostgresIdempotentInvitationStore,
   PostgresMembershipStore,
+  PermanentPublishError,
   relayAuditOutbox,
   findLiveInvitation,
   withOrg,
@@ -685,11 +686,11 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       await store.createOnce(good);
       const failBad = (e: unknown) =>
         (e as { id?: string }).id === bad.auditEvent.id
-          ? Promise.reject(new Error('poison'))
+          ? Promise.reject(new PermanentPublishError())
           : Promise.resolve();
       // One run: the bad event fails once and does not block the good one.
       const first = await relayAuditOutbox(relayDb, failBad);
-      expect(first).toEqual({ published: 1, failed: 1 });
+      expect(first).toEqual({ published: 1, failed: 1, interrupted: false });
       for (let i = 0; i < 6; i++) await relayAuditOutbox(relayDb, failBad);
       const { rows } = await admin.query<{
         attempts: number;

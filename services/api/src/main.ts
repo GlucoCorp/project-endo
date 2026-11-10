@@ -22,7 +22,10 @@ import {
   PostgresIdempotentInvitationStore,
   PostgresInvitationReservationStore,
   PostgresMembershipStore,
+  PermanentPublishError,
   findLiveInvitation,
+  outboxAlert,
+  outboxHealth,
   relayAuditOutbox,
   type ClinicalDatabase,
   type ConsentStore,
@@ -113,7 +116,11 @@ async function main(): Promise<void> {
   const publish = (queued: unknown, occurredAt?: Date): Promise<void> => {
     const input: Record<string, unknown> = { ...(queued as Record<string, unknown>) };
     delete input['id'];
-    return auditWriter.write(AuditEventInput.parse(input), occurredAt).then(() => undefined);
+    // An event that fails the schema can never be published: only that counts an attempt.
+    // A failing audit store is an outage, which the relay waits out (spec 2.6).
+    const parsed = AuditEventInput.safeParse(input);
+    if (!parsed.success) return Promise.reject(new PermanentPublishError());
+    return auditWriter.write(parsed.data, occurredAt).then(() => undefined);
   };
   let closeClinical = (): Promise<void> => Promise.resolve();
   if (config.API_CLINICAL_DATABASE_URL) {
@@ -139,8 +146,10 @@ async function main(): Promise<void> {
       }),
     );
     relayOutbox = async () => {
-      const r = await relayAuditOutbox(relayDb, publish);
-      if (r.failed > 0) process.stderr.write(`audit outbox: ${String(r.failed)} event(s) failed\n`);
+      await relayAuditOutbox(relayDb, publish);
+      // Counts only. Repeats every run while anything is set aside or the backlog is stale.
+      const alert = outboxAlert('api', await outboxHealth(relayDb));
+      if (alert) process.stderr.write(alert);
     };
     closeClinical = async () => {
       await db.destroy();

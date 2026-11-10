@@ -9,7 +9,14 @@ import {
 } from '@endo/audit';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { DevKeyManager, FieldCipher, InMemoryPatientKeyStore } from '@endo/crypto';
-import { createDb, createPool, relayAuditOutbox } from '@endo/db';
+import {
+  PermanentPublishError,
+  createDb,
+  createPool,
+  outboxAlert,
+  outboxHealth,
+  relayAuditOutbox,
+} from '@endo/db';
 import type { IdentityDatabase } from '@endo/identity-store';
 import {
   WorkloadTokenSigner,
@@ -114,15 +121,21 @@ async function main(): Promise<void> {
     const publish = (queued: unknown, occurredAt?: Date): Promise<void> => {
       const input: Record<string, unknown> = { ...(queued as Record<string, unknown>) };
       delete input['id'];
-      return writer.write(AuditEventInput.parse(input), occurredAt).then(() => undefined);
+      // An event that fails the schema can never be published: only that counts an attempt.
+      // A failing audit store is an outage, which the relay waits out (spec 2.6).
+      const parsed = AuditEventInput.safeParse(input);
+      if (!parsed.success) return Promise.reject(new PermanentPublishError());
+      return writer.write(parsed.data, occurredAt).then(() => undefined);
     };
     relayTimer = setInterval(() => {
       relayAuditOutbox(relayDb, publish)
-        .then((r) => {
-          if (r.failed > 0)
-            process.stderr.write(`audit outbox: ${String(r.failed)} event(s) failed\n`);
+        // Counts only. Repeats every run while anything is set aside or the backlog is stale.
+        .then(() => outboxHealth(relayDb))
+        .then((h) => {
+          const alert = outboxAlert('identity', h);
+          if (alert) process.stderr.write(alert);
         })
-        .catch(() => process.stderr.write('audit outbox relay failed\n'));
+        .catch(() => process.stderr.write('identity audit outbox relay failed\n'));
     }, 5_000);
     relayTimer.unref();
 
