@@ -5,6 +5,8 @@ import {
   isOverdue,
   startTransaction,
   transition,
+  type ConsentChoice,
+  type ConsentDecisions,
   type EnrolmentEvent,
   type EnrolmentTransaction,
   type EnrolmentStatus,
@@ -14,12 +16,17 @@ const MIN = 60_000;
 const T0 = new Date('2026-11-10T09:00:00Z');
 const at = (minutes: number) => new Date(T0.getTime() + minutes * MIN);
 const SUBJECT = 'kc-subject-synthetic';
-const ALL_GRANTED = {
-  self_tracking: 'granted',
-  share_with_care_team: 'granted',
-  research_deidentified: 'declined',
-  org_aggregate_reporting: 'declined',
-} as const;
+const choice = (status: 'granted' | 'declined', version = 1): ConsentChoice => ({
+  status,
+  version,
+  decidedAt: at(4),
+});
+const ALL_GRANTED: ConsentDecisions = {
+  self_tracking: choice('granted', 3),
+  share_with_care_team: choice('granted', 2),
+  research_deidentified: choice('declined'),
+  org_aggregate_reporting: choice('declined'),
+};
 
 const start = () =>
   startTransaction({
@@ -137,11 +144,36 @@ describe('REQ-001, RISK-S05 ADR-0021 enrolment state machine (section 10)', () =
     });
   });
 
+  it('refuses consent unless all four decisions are present and well-formed', () => {
+    const tx = run(start(), toConsentPending);
+    const three = Object.fromEntries(
+      Object.entries(ALL_GRANTED).filter(([purpose]) => purpose !== 'org_aggregate_reporting'),
+    );
+    const bad: unknown[] = [
+      three,
+      { ...ALL_GRANTED, extra_purpose: choice('granted') },
+      { ...ALL_GRANTED, research_deidentified: { ...choice('granted'), status: 'maybe' } },
+      { ...ALL_GRANTED, research_deidentified: choice('granted', 0) },
+      { ...ALL_GRANTED, research_deidentified: choice('granted', 1.5) },
+      { ...ALL_GRANTED, research_deidentified: { ...choice('granted'), decidedAt: '2026-11-10' } },
+      // Decided in the future.
+      { ...ALL_GRANTED, research_deidentified: { ...choice('granted'), decidedAt: at(9) } },
+    ];
+    for (const decisions of bad) {
+      const r = transition(tx, { ...consent, decisions: decisions as ConsentDecisions }, at(5));
+      expect(r).toEqual({ ok: false, reason: 'incomplete-consent' });
+    }
+  });
+
+  it('keeps each decision with its version and time, unchanged', () => {
+    expect(claiming().decisions).toEqual(ALL_GRANTED);
+  });
+
   it('cancels at once when she declines self-tracking', () => {
     const tx = run(start(), toConsentPending);
     const r = transition(
       tx,
-      { ...consent, decisions: { ...ALL_GRANTED, self_tracking: 'declined' } },
+      { ...consent, decisions: { ...ALL_GRANTED, self_tracking: choice('declined') } },
       at(5),
     );
     expect(r).toMatchObject({ ok: true, tx: { status: 'cancelling', cancelReason: 'declined' } });

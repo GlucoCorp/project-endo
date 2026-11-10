@@ -9,6 +9,8 @@
  *   claiming + cancel -> claiming (cancel requested) -> activating | cancelling
  */
 
+import { CONSENT_PURPOSES, type ConsentPurpose } from '@endo/authz';
+
 export const ENROLMENT_STATUSES = [
   'awaiting-confirmation',
   'confirmed',
@@ -32,7 +34,17 @@ export type CancelReason =
   | 'sibling-confirmed'
   | 'claim-refused';
 
-export type Decision = 'granted' | 'declined';
+/**
+ * One consent decision as she made it: what she chose, which version of the explanation she saw,
+ * and when (spec 13.1). Held unchanged until activation writes it, so a later wording change
+ * cannot alter what is recorded.
+ */
+export interface ConsentChoice {
+  readonly status: 'granted' | 'declined';
+  readonly version: number;
+  readonly decidedAt: Date;
+}
+export type ConsentDecisions = Readonly<Record<ConsentPurpose, ConsentChoice>>;
 
 const MINUTE = 60_000;
 /** Absolute deadline after Start; the browser-binding cookie expires with it (section 4). */
@@ -68,7 +80,7 @@ export interface EnrolmentTransaction {
   /** Keycloak subject of the provisional user, recorded at redemption. */
   readonly provisionalSubject: string | null;
   /** Her four consent decisions, held here until activation writes them (section 10). */
-  readonly decisions: Readonly<Record<string, Decision>> | null;
+  readonly decisions: ConsentDecisions | null;
   /** Generated before claiming: the identity-vault person id, used as the patient's identity ref. */
   readonly personId: string | null;
   readonly patientId: string | null;
@@ -90,7 +102,7 @@ export type EnrolmentEvent =
   | { readonly type: 'callback'; readonly subject: string; readonly credentialCommitted: boolean }
   | {
       readonly type: 'consent';
-      readonly decisions: Readonly<Record<string, Decision>>;
+      readonly decisions: ConsentDecisions;
       readonly personId: string;
       readonly patientId: string;
     }
@@ -102,7 +114,12 @@ export type EnrolmentEvent =
   | { readonly type: 'cleanup-done' };
 
 export type RefusalReason =
-  'wrong-state' | 'expired' | 'subject-mismatch' | 'credential-pending' | 'out-of-order';
+  | 'wrong-state'
+  | 'expired'
+  | 'subject-mismatch'
+  | 'credential-pending'
+  | 'incomplete-consent'
+  | 'out-of-order';
 
 export type TransitionResult =
   | { readonly ok: true; readonly changed: boolean; readonly tx: EnrolmentTransaction }
@@ -199,7 +216,9 @@ export function transition(
 
     case 'consent':
       if (tx.status !== 'consent-pending') return refuse('wrong-state');
-      if (event.decisions['self_tracking'] !== 'granted') return cancel(tx, 'declined');
+      // All four decisions, each with its version and time, or nothing (section 10).
+      if (!completeDecisions(event.decisions, now)) return refuse('incomplete-consent');
+      if (event.decisions.self_tracking.status !== 'granted') return cancel(tx, 'declined');
       return move('claiming', {
         stateDeadline: null,
         decisions: event.decisions,
@@ -250,6 +269,32 @@ function cancel(tx: EnrolmentTransaction, reason: CancelReason): TransitionResul
   if (tx.status === 'cancelling' || tx.status === 'cancelled') return unchanged(tx);
   // activating and active only move forward; leaving is account deletion (REQ-009).
   return refuse('wrong-state');
+}
+
+/**
+ * Exactly the four purposes, each well-formed and decided no later than now. Checked as untrusted
+ * input: the decisions come from her browser through the BFF.
+ */
+function completeDecisions(d: unknown, now: Date): boolean {
+  if (typeof d !== 'object' || d === null) return false;
+  const entries = new Map(Object.entries(d));
+  return (
+    entries.size === CONSENT_PURPOSES.length &&
+    CONSENT_PURPOSES.every((purpose) => validChoice(entries.get(purpose), now))
+  );
+}
+
+function validChoice(c: unknown, now: Date): boolean {
+  if (typeof c !== 'object' || c === null) return false;
+  const { status, version, decidedAt } = c as Record<string, unknown>;
+  return (
+    (status === 'granted' || status === 'declined') &&
+    typeof version === 'number' &&
+    Number.isSafeInteger(version) &&
+    version >= 1 &&
+    decidedAt instanceof Date &&
+    decidedAt.getTime() <= now.getTime()
+  );
 }
 
 const unchanged = (tx: EnrolmentTransaction): TransitionResult => ({
