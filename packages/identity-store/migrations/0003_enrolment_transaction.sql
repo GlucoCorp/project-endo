@@ -120,6 +120,7 @@ BEGIN
       IF NEW.state_deadline > NEW.started_at + interval '15 minutes' THEN
         RAISE EXCEPTION 'enrolment deadline cannot be moved' USING ERRCODE = 'check_violation';
       END IF;
+      PERFORM set_config('endo_enrolment.changed_' || replace(NEW.id::text, '-', ''), '1', true);
       NEW.version := 1;
       NEW.updated_at := clock_timestamp();
       RETURN NEW;
@@ -139,12 +140,13 @@ BEGIN
       IF OLD.status IN ('active', 'cancelled') THEN
         RAISE EXCEPTION 'enrolment transaction is final' USING ERRCODE = 'check_violation';
       END IF;
-      -- One change per database transaction, so every change has its own audit event.
-      IF (SELECT t.xmin FROM enrolment_transaction AS t WHERE t.id = OLD.id)
-         = pg_current_xact_id()::xid THEN
+      -- One change per database transaction, so every change has its own audit event. The mark is
+      -- transaction-local: it covers savepoints, and goes away with a rolled-back change.
+      IF current_setting('endo_enrolment.changed_' || replace(OLD.id::text, '-', ''), true) = '1' THEN
         RAISE EXCEPTION 'one enrolment change per database transaction'
           USING ERRCODE = 'check_violation';
       END IF;
+      PERFORM set_config('endo_enrolment.changed_' || replace(OLD.id::text, '-', ''), '1', true);
       IF NOT (
         (OLD.status, NEW.status) IN (
           ('awaiting-confirmation', 'confirmed'), ('awaiting-confirmation', 'cancelling'),
@@ -216,7 +218,8 @@ BEGIN
   $f$, s);
 
   -- At commit: every insert or update of a transaction has an audit event about it, queued in
-  -- the same database transaction (ADR-0021 section 14). Runs with the owner's rights, because
+  -- the same database transaction (ADR-0021 section 14). Only events queued by the top-level
+  -- transaction count, so an event inside a savepoint is refused (the strict side). Runs with the owner's rights, because
   -- the service role cannot read the outbox.
   EXECUTE format($f$
     CREATE FUNCTION enrolment_transaction_audited() RETURNS trigger

@@ -286,6 +286,44 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       }
     });
 
+    it('allows one change even across savepoints, and a rolled-back change frees the row', async () => {
+      const { tx } = await newTransaction();
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('INSERT INTO audit_outbox (id, event) VALUES ($1, $2)', [
+          uuidv7(),
+          JSON.stringify(audit('test.direct', tx.id)),
+        ]);
+        await c.query('SAVEPOINT a');
+        await c.query(
+          "UPDATE enrolment_transaction SET status = 'confirmed', code_mac = NULL, code_wrapped_key = NULL WHERE id = $1",
+          [tx.id],
+        );
+        await c.query('SAVEPOINT b');
+        await expect(
+          c.query(
+            "UPDATE enrolment_transaction SET status = 'cancelling', cancel_reason = 'deadline', state_deadline = NULL WHERE id = $1",
+            [tx.id],
+          ),
+        ).rejects.toThrow(/one enrolment change per database transaction/);
+        await c.query('ROLLBACK TO SAVEPOINT b');
+        // Undo the first change too: the row may then change once more.
+        await c.query('ROLLBACK TO SAVEPOINT a');
+        await c.query(
+          "UPDATE enrolment_transaction SET status = 'cancelling', cancel_reason = 'deadline', state_deadline = NULL, code_mac = NULL, code_wrapped_key = NULL WHERE id = $1",
+          [tx.id],
+        );
+        await c.query('COMMIT');
+      } catch (error) {
+        await c.query('ROLLBACK');
+        throw error;
+      } finally {
+        c.release();
+      }
+      expect((await store.get(tx.id))?.tx.status).toBe('cancelling');
+    });
+
     it('refuses any change without its audit event in the same transaction', async () => {
       const { tx } = await newTransaction();
       await expect(
