@@ -14,7 +14,7 @@ Until now the relay counted **every** failed publish as an attempt and set an ev
 
 1. **Two kinds of failure.**
    - A publisher throws `PermanentPublishError` only when the event itself can never be published, because it fails the audit schema. Only this counts an attempt, and after five the event is set aside, as before, so one bad event cannot block the rest.
-   - Any other failure (the audit store unreachable, a timeout) is an outage. Nothing is counted, and the run stops. The next run starts again from the oldest unpublished event, so an outage of any length loses nothing and keeps the order.
+   - Any other failure (the audit store unreachable, a timeout) is an outage. Nothing is counted, and the run stops. The next run starts again from the oldest unpublished event, so an outage of any length loses nothing. Delivery stays at least once and **unordered** across relays, as before: with several service replicas, one relay can publish a later event while another holds an earlier one. Every event keeps its original time, which the audit store records, so nothing depends on delivery order.
 2. **Stall rather than skip.** If the audit store keeps refusing one valid event for some other reason, delivery stalls behind it. For an audit trail, a visible stall is better than silently skipping events.
 3. **Alert from counts.** `outboxHealth()` reports pending events, set-aside events and the age of the oldest pending event, by the database clock. After every run, each service writes one alert line, with counts only, while anything is set aside or the oldest pending event is older than 60 seconds (`outboxAlert`). The line repeats until a person fixes it.
 

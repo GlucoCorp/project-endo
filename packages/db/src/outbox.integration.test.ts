@@ -116,7 +116,7 @@ describe.skipIf(!url)(
         });
       expect(await attemptsOf(ids)).toEqual([0, 0]);
       expect((await outboxHealth(db)).setAside).toBe(setAsideBefore);
-      // Recovery: everything is published, in order.
+      // Recovery: everything is published (one relay, so also in queue order here).
       const seen: string[] = [];
       await relayAuditOutbox(db, (e) =>
         Promise.resolve(void seen.push((e as { kind: string }).kind)),
