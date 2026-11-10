@@ -314,6 +314,29 @@ describe('REQ-001, RISK-S05 ADR-0021 section 4: patient enrolment in the BFF', (
     expect(res.statusCode).toBe(502);
   });
 
+  it('cannot tell two first Starts without a cookie from two browsers (the page serialises them)', async () => {
+    // ADR-0021 section 4 landing-page requirement: without a cookie the BFF sees two browsers,
+    // so both get a transaction and the browser keeps the last cookie. With the page holding a
+    // Web Lock, the second Start carries the first one's cookie and gets the same transaction.
+    const { identity, post, cookieFrom } = await setup();
+    const token = linkToken();
+    identity.knownTokens.add(sha256(token));
+    const [a, b] = await Promise.all([
+      post('/v1/enrolment/start', { token }),
+      post('/v1/enrolment/start', { token }),
+    ]);
+    expect([a.statusCode, b.statusCode]).toEqual([201, 201]);
+    expect(cookieFrom(a).value).not.toBe(cookieFrom(b).value);
+
+    const serialised = await post(
+      '/v1/enrolment/start',
+      { token },
+      { cookie: `${ENROLMENT_COOKIE}=${cookieFrom(a).value!}` },
+    );
+    expect(serialised.statusCode).toBe(200);
+    expect(serialised.json()).not.toHaveProperty('code');
+  });
+
   it('limits starts per client', async () => {
     const { post } = await setup(5);
     const codes: number[] = [];
