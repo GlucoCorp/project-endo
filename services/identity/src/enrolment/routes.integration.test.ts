@@ -153,6 +153,29 @@ describe.skipIf(!url)(
       }
     });
 
+    it('gives two simultaneous Starts from one browser one transaction and one code', async () => {
+      const link = newLink();
+      const binding = secret();
+      const [a, b] = await Promise.all([
+        start(link.tokenHash, binding),
+        start(link.tokenHash, binding),
+      ]);
+      expect([a.statusCode, b.statusCode].sort()).toEqual([200, 201]);
+      expect(a.json<{ transaction_id: string }>().transaction_id).toBe(
+        b.json<{ transaction_id: string }>().transaction_id,
+      );
+      expect([a, b].filter((r) => 'code' in r.json<object>())).toHaveLength(1);
+    });
+
+    it('refuses a fourth browser while three wait for confirmation', async () => {
+      const link = newLink();
+      for (let i = 0; i < 3; i++)
+        expect((await start(link.tokenHash, secret())).statusCode).toBe(201);
+      const fourth = await start(link.tokenHash, secret());
+      expect(fourth.statusCode).toBe(409);
+      expect(fourth.json()).toMatchObject({ type: 'https://errors.glucorp.health/enrolment.busy' });
+    });
+
     it('answers status and cancel only to the browser that started it', async () => {
       const link = newLink();
       const binding = secret();

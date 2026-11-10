@@ -153,8 +153,12 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
           deps.codes.issue({ invitationId: tx.invitationId, transactionId: tx.id }, pending),
         enrolmentAudit('identity.enrolment.started', tx, request.id),
       );
+      // Another request from the same browser won the race: the same transaction, no code.
+      if (created.outcome === 'existing') return reply.code(200).send(view(created.tx, deps.now()));
       if (created.outcome === 'locked')
         throw new ProblemError(409, 'enrolment.locked', 'Try again later.');
+      if (created.outcome === 'full')
+        throw new ProblemError(409, 'enrolment.busy', 'Try again later.');
       // The only time the code leaves this service: her phone shows it to the clinician.
       return reply.code(201).send({ ...view(tx, deps.now()), code: created.code });
     },

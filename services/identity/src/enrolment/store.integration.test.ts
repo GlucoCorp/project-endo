@@ -321,6 +321,82 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       }
     });
 
+    it('allows three live transactions awaiting confirmation per invitation, not a fourth', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      const three = await startOn(inv, org, 3);
+      const fourth = startTransaction({
+        id: uuidv7(),
+        invitationId: inv,
+        orgId: org,
+        now: new Date(),
+      });
+      expect(
+        await store.create(
+          fourth,
+          binding(),
+          fixedCode,
+          audit('identity.enrolment.started', fourth.id),
+        ),
+      ).toEqual({ outcome: 'full' });
+      // The database refuses it too, written directly by the service role.
+      await expect(
+        db
+          .insertInto('enrolment_transaction')
+          .values({
+            id: fourth.id,
+            invitation_id: inv,
+            org_id: org,
+            status: fourth.status,
+            started_at: fourth.startedAt,
+            expires_at: fourth.expiresAt,
+            state_deadline: fourth.stateDeadline,
+            binding_hash: binding(),
+            code_wrapped_key: sealed.wrappedKey,
+            code_mac: sealed.mac,
+          })
+          .execute(),
+      ).rejects.toThrow(/three transactions awaiting confirmation/);
+
+      // One past its deadline no longer counts (the sweep has not reached it yet).
+      const c = await admin.connect();
+      try {
+        await c.query("SET session_replication_role = 'replica'");
+        await c.query(
+          "UPDATE enrolment_transaction SET state_deadline = now() - interval '1 second' WHERE id = $1",
+          [three[0]!.tx.id],
+        );
+      } finally {
+        await c.query("SET session_replication_role = 'origin'");
+        c.release();
+      }
+      const [again] = await startOn(inv, org);
+      expect(again!.code).toMatch(/^[0-9]{6}$/);
+    });
+
+    it('returns the open transaction of a browser binding instead of starting another', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      const b = binding();
+      const tx = (i: number) =>
+        startTransaction({
+          id: uuidv7(),
+          invitationId: inv,
+          orgId: org,
+          now: new Date(Date.now() + i),
+        });
+      const results = await Promise.all(
+        [tx(0), tx(1)].map((t) =>
+          store.create(t, b, fixedCode, audit('identity.enrolment.started', t.id)),
+        ),
+      );
+      const created = results.filter((r) => r.outcome === 'created');
+      const existing = results.filter((r) => r.outcome === 'existing');
+      expect(created).toHaveLength(1);
+      expect(existing).toHaveLength(1);
+      expect(await store.findOpenByBinding(b, inv)).not.toBeNull();
+    });
+
     it('confirms nothing if a code ever matches two transactions', async () => {
       const inv = uuidv7();
       const org = uuidv7();

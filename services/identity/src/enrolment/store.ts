@@ -31,6 +31,9 @@ export type ApplicableEvent = Exclude<EnrolmentEvent, { readonly type: 'confirm'
 /** Wrong entries allowed per invitation; the database enforces the same number (migration 0004). */
 export const WRONG_CODE_LIMIT = 5;
 
+/** Live transactions awaiting confirmation per invitation (section 3); the database agrees (0005). */
+export const MAX_PENDING = 3;
+
 /** What the clinician typed, for the invitation they selected (ADR-0021 section 3). */
 export interface CodeEntry {
   readonly invitationId: string;
@@ -94,8 +97,11 @@ export class PostgresEnrolmentStore {
    * Stores a new transaction (from startTransaction) with its browser binding, and returns its
    * code. The code is drawn by `issue` while the invitation's guard row is held, from the codes
    * of the transactions then awaiting confirmation, so concurrent starts on one invitation can
-   * never get the same code (ADR-0021 section 3). While the invitation is locked (by the
-   * database clock) nothing is created; the database refuses such a start in any case.
+   * never get the same code (ADR-0021 section 3). Under the same lock, and in this order:
+   * - locked invitation (by the database clock): nothing is created;
+   * - an open transaction of this browser binding: it is returned instead (repeated Start);
+   * - already MAX_PENDING live transactions awaiting confirmation: nothing is created.
+   * The database refuses a locked or full start in any case (migrations 0004 and 0005).
    */
   async create(
     tx: EnrolmentTransaction,
@@ -103,7 +109,10 @@ export class PostgresEnrolmentStore {
     issue: (pending: readonly PendingCode[]) => Promise<{ code: string; sealed: SealedCode }>,
     audit: OutboxEvent,
   ): Promise<
-    { readonly outcome: 'created'; readonly code: string } | { readonly outcome: 'locked' }
+    | { readonly outcome: 'created'; readonly code: string }
+    | { readonly outcome: 'existing'; readonly tx: EnrolmentTransaction }
+    | { readonly outcome: 'locked' }
+    | { readonly outcome: 'full' }
   > {
     return this.#db.transaction().execute(async (trx) => {
       await trx
@@ -118,7 +127,12 @@ export class PostgresEnrolmentStore {
         .forUpdate()
         .executeTakeFirstOrThrow();
       if (guard.locked) return { outcome: 'locked' } as const;
-      const pending = (await awaiting(trx, tx.invitationId)).flatMap((s) =>
+      const open = await openByBinding(trx, bindingHash, tx.invitationId);
+      if (open) return { outcome: 'existing', tx: open.tx } as const;
+      const waiting = await awaiting(trx, tx.invitationId);
+      if (waiting.filter((w) => !isOverdue(w.tx, tx.startedAt)).length >= MAX_PENDING)
+        return { outcome: 'full' } as const;
+      const pending = waiting.flatMap((s) =>
         s.code === null
           ? []
           : [
@@ -157,15 +171,7 @@ export class PostgresEnrolmentStore {
     bindingHash: string,
     invitationId: string,
   ): Promise<StoredTransaction | null> {
-    const row = await this.#db
-      .selectFrom('enrolment_transaction')
-      .selectAll()
-      .where('binding_hash', '=', bindingHash)
-      .where('invitation_id', '=', invitationId)
-      .where('status', 'not in', ['active', 'cancelling', 'cancelled'])
-      .orderBy('started_at', 'desc')
-      .executeTakeFirst();
-    return row ? toStored(row) : null;
+    return openByBinding(this.#db, bindingHash, invitationId);
   }
 
   async get(id: string): Promise<StoredTransaction | null> {
@@ -341,6 +347,23 @@ async function write(
     .where('id', '=', after.id)
     .execute();
   await queue(trx, event);
+}
+
+/** The newest open transaction (not active or ending) of a browser binding on an invitation. */
+async function openByBinding(
+  q: Kysely<IdentityDatabase> | Transaction<IdentityDatabase>,
+  bindingHash: string,
+  invitationId: string,
+): Promise<StoredTransaction | null> {
+  const row = await q
+    .selectFrom('enrolment_transaction')
+    .selectAll()
+    .where('binding_hash', '=', bindingHash)
+    .where('invitation_id', '=', invitationId)
+    .where('status', 'not in', ['active', 'cancelling', 'cancelled'])
+    .orderBy('started_at', 'desc')
+    .executeTakeFirst();
+  return row ? toStored(row) : null;
 }
 
 /** Transactions of an invitation awaiting confirmation, locked in id order. */
