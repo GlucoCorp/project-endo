@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  AuditEventInput,
   AuditWriter,
   InMemoryAuditStore,
   PostgresAuditStore,
@@ -8,16 +9,35 @@ import {
 } from '@endo/audit';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { DevKeyManager, FieldCipher, InMemoryPatientKeyStore } from '@endo/crypto';
-import { createDb, createPool } from '@endo/db';
+import { createDb, createPool, relayAuditOutbox } from '@endo/db';
 import type { IdentityDatabase } from '@endo/identity-store';
-import { WorkloadTokenVerifier, type TrustedWorkload } from '@endo/service-kit';
+import {
+  WorkloadTokenSigner,
+  WorkloadTokenVerifier,
+  type TrustedWorkload,
+} from '@endo/service-kit';
 import { buildIdentity } from './app.ts';
 import { InMemoryPersonStore, PostgresPersonStore, type PersonStore } from './persons.ts';
+import { HttpClinicalClient } from './enrolment/clinical.ts';
+import { EnrolmentCodes } from './enrolment/code.ts';
+import type { PatientRouteDeps } from './enrolment/routes.ts';
+import { PostgresEnrolmentStore } from './enrolment/store.ts';
 
 const Jwk = z.string().transform((s, ctx) => {
   try {
     return z
       .object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string() })
+      .parse(JSON.parse(s));
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'invalid' });
+    return z.NEVER;
+  }
+});
+
+const PrivateJwk = z.string().transform((s, ctx) => {
+  try {
+    return z
+      .object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string(), d: z.string() })
       .parse(JSON.parse(s));
   } catch {
     ctx.addIssue({ code: 'custom', message: 'invalid' });
@@ -40,6 +60,12 @@ const Config = z.object({
   IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK: Jwk.optional(),
   // The one identity-provider issuer of this deployment (ADR-0019).
   IDENTITY_IDP_ISSUER: z.url({ protocol: /^https?$/ }),
+  /** Relay role for the identity audit outbox (endo_identity_relay); required with the database. */
+  IDENTITY_AUDIT_RELAY_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
+  /** Enrolment coordination (ADR-0021): the patient BFF calls in, this service calls the API. */
+  IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK: Jwk.optional(),
+  IDENTITY_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
+  IDENTITY_API_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
 });
 
 async function main(): Promise<void> {
@@ -64,13 +90,63 @@ async function main(): Promise<void> {
   // KeyManager (infra slice) before this service can start. Fail closed.
   const kms = new DevKeyManager(config.ENDO_ENV);
   let persons: PersonStore;
+  let enrolment: PatientRouteDeps | undefined;
+  let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
     const db = createDb<IdentityDatabase>(
       createPool(config.IDENTITY_DATABASE_URL, { applicationName: 'endo-identity' }),
     );
     persons = new PostgresPersonStore(db, kms);
-    closeVault = () => db.destroy();
+
+    // Enrolment events are queued in the identity outbox; this relays them to the audit store
+    // with the relay role, which alone may read and acknowledge them (ADR-0021 section 14).
+    if (!config.IDENTITY_AUDIT_RELAY_DATABASE_URL) {
+      throw new Error('IDENTITY_AUDIT_RELAY_DATABASE_URL is required with IDENTITY_DATABASE_URL.');
+    }
+    const relayDb = createDb<IdentityDatabase>(
+      createPool(config.IDENTITY_AUDIT_RELAY_DATABASE_URL, {
+        applicationName: 'endo-identity-relay',
+        max: 2,
+      }),
+    );
+    const writer = new AuditWriter(auditStore);
+    const publish = (queued: unknown, occurredAt?: Date): Promise<void> => {
+      const input: Record<string, unknown> = { ...(queued as Record<string, unknown>) };
+      delete input['id'];
+      return writer.write(AuditEventInput.parse(input), occurredAt).then(() => undefined);
+    };
+    relayTimer = setInterval(() => {
+      relayAuditOutbox(relayDb, publish)
+        .then((r) => {
+          if (r.failed > 0)
+            process.stderr.write(`audit outbox: ${String(r.failed)} event(s) failed\n`);
+        })
+        .catch(() => process.stderr.write('audit outbox relay failed\n'));
+    }, 5_000);
+    relayTimer.unref();
+
+    if (
+      config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK &&
+      config.IDENTITY_WORKLOAD_PRIVATE_KEY_JWK &&
+      config.IDENTITY_API_BASE_URL
+    ) {
+      enrolment = {
+        store: new PostgresEnrolmentStore(db),
+        codes: new EnrolmentCodes(kms),
+        clinical: new HttpClinicalClient({
+          apiBaseUrl: config.IDENTITY_API_BASE_URL,
+          signer: new WorkloadTokenSigner(config.IDENTITY_WORKLOAD_PRIVATE_KEY_JWK, 'identity'),
+          fetch,
+        }),
+        now: () => new Date(),
+      };
+    }
+    closeVault = async () => {
+      clearInterval(relayTimer);
+      await db.destroy();
+      await relayDb.destroy();
+    };
   } else if (deployed) {
     throw new Error('IDENTITY_DATABASE_URL is required in staging and production.');
   } else {
@@ -94,6 +170,12 @@ async function main(): Promise<void> {
     };
   }
 
+  if (config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK) {
+    trusted['bff-patient'] = {
+      publicJwk: config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK,
+      scopes: ['identity.enrolment.patient'],
+    };
+  }
   if (config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK) {
     trusted['bff-clinic'] = {
       publicJwk: config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK,
@@ -107,6 +189,7 @@ async function main(): Promise<void> {
     audit: new AuditWriter(auditStore),
     persons,
     idpIssuer: config.IDENTITY_IDP_ISSUER,
+    ...(enrolment ? { enrolment } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

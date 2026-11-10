@@ -21,7 +21,19 @@ The identity service coordinates patient enrolment. Built so far:
 
 - `src/enrolment/store.ts`: `PostgresEnrolmentStore` (identity migration 0003). Every change is decided by the state machine under a row lock and written with its audit event in one transaction. The database also refuses transitions outside the section 10 table, changes to a final transaction or its identity, and rewrites of decisions or claim ids.
 
-The code check and wrong-code limits, routes and the deadline sweep come in later slices.
+- `confirmByCode` and identity migration 0004: the clinician's code check, with wrong codes counted per invitation and a 15-minute lock at the fifth, enforced in the database.
+- `src/enrolment/routes.ts`: the patient routes, for the patient BFF only (workload scope `identity.enrolment.patient`). They exist only with the identity database and the API connection configured:
+
+  | Route                                                  | Purpose                                                                                                                                                |
+  | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+  | `POST /internal/v1/enrolment/transactions`             | Start: link token hash and browser binding hash. Returns the code once (201); the same browser starting again gets the same transaction, no code (200) |
+  | `POST /internal/v1/enrolment/transactions/{id}/status` | Her transaction's state, for the same browser binding only; any other binding is answered as not found                                                 |
+  | `POST /internal/v1/enrolment/transactions/{id}/cancel` | She cancels (before her consent is claimed)                                                                                                            |
+
+- `src/enrolment/clinical.ts`: the API client for invitation lookups (scope `api.enrolment.coordinate`).
+- The identity audit outbox is relayed to the audit store every 5 seconds (`IDENTITY_AUDIT_RELAY_DATABASE_URL`, required with the database).
+
+The clinician confirm route, the handoff into Keycloak and the deadline sweep come in later slices.
 
 ## Rules
 

@@ -15,6 +15,7 @@ import {
   type WorkloadTokenVerifier,
 } from '@endo/service-kit';
 import type { PersonStore } from './persons.ts';
+import { registerPatientEnrolmentRoutes, type PatientRouteDeps } from './enrolment/routes.ts';
 
 /**
  * Every route declares its access (ADR-0018). Workload routes name the one scope they require;
@@ -28,6 +29,8 @@ export type IdentityAccess =
       /** Audit action code, e.g. `identity.person.create`. */
       readonly action: string;
       readonly resourceId: (request: FastifyRequest) => string | null;
+      /** Audited resource type; `person` unless the route says otherwise. */
+      readonly resourceType?: 'person' | 'enrolment_transaction';
     };
 
 declare module 'fastify' {
@@ -47,7 +50,9 @@ export function isIdentityAccess(value: unknown): value is IdentityAccess {
     v.kind === 'workload' &&
     typeof v.scope === 'string' &&
     typeof v.action === 'string' &&
-    typeof v.resourceId === 'function'
+    typeof v.resourceId === 'function' &&
+    // Checked at run time: route config is untyped at registration.
+    [undefined, 'person', 'enrolment_transaction'].includes(v.resourceType)
   );
 }
 
@@ -58,6 +63,11 @@ export interface IdentityDeps {
   readonly persons: PersonStore;
   /** The one identity-provider issuer this deployment trusts (ADR-0019, single-issuer invariant). */
   readonly idpIssuer: string;
+  /**
+   * Patient-side enrolment coordination (ADR-0021 section 13). Only with the identity database;
+   * without it these routes do not exist (fail closed).
+   */
+  readonly enrolment?: PatientRouteDeps;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -122,7 +132,10 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     await deps.audit.write({
       actor: { id: null, role: 'system' },
       action: access.action,
-      resource: { type: 'person', id: reason === null ? access.resourceId(request) : null },
+      resource: {
+        type: access.resourceType ?? 'person',
+        id: reason === null ? access.resourceId(request) : null,
+      },
       org_id: null,
       purpose_of_use: 'operations',
       outcome: reason === null ? 'success' : 'denied',
@@ -281,7 +294,7 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
         .write({
           actor: { id: null, role: 'system' },
           action: access.action,
-          resource: { type: 'person', id: access.resourceId(request) },
+          resource: { type: access.resourceType ?? 'person', id: access.resourceId(request) },
           org_id: null,
           purpose_of_use: 'operations',
           outcome: 'error',
@@ -303,6 +316,8 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
       durationMs: Math.round(reply.elapsedTime),
     });
   });
+
+  if (deps.enrolment) registerPatientEnrolmentRoutes(app, deps.enrolment);
 
   await app.ready();
   return app;

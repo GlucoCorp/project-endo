@@ -1,4 +1,4 @@
-import type { Kysely, Selectable, Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { IdentityDatabase } from '@endo/identity-store';
 import type { CodeBinding, SealedCode } from './code.ts';
 import {
@@ -30,6 +30,9 @@ export type ApplicableEvent = Exclude<EnrolmentEvent, { readonly type: 'confirm'
 
 /** Wrong entries allowed per invitation; the database enforces the same number (migration 0004). */
 export const WRONG_CODE_LIMIT = 5;
+
+/** Live transactions awaiting confirmation per invitation (section 3); the database agrees (0005). */
+export const MAX_PENDING = 3;
 
 /** What the clinician typed, for the invitation they selected (ADR-0021 section 3). */
 export interface CodeEntry {
@@ -94,27 +97,42 @@ export class PostgresEnrolmentStore {
    * Stores a new transaction (from startTransaction) with its browser binding, and returns its
    * code. The code is drawn by `issue` while the invitation's guard row is held, from the codes
    * of the transactions then awaiting confirmation, so concurrent starts on one invitation can
-   * never get the same code (ADR-0021 section 3). Refused while the invitation is locked.
+   * never get the same code (ADR-0021 section 3). Under the same lock, and in this order:
+   * - locked invitation (by the database clock): nothing is created;
+   * - an open transaction of this browser binding: it is returned instead (repeated Start);
+   * - already MAX_PENDING live transactions awaiting confirmation: nothing is created.
+   * The database refuses a locked or full start in any case (migrations 0004 and 0005).
    */
   async create(
     tx: EnrolmentTransaction,
     bindingHash: string,
     issue: (pending: readonly PendingCode[]) => Promise<{ code: string; sealed: SealedCode }>,
     audit: OutboxEvent,
-  ): Promise<{ code: string }> {
+  ): Promise<
+    | { readonly outcome: 'created'; readonly code: string }
+    | { readonly outcome: 'existing'; readonly tx: EnrolmentTransaction }
+    | { readonly outcome: 'locked' }
+    | { readonly outcome: 'full' }
+  > {
     return this.#db.transaction().execute(async (trx) => {
       await trx
         .insertInto('enrolment_invitation_guard')
         .values({ invitation_id: tx.invitationId })
         .onConflict((oc) => oc.doNothing())
         .execute();
-      await trx
+      const guard = await trx
         .selectFrom('enrolment_invitation_guard')
-        .select('invitation_id')
+        .select(sql<boolean>`coalesce(locked_until > clock_timestamp(), false)`.as('locked'))
         .where('invitation_id', '=', tx.invitationId)
         .forUpdate()
         .executeTakeFirstOrThrow();
-      const pending = (await awaiting(trx, tx.invitationId)).flatMap((s) =>
+      if (guard.locked) return { outcome: 'locked' } as const;
+      const open = await openByBinding(trx, bindingHash, tx.invitationId);
+      if (open) return { outcome: 'existing', tx: open.tx } as const;
+      const waiting = await awaiting(trx, tx.invitationId);
+      if (waiting.filter((w) => !isOverdue(w.tx, tx.startedAt)).length >= MAX_PENDING)
+        return { outcome: 'full' } as const;
+      const pending = waiting.flatMap((s) =>
         s.code === null
           ? []
           : [
@@ -141,8 +159,19 @@ export class PostgresEnrolmentStore {
         })
         .execute();
       await queue(trx, audit);
-      return { code };
+      return { outcome: 'created', code } as const;
     });
+  }
+
+  /**
+   * The open transaction (not yet active or cancelled) of this browser binding on this
+   * invitation, if any: a repeated Start returns it instead of a new one (section 3).
+   */
+  async findOpenByBinding(
+    bindingHash: string,
+    invitationId: string,
+  ): Promise<StoredTransaction | null> {
+    return openByBinding(this.#db, bindingHash, invitationId);
   }
 
   async get(id: string): Promise<StoredTransaction | null> {
@@ -318,6 +347,23 @@ async function write(
     .where('id', '=', after.id)
     .execute();
   await queue(trx, event);
+}
+
+/** The newest open transaction (not active or ending) of a browser binding on an invitation. */
+async function openByBinding(
+  q: Kysely<IdentityDatabase> | Transaction<IdentityDatabase>,
+  bindingHash: string,
+  invitationId: string,
+): Promise<StoredTransaction | null> {
+  const row = await q
+    .selectFrom('enrolment_transaction')
+    .selectAll()
+    .where('binding_hash', '=', bindingHash)
+    .where('invitation_id', '=', invitationId)
+    .where('status', 'not in', ['active', 'cancelling', 'cancelled'])
+    .orderBy('started_at', 'desc')
+    .executeTakeFirst();
+  return row ? toStored(row) : null;
 }
 
 /** Transactions of an invitation awaiting confirmation, locked in id order. */

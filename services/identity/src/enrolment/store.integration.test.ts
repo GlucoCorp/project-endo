@@ -1,12 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
-import pg from 'pg';
+import type pg from 'pg';
 import { sql, type Kysely } from 'kysely';
-import { createDb, createPool, runMigrations, testDatabaseUrl } from '@endo/db';
+import { testDatabaseUrl } from '@endo/db';
 import { uuidv7 } from '@endo/domain';
-import { IDENTITY_MIGRATIONS_DIR, type IdentityDatabase } from '@endo/identity-store';
+import type { IdentityDatabase } from '@endo/identity-store';
+import { setupIdentityTestDb } from './test-db.ts';
 import { DevKeyManager } from '@endo/crypto';
 import { EnrolmentCodes } from './code.ts';
 import {
@@ -35,66 +34,16 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
   let db: Kysely<IdentityDatabase>;
   let store: PostgresEnrolmentStore;
 
+  let close: () => Promise<void>;
+
   beforeAll(async () => {
-    const schema = `enrol_${randomBytes(6).toString('hex')}`;
-    const pw = Object.fromEntries(
-      ['owner', 'api', 'relay'].map((k) => [k, randomBytes(16).toString('hex')]),
-    );
-    const at = (user: string, password: string) => {
-      const u = new URL(url!);
-      u.username = user;
-      u.password = password;
-      u.searchParams.set('options', `-c search_path=${schema}`);
-      return u.toString();
-    };
-    const bootstrap = await readFile(
-      fileURLToPath(
-        new URL('../../../../packages/identity-store/bootstrap/roles.sql', import.meta.url),
-      ),
-      'utf8',
-    );
-    const su = new pg.Client({ connectionString: url });
-    await su.connect();
-    try {
-      await su.query(bootstrap);
-      for (const [role, password, extra] of [
-        ['enrol_owner_test', pw['owner']!, ''],
-        ['enrol_api_test', pw['api']!, 'IN ROLE endo_identity_app'],
-        ['enrol_relay_test', pw['relay']!, 'IN ROLE endo_identity_relay'],
-      ] as const) {
-        const exists = await su.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role]);
-        // Role names and hex passwords are fixed or generated here, never external input.
-        if (exists.rowCount === 0)
-          await su.query(`CREATE ROLE ${role} LOGIN PASSWORD '${password}' ${extra}`);
-        else await su.query(`ALTER ROLE ${role} LOGIN PASSWORD '${password}'`);
-      }
-      await su.query(`CREATE SCHEMA ${schema} AUTHORIZATION enrol_owner_test`);
-    } finally {
-      await su.end();
-    }
-    const owner = createPool(at('enrol_owner_test', pw['owner']!), {
-      applicationName: 'endo-test',
-      max: 1,
-    });
-    try {
-      await runMigrations(owner, IDENTITY_MIGRATIONS_DIR);
-    } finally {
-      await owner.end();
-    }
-    const base = new URL(url!);
-    admin = new pg.Pool({ connectionString: at(base.username, base.password) });
-    relay = new pg.Pool({ connectionString: at('enrol_relay_test', pw['relay']!) });
-    db = createDb<IdentityDatabase>(
-      createPool(at('enrol_api_test', pw['api']!), { applicationName: 'endo-test' }),
-    );
+    const t = await setupIdentityTestDb(url!, 'enrol');
+    ({ admin, relay, db } = t);
+    close = () => t.close();
     store = new PostgresEnrolmentStore(db);
   });
 
-  afterAll(async () => {
-    await db.destroy();
-    await relay.end();
-    await admin.end();
-  });
+  afterAll(() => close());
 
   const audit = (action: string, txId: string): OutboxEvent => ({
     id: uuidv7(),
@@ -276,13 +225,14 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     /** Starts one transaction with a real code, drawn by `create` under the guard row. */
     async function startOne(invitationId: string, orgId: string, issuer: EnrolmentCodes) {
       const tx = startTransaction({ id: uuidv7(), invitationId, orgId, now: new Date() });
-      const { code } = await store.create(
+      const r = await store.create(
         tx,
         binding(),
         (pending) => issuer.issue({ invitationId, transactionId: tx.id }, pending),
         audit('identity.enrolment.started', tx.id),
       );
-      return { tx, code };
+      if (r.outcome !== 'created') throw new Error('invitation is locked');
+      return { tx, code: r.code };
     }
 
     /** Starts transactions on one invitation, each with a real code distinct from the others. */
@@ -340,8 +290,10 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       const txs = [0, 1].map(() =>
         startTransaction({ id: uuidv7(), invitationId: inv, orgId: org, now: new Date() }),
       );
-      const [a, b] = await Promise.all(txs.map(start));
-      expect([a!.code, b!.code].sort()).toEqual(['111111', '222222']);
+      const codes = (await Promise.all(txs.map(start))).map((r) =>
+        r.outcome === 'created' ? r.code : 'locked',
+      );
+      expect(codes.sort()).toEqual(['111111', '222222']);
     });
 
     it('locks out without deadlocking against a concurrent cancel in another organisation', async () => {
@@ -367,6 +319,82 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
         expect((await store.get(b!.tx.id))?.tx.status).toBe('cancelling');
         expect((await store.get(a!.tx.id))?.tx.status).toBe('cancelling');
       }
+    });
+
+    it('allows three live transactions awaiting confirmation per invitation, not a fourth', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      const three = await startOn(inv, org, 3);
+      const fourth = startTransaction({
+        id: uuidv7(),
+        invitationId: inv,
+        orgId: org,
+        now: new Date(),
+      });
+      expect(
+        await store.create(
+          fourth,
+          binding(),
+          fixedCode,
+          audit('identity.enrolment.started', fourth.id),
+        ),
+      ).toEqual({ outcome: 'full' });
+      // The database refuses it too, written directly by the service role.
+      await expect(
+        db
+          .insertInto('enrolment_transaction')
+          .values({
+            id: fourth.id,
+            invitation_id: inv,
+            org_id: org,
+            status: fourth.status,
+            started_at: fourth.startedAt,
+            expires_at: fourth.expiresAt,
+            state_deadline: fourth.stateDeadline,
+            binding_hash: binding(),
+            code_wrapped_key: sealed.wrappedKey,
+            code_mac: sealed.mac,
+          })
+          .execute(),
+      ).rejects.toThrow(/three transactions awaiting confirmation/);
+
+      // One past its deadline no longer counts (the sweep has not reached it yet).
+      const c = await admin.connect();
+      try {
+        await c.query("SET session_replication_role = 'replica'");
+        await c.query(
+          "UPDATE enrolment_transaction SET state_deadline = now() - interval '1 second' WHERE id = $1",
+          [three[0]!.tx.id],
+        );
+      } finally {
+        await c.query("SET session_replication_role = 'origin'");
+        c.release();
+      }
+      const [again] = await startOn(inv, org);
+      expect(again!.code).toMatch(/^[0-9]{6}$/);
+    });
+
+    it('returns the open transaction of a browser binding instead of starting another', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      const b = binding();
+      const tx = (i: number) =>
+        startTransaction({
+          id: uuidv7(),
+          invitationId: inv,
+          orgId: org,
+          now: new Date(Date.now() + i),
+        });
+      const results = await Promise.all(
+        [tx(0), tx(1)].map((t) =>
+          store.create(t, b, fixedCode, audit('identity.enrolment.started', t.id)),
+        ),
+      );
+      const created = results.filter((r) => r.outcome === 'created');
+      const existing = results.filter((r) => r.outcome === 'existing');
+      expect(created).toHaveLength(1);
+      expect(existing).toHaveLength(1);
+      expect(await store.findOpenByBinding(b, inv)).not.toBeNull();
     });
 
     it('confirms nothing if a code ever matches two transactions', async () => {
@@ -456,6 +484,30 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       expect(await check(inv, org, a!.code)).toMatchObject({ outcome: 'locked', cancelled: [] });
       expect(await versionOf()).toBe(version);
       await expect(startOn(inv, org)).rejects.toThrow(/locked/);
+      // The database refuses it too, whatever the service checks first.
+      const direct = startTransaction({
+        id: uuidv7(),
+        invitationId: inv,
+        orgId: org,
+        now: new Date(),
+      });
+      await expect(
+        db
+          .insertInto('enrolment_transaction')
+          .values({
+            id: direct.id,
+            invitation_id: inv,
+            org_id: org,
+            status: direct.status,
+            started_at: direct.startedAt,
+            expires_at: direct.expiresAt,
+            state_deadline: direct.stateDeadline,
+            binding_hash: binding(),
+            code_wrapped_key: sealed.wrappedKey,
+            code_mac: sealed.mac,
+          })
+          .execute(),
+      ).rejects.toThrow(/invitation is locked/);
     });
 
     it('never puts the typed code into an audit event', async () => {
