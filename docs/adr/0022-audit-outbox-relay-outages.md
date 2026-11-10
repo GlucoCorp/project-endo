@@ -1,6 +1,6 @@
 # ADR-0022: The audit outbox relay waits out outages and sets aside only bad events
 
-- Status: proposed (implemented; awaiting product owner review)
+- Status: accepted (product owner, 2026-11-10: stall with an alert rather than skip)
 - Date: 2026-11-10
 - Requirements/Risks: spec 2.6 (every health-data access audited), spec 12.9; ADR-0021 section 14; RISK-R01
 
