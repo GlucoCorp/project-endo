@@ -60,7 +60,7 @@ psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/clinical-store/bootstrap/r
 psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v owner=clinical_owner -f packages/clinical-store/bootstrap/grant-owner.sql
 ```
 
-A new **login** role needs its password too. Identity migration 0002 adds the outbox relay. After `tofu apply`, take `IDENTITY_RELAY_PASSWORD` from the `postgres-identity-bootstrap` secret, then on the identity database:
+A new **login** role needs its password too. Identity migration 0002 adds the outbox relay. After `tofu apply`, take `IDENTITY_RELAY_PASSWORD` from the bootstrap secret of the instance hosting the identity database (`postgres-main-bootstrap` in the local profile, `postgres-identity-bootstrap` otherwise), then on the identity database:
 
 ```sh
 psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/identity-store/bootstrap/roles.sql
