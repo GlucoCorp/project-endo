@@ -89,6 +89,8 @@ jobs:
           psql "$ENDO_IDENTITY_MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -q -f packages/identity-store/bootstrap/roles.sql
           pnpm --filter @endo/identity-store migrate
           pnpm --filter @endo/identity-store migrate
+      - name: Postgres role scripts are idempotent and least-privilege (synthetic passwords)
+        run: node tools/check-postgres-roles.mjs postgres://endo_test:endo_test@localhost:5432/endo_test
       - name: Unfinished clinical, licence and legal content (report)
         run: pnpm check:clinical
 

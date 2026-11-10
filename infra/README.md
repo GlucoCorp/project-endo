@@ -51,27 +51,18 @@ What the local profile enforces (verified):
 
 Local ports are below 49152 on purpose: Windows reserves random blocks of the dynamic range (49152 and up) for Hyper-V and WSL, which makes port-forwards there fail after a reboot.
 
-## Upgrading an existing database
+## Databases and roles
 
-The Postgres first-boot script creates roles only on a new volume. When a migration needs a new role (for example `endo_clinical_membership_lookup`, migration 0004), run the idempotent bootstrap scripts as a privileged role before migrating:
+Every `tofu apply` whose role scripts changed runs the `postgres-<instance>-roles` Job, on new and existing volumes alike (`infra/modules/platform/postgres-roles/`). The Job:
 
-```sh
-psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/clinical-store/bootstrap/roles.sql
-psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v owner=clinical_owner -f packages/clinical-store/bootstrap/grant-owner.sql
-```
+- creates any missing database and closes it to PUBLIC;
+- creates any missing role: owners, the stores' group roles from `packages/*/bootstrap/roles.sql`, and login roles;
+- sets each login's password from the current secret, so rotating a password in OpenTofu takes effect (the Job reruns when a password changes, and workloads that read a password from their environment, such as Keycloak, roll out after it);
+- strips any attribute beyond LOGIN.
 
-A new **login** role needs its password too. Identity migration 0002 adds the outbox relay. After `tofu apply`, take `IDENTITY_RELAY_PASSWORD` from the bootstrap secret of the instance hosting the identity database (`postgres-main-bootstrap` in the local profile, `postgres-identity-bootstrap` otherwise), then on the identity database:
+When a migration needs a new role, add it to the store's `bootstrap/roles.sql` (and, for a login, to the database's file in `postgres-roles/`), run `tofu apply`, then migrate. `tools/check-postgres-roles.mjs` runs the same scripts in CI.
 
-```sh
-psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/identity-store/bootstrap/roles.sql
-psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v pw="$IDENTITY_RELAY_PASSWORD" <<'SQL'
-SELECT format('CREATE ROLE identity_relay LOGIN PASSWORD %L IN ROLE endo_identity_relay', :'pw')
-  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_relay') \gexec
-GRANT CONNECT ON DATABASE identity TO identity_relay;
-SQL
-```
-
-This manual step is a known gap. Before the first deployed environment, a role reconciliation job will apply all roles idempotently on every apply.
+The scripts add what is missing; they do not revoke grants made by hand. The CI check fails if any login can reach another store's database.
 
 ## Rules
 

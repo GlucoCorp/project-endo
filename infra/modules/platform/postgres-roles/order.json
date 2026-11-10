@@ -1,0 +1,24 @@
+{
+  "comment": "Files the postgres-<instance>-roles Job runs, in order; paths from the repository root. Read by postgres.tf and tools/check-postgres-roles.mjs.",
+  "helpers": [
+    "infra/modules/platform/postgres-roles/login.sql",
+    "infra/modules/platform/postgres-roles/database.sql"
+  ],
+  "common": ["infra/modules/platform/postgres-roles/common.sql"],
+  "databases": {
+    "keycloak": ["infra/modules/platform/postgres-roles/keycloak.sql"],
+    "audit": [
+      "packages/audit/bootstrap/roles.sql",
+      "infra/modules/platform/postgres-roles/audit.sql"
+    ],
+    "clinical": [
+      "packages/clinical-store/bootstrap/roles.sql",
+      "infra/modules/platform/postgres-roles/clinical.sql",
+      "packages/clinical-store/bootstrap/grant-owner.sql"
+    ],
+    "identity": [
+      "packages/identity-store/bootstrap/roles.sql",
+      "infra/modules/platform/postgres-roles/identity.sql"
+    ]
+  }
+}
