@@ -404,6 +404,9 @@ importers:
       '@endo/audit':
         specifier: workspace:*
         version: link:../../packages/audit
+      '@endo/authz':
+        specifier: workspace:*
+        version: link:../../packages/authz
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
