@@ -11,8 +11,8 @@
 -- - decisions and claim ids set only on consent, in full, and never again; the provisional
 --   subject set only on redemption; cancellation reasons written once;
 -- - activation steps one at a time, and `active` only after all three;
--- - no insert or update without its audit event in the identity outbox, in the same database
---   transaction (section 14);
+-- - one change per row per database transaction, each with its own audit event in the identity
+--   outbox, in the same database transaction (section 14);
 -- - `version` and `updated_at` set by the database.
 -- No identity data is stored here: opaque ids, a SHA-256 of the browser secret, the code's MAC
 -- under its own wrapped key, and her consent decisions until activation writes them.
@@ -25,18 +25,23 @@ BEGIN
   EXECUTE format($f$
     CREATE FUNCTION enrolment_decisions_valid(d jsonb) RETURNS boolean
     LANGUAGE sql IMMUTABLE SET search_path = %I, pg_temp AS $b$
-      SELECT jsonb_typeof(d) = 'object'
+      SELECT coalesce(
+        jsonb_typeof(d) = 'object'
         AND octet_length(d::text) <= 2048
         AND d ?& ARRAY['self_tracking', 'share_with_care_team', 'research_deidentified',
                        'org_aggregate_reporting']
         AND (SELECT count(*) FROM jsonb_object_keys(d)) = 4
-        AND (SELECT bool_and(
+        AND (SELECT bool_and(coalesce(
                jsonb_typeof(v) = 'object'
+               AND (SELECT count(*) FROM jsonb_object_keys(v)) = 3
                AND v->>'status' IN ('granted', 'declined')
                AND jsonb_typeof(v->'version') = 'number'
-               AND (v->>'version')::numeric >= 1
-               AND jsonb_typeof(v->'decided_at') = 'string')
-             FROM jsonb_each(d) AS e(k, v))
+               AND (v->>'version') ~ '^[1-9][0-9]{0,8}$'
+               AND jsonb_typeof(v->'decided_at') = 'string'
+               AND (v->>'decided_at') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?Z$',
+             false))
+             FROM jsonb_each(d) AS e(k, v)),
+        false)
     $b$
   $f$, s);
 END;
@@ -83,7 +88,7 @@ CREATE TABLE enrolment_transaction (
   CHECK ((status IN ('cancelling', 'cancelled')) = (cancel_reason IS NOT NULL)),
   CHECK (cancel_requested IS NULL OR status = 'claiming'),
   CHECK (status IN ('activating', 'active') OR activation_step = 0),
-  CHECK (status <> 'active' OR activation_step = 3)
+  CHECK ((status = 'active') = (activation_step = 3))
 );
 
 CREATE INDEX enrolment_transaction_invitation_idx ON enrolment_transaction (invitation_id)
@@ -134,6 +139,12 @@ BEGIN
       IF OLD.status IN ('active', 'cancelled') THEN
         RAISE EXCEPTION 'enrolment transaction is final' USING ERRCODE = 'check_violation';
       END IF;
+      -- One change per database transaction, so every change has its own audit event.
+      IF (SELECT t.xmin FROM enrolment_transaction AS t WHERE t.id = OLD.id)
+         = pg_current_xact_id()::xid THEN
+        RAISE EXCEPTION 'one enrolment change per database transaction'
+          USING ERRCODE = 'check_violation';
+      END IF;
       IF NOT (
         (OLD.status, NEW.status) IN (
           ('awaiting-confirmation', 'confirmed'), ('awaiting-confirmation', 'cancelling'),
@@ -150,10 +161,11 @@ BEGIN
           USING ERRCODE = 'check_violation';
       END IF;
 
-      -- Deadlines change only with a transition into a pre-claim state, at most 30 minutes ahead.
+      -- Deadlines change only with a transition into a pre-claim state, at most 30 minutes ahead
+      -- (plus two minutes of tolerance for the service clock running ahead of this one).
       IF NEW.state_deadline IS DISTINCT FROM OLD.state_deadline AND NEW.state_deadline IS NOT NULL
          AND (NEW.status = OLD.status
-              OR NEW.state_deadline > clock_timestamp() + interval '30 minutes') THEN
+              OR NEW.state_deadline > clock_timestamp() + interval '32 minutes') THEN
         RAISE EXCEPTION 'enrolment deadline cannot be moved' USING ERRCODE = 'check_violation';
       END IF;
 

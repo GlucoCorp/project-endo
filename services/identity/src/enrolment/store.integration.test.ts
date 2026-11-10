@@ -236,6 +236,56 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       code_wrapped_key: null,
     };
 
+    it('rejects decisions with missing fields, fractional versions or bad times', async () => {
+      const at = new Date().toISOString();
+      const good = { status: 'granted', version: 1, decided_at: at };
+      const valid = (d: unknown) =>
+        admin
+          .query<{ ok: boolean }>('SELECT enrolment_decisions_valid($1::jsonb) AS ok', [
+            JSON.stringify(d),
+          ])
+          .then((r) => r.rows[0]?.ok);
+      const all = (bad: unknown) => ({
+        self_tracking: good,
+        share_with_care_team: good,
+        research_deidentified: good,
+        org_aggregate_reporting: bad,
+      });
+      expect(await valid(all(good))).toBe(true);
+      for (const bad of [
+        { version: 1, decided_at: at },
+        { status: 'granted', decided_at: at },
+        { status: 'granted', version: 1 },
+        { status: 'granted', version: 1.5, decided_at: at },
+        { status: 'granted', version: 0, decided_at: at },
+        { status: 'granted', version: 1, decided_at: 'yesterday' },
+        { ...good, extra: true },
+        null,
+      ])
+        expect(await valid(all(bad)), JSON.stringify(bad)).toBe(false);
+    });
+
+    it('allows one change per transaction row per database transaction', async () => {
+      const { tx } = await newTransaction();
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query(
+          "UPDATE enrolment_transaction SET status = 'confirmed', code_mac = NULL, code_wrapped_key = NULL WHERE id = $1",
+          [tx.id],
+        );
+        await expect(
+          c.query(
+            "UPDATE enrolment_transaction SET status = 'cancelling', cancel_reason = 'deadline', state_deadline = NULL WHERE id = $1",
+            [tx.id],
+          ),
+        ).rejects.toThrow(/one enrolment change per database transaction/);
+      } finally {
+        await c.query('ROLLBACK');
+        c.release();
+      }
+    });
+
     it('refuses any change without its audit event in the same transaction', async () => {
       const { tx } = await newTransaction();
       await expect(
