@@ -18,6 +18,13 @@ export class InMemoryAuditStore implements AuditStore {
     return Promise.resolve();
   }
 
+  async appendNext(build: (head: AuditEvent | null) => AuditEvent): Promise<AuditEvent> {
+    // Single-threaded: nothing can append between reading the head and appending.
+    const event = build(this.#events.at(-1) ?? null);
+    await this.append(event);
+    return event;
+  }
+
   readRange(fromSequence: number, limit: number): Promise<readonly AuditEvent[]> {
     return Promise.resolve(this.#events.filter((e) => e.sequence >= fromSequence).slice(0, limit));
   }

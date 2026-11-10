@@ -33,6 +33,11 @@ async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: bool
         readRange: (a: number, b: number) => audit.readRange(a, b),
         append: (e: Parameters<InMemoryAuditStore['append']>[0]) =>
           e.outcome === 'error' ? Promise.reject(new Error('audit down')) : audit.append(e),
+        appendNext: async (build: Parameters<InMemoryAuditStore['appendNext']>[0]) => {
+          const e = build(await audit.head());
+          if (e.outcome === 'error') throw new Error('audit down');
+          return audit.appendNext(() => e);
+        },
       }
     : audit;
   const logs: string[] = [];

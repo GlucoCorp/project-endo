@@ -10,11 +10,17 @@ import {
 /**
  * Append-only store. Implementations must reject updates and deletes (Postgres: no UPDATE/DELETE
  * grants for the app role, plus a trigger). `append` must fail if `event.sequence` is not exactly
- * `head.sequence + 1`, which serialises concurrent writers.
+ * `head.sequence + 1`.
  */
 export interface AuditStore {
   head(): Promise<AuditEvent | null>;
   append(event: AuditEvent): Promise<void>;
+  /**
+   * Reads the head and appends the event `build` makes from it, exclusively: no other writer, in
+   * any process, appends in between. Concurrent service instances then queue instead of racing
+   * for the next sequence (which could starve a writer under load).
+   */
+  appendNext(build: (head: AuditEvent | null) => AuditEvent): Promise<AuditEvent>;
   readRange(fromSequence: number, limit: number): Promise<readonly AuditEvent[]>;
 }
 
@@ -29,7 +35,10 @@ export class AuditSequenceConflictError extends Error {
   }
 }
 
-/** Attempts per event when other processes keep winning the race for the next sequence. */
+/**
+ * Attempts per event. appendNext is exclusive, so a conflict means a writer outside that lock
+ * (for example an older version during a rolling deploy); retrying on the new head is safe.
+ */
 const MAX_APPEND_ATTEMPTS = 5;
 
 /**
@@ -80,8 +89,9 @@ export class AuditWriter {
   }
 
   /**
-   * Serialised within this process. Across processes the store rejects a duplicate sequence with
-   * AuditSequenceConflictError, and the event is rebuilt on the new head and retried.
+   * Serialised within this process, and across processes by the store's exclusive appendNext. If
+   * the store still reports AuditSequenceConflictError, the event is rebuilt on the new head and
+   * retried.
    *
    * `occurredAt`: when the action really happened, for events relayed later from an outbox
    * (spec 2.6). Defaults to now. It may not lie in the future.
@@ -90,23 +100,22 @@ export class AuditWriter {
     const parsed = AuditEventInput.parse(input);
     const run = this.#tail.then(async () => {
       for (let attempt = 1; ; attempt++) {
-        const head = await this.#store.head();
         const now = this.#clock();
         if (occurredAt && occurredAt.getTime() > now.getTime()) {
           throw new RangeError('occurredAt is in the future');
         }
         const when = occurredAt ?? now;
-        const base = {
-          ...parsed,
-          id: uuidv7(now.getTime()),
-          sequence: head ? head.sequence + 1 : 1,
-          occurred_at: when.toISOString(),
-          prev_hash: head ? head.hash : GENESIS_HASH,
-        };
-        const event: AuditEvent = { ...base, hash: hashEvent(base) };
         try {
-          await this.#store.append(event);
-          return event;
+          return await this.#store.appendNext((head) => {
+            const base = {
+              ...parsed,
+              id: uuidv7(now.getTime()),
+              sequence: head ? head.sequence + 1 : 1,
+              occurred_at: when.toISOString(),
+              prev_hash: head ? head.hash : GENESIS_HASH,
+            };
+            return { ...base, hash: hashEvent(base) };
+          });
         } catch (error) {
           if (!(error instanceof AuditSequenceConflictError) || attempt >= MAX_APPEND_ATTEMPTS) {
             throw error;
