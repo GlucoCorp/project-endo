@@ -13,14 +13,25 @@ import {
   type ServiceTokenSigner,
 } from '@endo/service-kit';
 import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts';
+import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 
-/** Every BFF route declares how it is authenticated (spec 2.5). */
+/**
+ * Every BFF route declares how it is authenticated (spec 2.5). `enrolment`: before she has an
+ * account, bound to the browser by the enrolment cookie, checked by the route (ADR-0021 section 4).
+ */
 export type BffAuth =
-  { readonly kind: 'session' } | { readonly kind: 'public'; readonly reason: 'liveness' };
+  | { readonly kind: 'session' }
+  | { readonly kind: 'enrolment' }
+  | { readonly kind: 'public'; readonly reason: 'liveness' };
 
 declare module 'fastify' {
   interface FastifyContextConfig {
     auth?: BffAuth;
+    /**
+     * The route applies its own, stricter rate limit instead of the general one (the plugin runs
+     * only one limiter per request).
+     */
+    ownRateLimit?: true;
   }
   interface FastifyRequest {
     claims: ServiceClaims | null;
@@ -30,7 +41,11 @@ declare module 'fastify' {
 export function isBffAuth(value: unknown): value is BffAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<BffAuth>;
-  return v.kind === 'session' || (v.kind === 'public' && v.reason === 'liveness');
+  return (
+    v.kind === 'session' ||
+    v.kind === 'enrolment' ||
+    (v.kind === 'public' && v.reason === 'liveness')
+  );
 }
 
 export interface BffDeps {
@@ -40,6 +55,8 @@ export interface BffDeps {
   readonly apiBaseUrl: string;
   readonly fetch: typeof fetch;
   readonly upstreamTimeoutMs?: number;
+  /** Patient enrolment (ADR-0021). Without it the enrolment routes do not exist (fail closed). */
+  readonly enrolment?: EnrolmentDeps;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per client IP (spec 12.3; RISK-D01). Per-session and per-account limits,
@@ -90,13 +107,14 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     errorResponseBuilder: () => rateLimitedError(),
   });
   app.addHook('onRequest', async function (request, reply) {
-    if (request.routeOptions.config.auth?.kind === 'public') return;
+    const config = request.routeOptions.config;
+    if (config.auth?.kind === 'public' || config.ownRateLimit) return;
     await limit.call(this, request, reply);
   });
 
   app.addHook('onRequest', async (request) => {
     const auth = request.routeOptions.config.auth;
-    if (!auth || auth.kind === 'public') return;
+    if (!auth || auth.kind !== 'session') return;
     const token = readCookie(request.headers.cookie, SESSION_COOKIE);
     const session = token ? await deps.sessions.resolve(token) : null;
     if (!session) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
@@ -164,6 +182,8 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
     }
     return reply.send(parsed.data);
   });
+
+  if (deps.enrolment) registerEnrolmentRoutes(app, deps.enrolment);
 
   await app.ready();
   return app;
