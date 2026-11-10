@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { sql } from 'kysely';
-import type pg from 'pg';
+import pg from 'pg';
 import {
   MigrationError,
   createDb,
@@ -106,5 +106,25 @@ describe.skipIf(!url)('runMigrations (spec 18.3)', () => {
     const second = runMigrations(pool, dir);
     expect((await first).applied).toEqual(['0001_slow.sql']);
     expect(await second).toEqual({ applied: [], alreadyApplied: ['0001_slow.sql'] });
+  });
+
+  it('releases its lock even if a migration changes search_path', async () => {
+    const { pool, dir } = await fixture({
+      '0001_path.sql':
+        // current_schema() becomes pg_catalog; this schema stays reachable for the bookkeeping.
+        "CREATE TABLE p (a int); SELECT set_config('search_path', 'pg_catalog, ' || current_schema(), false);",
+    });
+    await runMigrations(pool, dir);
+    // Another session can take the schema's migration lock: the run released what it took.
+    const other = new pg.Client({ connectionString: pool.options.connectionString });
+    await other.connect();
+    try {
+      const r = await other.query<{ got: boolean }>(
+        "SELECT pg_try_advisory_lock(hashtextextended('endo-migrate:' || current_schema(), 0)) AS got",
+      );
+      expect(r.rows[0]?.got).toBe(true);
+    } finally {
+      await other.end();
+    }
   });
 });

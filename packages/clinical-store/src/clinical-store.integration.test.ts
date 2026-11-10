@@ -629,6 +629,39 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       ).rejects.toThrow(/permission denied/);
     });
 
+    it('keeps the failure record when an event is published (migration 0006)', async () => {
+      const id = randomUUID();
+      await admin.query(`INSERT INTO audit_outbox (id, event) VALUES ($1, $2)`, [
+        id,
+        JSON.stringify({ id }),
+      ]);
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL ROLE endo_clinical_relay');
+        await c.query(
+          `UPDATE audit_outbox SET attempts = attempts + 1, last_error = 'audit.publish_failed' WHERE id = $1`,
+          [id],
+        );
+        await c.query('SAVEPOINT s');
+        await expect(
+          c.query(
+            `UPDATE audit_outbox SET published_at = now(), attempts = 0, last_error = NULL WHERE id = $1`,
+            [id],
+          ),
+        ).rejects.toThrow(/cannot change the failure record/);
+        await c.query('ROLLBACK TO SAVEPOINT s');
+        await c.query(`UPDATE audit_outbox SET published_at = now() WHERE id = $1`, [id]);
+        const row = await c.query('SELECT attempts, last_error FROM audit_outbox WHERE id = $1', [
+          id,
+        ]);
+        expect(row.rows[0]).toEqual({ attempts: 1, last_error: 'audit.publish_failed' });
+      } finally {
+        await c.query('ROLLBACK');
+        c.release();
+      }
+    });
+
     it('refuses to change a published event, even for the relay', async () => {
       const c = await admin.connect();
       try {

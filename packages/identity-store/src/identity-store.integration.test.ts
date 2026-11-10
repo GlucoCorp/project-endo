@@ -266,7 +266,15 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
       await expect(
         relay(`UPDATE audit_outbox SET last_error = 'Free text, not a code' WHERE id = $1`),
       ).rejects.toThrow(/check constraint|one at a time/);
+      // Publishing cannot erase the failure record.
+      await expect(
+        relay(
+          'UPDATE audit_outbox SET published_at = now(), attempts = 0, last_error = NULL WHERE id = $1',
+        ),
+      ).rejects.toThrow(/cannot change the failure record/);
       await relay('UPDATE audit_outbox SET published_at = now() WHERE id = $1');
+      const row = await relayPool.query('SELECT attempts FROM audit_outbox WHERE id = $1', [id]);
+      expect(row.rows[0]).toEqual({ attempts: 1 });
       await expect(
         relay('UPDATE audit_outbox SET published_at = now() WHERE id = $1'),
       ).rejects.toThrow(/published once/);

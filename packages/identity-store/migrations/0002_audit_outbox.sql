@@ -48,6 +48,11 @@ BEGIN
           USING ERRCODE = 'check_violation';
       END IF;
       IF NEW.published_at IS NOT NULL THEN
+        -- Publishing keeps the failure record exactly as it was.
+        IF NEW.attempts <> OLD.attempts OR NEW.last_error IS DISTINCT FROM OLD.last_error THEN
+          RAISE EXCEPTION 'audit_outbox publishing cannot change the failure record'
+            USING ERRCODE = 'check_violation';
+        END IF;
         NEW.published_at := clock_timestamp();
       ELSIF NEW.attempts <> OLD.attempts + 1 THEN
         RAISE EXCEPTION 'audit_outbox failures are counted one at a time'

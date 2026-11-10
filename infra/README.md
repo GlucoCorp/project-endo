@@ -60,6 +60,19 @@ psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/clinical-store/bootstrap/r
 psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v owner=clinical_owner -f packages/clinical-store/bootstrap/grant-owner.sql
 ```
 
+A new **login** role needs its password too. Identity migration 0002 adds the outbox relay. After `tofu apply`, take `IDENTITY_RELAY_PASSWORD` from the `postgres-identity-bootstrap` secret, then on the identity database:
+
+```sh
+psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -f packages/identity-store/bootstrap/roles.sql
+psql "$PRIVILEGED_URL" -v ON_ERROR_STOP=1 -v pw="$IDENTITY_RELAY_PASSWORD" <<'SQL'
+SELECT format('CREATE ROLE identity_relay LOGIN PASSWORD %L IN ROLE endo_identity_relay', :'pw')
+  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'identity_relay') \gexec
+GRANT CONNECT ON DATABASE identity TO identity_relay;
+SQL
+```
+
+This manual step is a known gap. Before the first deployed environment, a role reconciliation job will apply all roles idempotently on every apply.
+
 ## Rules
 
 - State files contain generated credentials: they are git-ignored and never committed. `.terraform.lock.hcl` **is** committed (provider checksums).
