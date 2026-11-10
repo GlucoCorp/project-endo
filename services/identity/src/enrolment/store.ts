@@ -1,4 +1,4 @@
-import type { Kysely, Selectable, Transaction } from 'kysely';
+import { sql, type Kysely, type Selectable, type Transaction } from 'kysely';
 import type { IdentityDatabase } from '@endo/identity-store';
 import type { CodeBinding, SealedCode } from './code.ts';
 import {
@@ -94,26 +94,30 @@ export class PostgresEnrolmentStore {
    * Stores a new transaction (from startTransaction) with its browser binding, and returns its
    * code. The code is drawn by `issue` while the invitation's guard row is held, from the codes
    * of the transactions then awaiting confirmation, so concurrent starts on one invitation can
-   * never get the same code (ADR-0021 section 3). Refused while the invitation is locked.
+   * never get the same code (ADR-0021 section 3). While the invitation is locked (by the
+   * database clock) nothing is created; the database refuses such a start in any case.
    */
   async create(
     tx: EnrolmentTransaction,
     bindingHash: string,
     issue: (pending: readonly PendingCode[]) => Promise<{ code: string; sealed: SealedCode }>,
     audit: OutboxEvent,
-  ): Promise<{ code: string }> {
+  ): Promise<
+    { readonly outcome: 'created'; readonly code: string } | { readonly outcome: 'locked' }
+  > {
     return this.#db.transaction().execute(async (trx) => {
       await trx
         .insertInto('enrolment_invitation_guard')
         .values({ invitation_id: tx.invitationId })
         .onConflict((oc) => oc.doNothing())
         .execute();
-      await trx
+      const guard = await trx
         .selectFrom('enrolment_invitation_guard')
-        .select('invitation_id')
+        .select(sql<boolean>`coalesce(locked_until > clock_timestamp(), false)`.as('locked'))
         .where('invitation_id', '=', tx.invitationId)
         .forUpdate()
         .executeTakeFirstOrThrow();
+      if (guard.locked) return { outcome: 'locked' } as const;
       const pending = (await awaiting(trx, tx.invitationId)).flatMap((s) =>
         s.code === null
           ? []
@@ -141,8 +145,27 @@ export class PostgresEnrolmentStore {
         })
         .execute();
       await queue(trx, audit);
-      return { code };
+      return { outcome: 'created', code } as const;
     });
+  }
+
+  /**
+   * The open transaction (not yet active or cancelled) of this browser binding on this
+   * invitation, if any: a repeated Start returns it instead of a new one (section 3).
+   */
+  async findOpenByBinding(
+    bindingHash: string,
+    invitationId: string,
+  ): Promise<StoredTransaction | null> {
+    const row = await this.#db
+      .selectFrom('enrolment_transaction')
+      .selectAll()
+      .where('binding_hash', '=', bindingHash)
+      .where('invitation_id', '=', invitationId)
+      .where('status', 'not in', ['active', 'cancelling', 'cancelled'])
+      .orderBy('started_at', 'desc')
+      .executeTakeFirst();
+    return row ? toStored(row) : null;
   }
 
   async get(id: string): Promise<StoredTransaction | null> {
