@@ -11,7 +11,7 @@ M0 must produce signed images with SBOMs. The organisation is on GitHub Free wit
 | Option                                                  | Cost                               | Stored secret        | What becomes public                                                       | Available now                |
 | ------------------------------------------------------- | ---------------------------------- | -------------------- | ------------------------------------------------------------------------- | ---------------------------- |
 | **Sigstore keyless (GitHub OIDC, public Fulcio/Rekor)** | free                               | none                 | repo name, workflow path, branch, commit and run IDs (certificate fields) | yes                          |
-| cosign key in OpenBao Transit, CI authenticates by OIDC | free (Oracle VM)                   | key held in OpenBao  | nothing                                                                   | no: needs the shared-dev VM  |
+| cosign key in OpenBao Transit, CI authenticates by OIDC | free (self-hosted, ADR-0023)       | key held in OpenBao  | nothing                                                                   | no: needs the shared-dev VM  |
 | cosign key in an Actions secret                         | free                               | long-lived key in CI | nothing                                                                   | conflicts with spec 2 rule 8 |
 | GitHub artifact attestations                            | Enterprise Cloud for private repos | none                 | nothing                                                                   | no                           |
 
@@ -33,8 +33,8 @@ M0 must produce signed images with SBOMs. The organisation is on GitHub Free wit
 
 - **Trust rests on who can change `main`.** GitHub Free has no branch protection for private repos, so anyone with write access could change the signing workflow on `main` and get valid signatures. `main-guard` detects commits that did not come from a merged PR (RISK-T04); keep write access minimal.
 - **This is not SLSA level 3.** Provenance is not yet produced in an isolated builder. Signed BuildKit provenance is a later step.
-- **Pulling private images** from the Oracle VM needs a credential. A permanent personal access token in `imagePullSecrets` is not acceptable; the shared-dev design will push verified images into the cluster from an authorised workflow instead.
-- **arm64** images are needed for the Oracle Ampere VM; added with the shared-dev environment.
+- **Pulling private images** from the shared-dev machine (ADR-0023) needs a credential. A permanent personal access token in `imagePullSecrets` is not acceptable; the shared-dev design will push verified images into the cluster from an authorised workflow instead.
+- **arm64** images are no longer needed: `shared-dev` moved from the Oracle Ampere VM to an x86-64 machine the organisation owns (ADR-0023).
 - GitHub may change GHCR billing with a month's notice. If so, revisit (OCI archives in private releases are the fallback).
 - If the signing metadata must become private later, move to OpenBao Transit signing (row 2) without changing the verification step's shape.
 
