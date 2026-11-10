@@ -6,12 +6,13 @@
 
 ## Public API
 
-| Export                     | What it does                                                                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `createPool(url, options)` | pg pool with statement, idle-transaction and connect timeouts                                                                       |
-| `createDb<Schema>(pool)`   | Typed Kysely instance                                                                                                               |
-| `runMigrations(pool, dir)` | Applies `NNNN_name.sql` files in order, one transaction each, under an advisory lock. Refuses to run if an applied file has changed |
-| `testDatabaseUrl()`        | Integration-test database URL; throws in CI if missing                                                                              |
+| Export                                                                           | What it does                                                                                                                                                                              |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `createPool(url, options)`                                                       | pg pool with statement, idle-transaction and connect timeouts                                                                                                                             |
+| `createDb<Schema>(pool)`                                                         | Typed Kysely instance                                                                                                                                                                     |
+| `relayAuditOutbox(db, publish, max?)`, `OUTBOX_MAX_ATTEMPTS`, `AuditOutboxTable` | Relays a store's audit outbox to the audit store, one locked event per transaction; failures are counted with a safe code and set aside after 5 (spec 2.6). Run as the store's relay role |
+| `runMigrations(pool, dir)`                                                       | Applies `NNNN_name.sql` files in order, one transaction each, under an advisory lock. Refuses to run if an applied file has changed                                                       |
+| `testDatabaseUrl()`                                                              | Integration-test database URL; throws in CI if missing                                                                                                                                    |
 
 ## Rules
 

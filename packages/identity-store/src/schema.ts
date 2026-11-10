@@ -1,6 +1,7 @@
 import type { Generated } from 'kysely';
+import type { AuditOutboxTable } from '@endo/db';
 
-/** Table shapes for Kysely. Match migrations/0001_person_vault.sql. */
+/** Table shapes for Kysely. Match migrations/0001_person_vault.sql and later. */
 export interface IdentityDatabase {
   person: {
     id: string;
@@ -20,6 +21,8 @@ export interface IdentityDatabase {
     person_id: string;
     shredded_at: Generated<Date>;
   };
+  /** Migration 0002 (spec 2.6). The service may only insert; the relay reads and acknowledges. */
+  audit_outbox: AuditOutboxTable;
   patient_link: {
     person_id: string;
     patient_record_id: string;

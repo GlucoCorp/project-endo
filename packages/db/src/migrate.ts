@@ -9,12 +9,16 @@ import type pg from 'pg';
  * - Files are `NNNN_snake_name.sql`, applied in order, each in its own transaction.
  * - The SHA-256 of each applied file is recorded. Editing an applied migration is an error:
  *   migrations are immutable once applied; write a new one (expand/migrate/contract).
- * - A Postgres advisory lock stops two deployers migrating the same database at once.
+ * - A Postgres advisory lock stops two deployers migrating the same schema at once. It is keyed
+ *   by schema, so migrations of unrelated schemas in one database (test suites) never queue
+ *   behind each other. Deployments use one schema per database, so nothing changes there.
  */
 
 const FILE_RE = /^(\d{4})_[a-z0-9_]+\.sql$/;
-// Arbitrary constant: "endo" + "migr" as ASCII, fits in a signed 64-bit lock key.
-const LOCK_KEY = '7310598722425860722';
+// Advisory lock keyed by the schema being migrated (current_schema: the first search_path entry).
+const LOCK = "SELECT pg_advisory_lock(hashtextextended('endo-migrate:' || current_schema(), 0))";
+const UNLOCK =
+  "SELECT pg_advisory_unlock(hashtextextended('endo-migrate:' || current_schema(), 0))";
 
 export class MigrationError extends Error {
   constructor(message: string) {
@@ -44,7 +48,7 @@ export async function runMigrations(pool: pg.Pool, dir: string): Promise<Migrati
   const applied: string[] = [];
   const alreadyApplied: string[] = [];
   try {
-    await client.query('SELECT pg_advisory_lock($1::bigint)', [LOCK_KEY]);
+    await client.query(LOCK);
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         name       text PRIMARY KEY,
@@ -83,7 +87,7 @@ export async function runMigrations(pool: pg.Pool, dir: string): Promise<Migrati
       applied.push(name);
     }
   } finally {
-    await client.query('SELECT pg_advisory_unlock($1::bigint)', [LOCK_KEY]).catch(() => undefined);
+    await client.query(UNLOCK).catch(() => undefined);
     client.release();
   }
   return { applied, alreadyApplied };

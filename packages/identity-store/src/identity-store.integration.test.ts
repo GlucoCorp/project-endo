@@ -19,6 +19,7 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
   let admin: pg.Pool;
   let appDb: Kysely<IdentityDatabase>;
   let appPool: pg.Pool;
+  let relayPool: pg.Pool; // member of endo_identity_relay only
   let schema: string;
 
   const withSchema = (base: string, user: string, password: string) => {
@@ -42,6 +43,7 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
     schema = `identity_${randomBytes(6).toString('hex')}`;
     const ownerPw = randomBytes(16).toString('hex');
     const appPw = randomBytes(16).toString('hex');
+    const relayPw = randomBytes(16).toString('hex');
     const bootstrap = await readFile(
       fileURLToPath(new URL('../bootstrap/roles.sql', import.meta.url)),
       'utf8',
@@ -53,6 +55,7 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
       for (const [role, pw, extra] of [
         ['identity_owner_test', ownerPw, ''],
         ['identity_api_test', appPw, 'IN ROLE endo_identity_app'],
+        ['identity_relay_test', relayPw, 'IN ROLE endo_identity_relay'],
       ] as const) {
         const exists = await su.query('SELECT 1 FROM pg_roles WHERE rolname = $1', [role]);
         // Role names and hex passwords are fixed or generated here, never external input.
@@ -79,10 +82,14 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
       applicationName: 'endo-test-identity',
     });
     appDb = createDb<IdentityDatabase>(appPool);
+    relayPool = createPool(withSchema(url!, 'identity_relay_test', relayPw), {
+      applicationName: 'endo-test-identity-relay',
+    });
   });
 
   afterAll(async () => {
     await appDb.destroy();
+    await relayPool.end();
     await admin.end();
   });
 
@@ -219,5 +226,65 @@ describe.skipIf(!url)('spec 5.2, 11.2, REQ-009 identity vault and per-person key
     await expect(
       appDb.deleteFrom('person_key_shredded').where('person_id', '=', id).execute(),
     ).rejects.toThrow(/permission denied/);
+  });
+
+  describe('spec 2.6 identity audit outbox (ADR-0021 section 14)', () => {
+    const queue = async () => {
+      const id = randomUUID();
+      await appDb
+        .insertInto('audit_outbox')
+        .values({ id, event: JSON.stringify({ id, action: 'identity.enrolment.started' }) })
+        .execute();
+      return id;
+    };
+
+    it('lets the service only add events: no reading, changing or deleting', async () => {
+      const id = await queue();
+      for (const text of [
+        'SELECT * FROM audit_outbox',
+        'UPDATE audit_outbox SET published_at = now()',
+        'DELETE FROM audit_outbox',
+        'TRUNCATE audit_outbox',
+      ])
+        await expect(appPool.query(text), text).rejects.toThrow(/permission denied/);
+      const seen = await relayPool.query('SELECT 1 FROM audit_outbox WHERE id = $1', [id]);
+      expect(seen.rowCount).toBe(1);
+    });
+
+    it('lets the relay publish once, count failures one at a time, and never change an event', async () => {
+      const id = await queue();
+      const relay = (text: string) => relayPool.query(text, [id]);
+      await expect(
+        relay(`UPDATE audit_outbox SET event = '{"x":1}' WHERE id = $1`),
+      ).rejects.toThrow(/permission denied/);
+      await expect(relay('UPDATE audit_outbox SET attempts = 3 WHERE id = $1')).rejects.toThrow(
+        /one at a time/,
+      );
+      await relay(
+        `UPDATE audit_outbox SET attempts = attempts + 1, last_error = 'audit.publish_failed' WHERE id = $1`,
+      );
+      await expect(
+        relay(`UPDATE audit_outbox SET last_error = 'Free text, not a code' WHERE id = $1`),
+      ).rejects.toThrow(/check constraint|one at a time/);
+      await relay('UPDATE audit_outbox SET published_at = now() WHERE id = $1');
+      await expect(
+        relay('UPDATE audit_outbox SET published_at = now() WHERE id = $1'),
+      ).rejects.toThrow(/published once/);
+      await expect(relay('DELETE FROM audit_outbox WHERE id = $1')).rejects.toThrow(
+        /permission denied/,
+      );
+    });
+
+    it('rejects an event that is not a small JSON object', async () => {
+      await expect(
+        appDb.insertInto('audit_outbox').values({ id: randomUUID(), event: '[1]' }).execute(),
+      ).rejects.toThrow(/check constraint/);
+      await expect(
+        appDb
+          .insertInto('audit_outbox')
+          .values({ id: randomUUID(), event: JSON.stringify({ pad: 'x'.repeat(5000) }) })
+          .execute(),
+      ).rejects.toThrow(/check constraint/);
+    });
   });
 });
