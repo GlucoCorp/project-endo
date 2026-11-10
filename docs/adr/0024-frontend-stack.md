@@ -1,6 +1,6 @@
 # ADR-0024: Frontend stack for the patient and clinician apps
 
-- Status: proposed (awaiting product owner approval; nothing is installed until then)
+- Status: accepted (product owner, 2026-11-10, including the Unlicense for `isbot`)
 - Date: 2026-11-10
 - Requirements/Risks: spec 0 rule 3, 12.2, 12.4, 14, 18.2, 21; ADR-0003 (supply chain), ADR-0010 (licences); RISK-T02
 
@@ -47,7 +47,7 @@ Atkinson Hyperlegible Next and Literata (spec 21.3), both under the **SIL Open F
 
 ### Licence decision for `isbot`
 
-`isbot`, which TanStack Router uses to detect crawlers, is released under the **Unlicense**: a public-domain dedication with a permissive fallback, OSI-approved, and in effect the same as CC0-1.0, which spec 18.2's allowlist already contains. **Proposed:** add `Unlicense` to the allowlist in `tools/check-licences.mjs`, for the same reason CC0-1.0 is there.
+`isbot`, which TanStack Router uses to detect crawlers, is released under the **Unlicense**: a public-domain dedication with a permissive fallback, OSI-approved, and in effect the same as CC0-1.0, which spec 18.2's allowlist already contains. **Accepted:** `Unlicense` is added to the allowlist in `tools/check-licences.mjs`, for the same reason CC0-1.0 is there.
 
 ## Consequences
 
