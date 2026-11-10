@@ -114,7 +114,7 @@ export class PostgresEnrolmentStore {
         .where('invitation_id', '=', tx.invitationId)
         .forUpdate()
         .executeTakeFirstOrThrow();
-      const pending = (await awaiting(trx, tx.invitationId, null)).flatMap((s) =>
+      const pending = (await awaiting(trx, tx.invitationId)).flatMap((s) =>
         s.code === null
           ? []
           : [
@@ -224,7 +224,10 @@ export class PostgresEnrolmentStore {
       if (guard.locked_until !== null && guard.locked_until > now)
         return { outcome: 'locked', lockedUntil: guard.locked_until, cancelled: [] };
 
-      const pending = await awaiting(trx, entry.invitationId, entry.orgId);
+      // Every row this check may change is locked now, before the guard is updated, so a
+      // lockout never waits for a row while holding the guard (no lock cycle with apply()).
+      const all = await awaiting(trx, entry.invitationId);
+      const pending = all.filter((s) => s.tx.orgId === entry.orgId);
       const hits: StoredTransaction[] = [];
       for (const s of pending) {
         if (s.code === null || isOverdue(s.tx, now)) continue;
@@ -264,7 +267,6 @@ export class PostgresEnrolmentStore {
       // The fifth wrong entry: the database has locked the invitation. Every transaction of it
       // awaiting confirmation ends, whatever its organisation; the database checks none is left.
       await queue(trx, audit({ kind: 'locked', invitationId: entry.invitationId, lockedUntil }));
-      const all = await awaiting(trx, entry.invitationId, null);
       const cancelled = await cancelAll(trx, all, 'code-lockout', now, audit);
       return { outcome: 'locked', lockedUntil, cancelled };
     });
@@ -318,19 +320,20 @@ async function write(
   await queue(trx, event);
 }
 
-/** Transactions of an invitation awaiting confirmation (of one organisation, or all), locked. */
+/** Transactions of an invitation awaiting confirmation, locked in id order. */
 async function awaiting(
   trx: Transaction<IdentityDatabase>,
   invitationId: string,
-  orgId: string | null,
 ): Promise<StoredTransaction[]> {
-  let q = trx
+  const rows = await trx
     .selectFrom('enrolment_transaction')
     .selectAll()
     .where('invitation_id', '=', invitationId)
-    .where('status', '=', 'awaiting-confirmation');
-  if (orgId !== null) q = q.where('org_id', '=', orgId);
-  return (await q.orderBy('id').forUpdate().execute()).map(toStored);
+    .where('status', '=', 'awaiting-confirmation')
+    .orderBy('id')
+    .forUpdate()
+    .execute();
+  return rows.map(toStored);
 }
 
 async function cancelAll(

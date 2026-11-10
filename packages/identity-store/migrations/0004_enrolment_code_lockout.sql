@@ -27,6 +27,30 @@ DO $migration$
 DECLARE
   s text := current_schema();
 BEGIN
+  -- Same rule as 0003, but the cleanup of ended transactions' marks skips rows another
+  -- transaction is already deleting, instead of waiting for it. Waiting there tied unrelated
+  -- enrolment changes together and could close a lock cycle (a code check holding a guard row
+  -- and one transaction row, an apply() holding another). The insert below is unchanged.
+  EXECUTE format($f$
+    CREATE OR REPLACE FUNCTION enrolment_mark_change(p_id uuid) RETURNS void
+    LANGUAGE plpgsql SECURITY DEFINER SET search_path = %I, pg_temp AS $b$
+    BEGIN
+      DELETE FROM enrolment_change_mark
+      WHERE ctid IN (
+        SELECT ctid FROM enrolment_change_mark
+        WHERE xact < pg_snapshot_xmin(pg_current_snapshot())
+        FOR UPDATE SKIP LOCKED
+      );
+      INSERT INTO enrolment_change_mark (xact, transaction_id)
+      VALUES (pg_current_xact_id(), p_id) ON CONFLICT DO NOTHING;
+      IF NOT FOUND THEN
+        RAISE EXCEPTION 'one enrolment change per database transaction'
+          USING ERRCODE = 'check_violation';
+      END IF;
+    END;
+    $b$
+  $f$, s);
+
   -- A guard starts empty: nothing counted, nothing locked.
   EXECUTE format($f$
     CREATE FUNCTION enrolment_guard_start() RETURNS trigger

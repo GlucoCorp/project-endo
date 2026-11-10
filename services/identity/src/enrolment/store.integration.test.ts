@@ -344,6 +344,31 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
       expect([a!.code, b!.code].sort()).toEqual(['111111', '222222']);
     });
 
+    it('locks out without deadlocking against a concurrent cancel in another organisation', async () => {
+      for (let round = 0; round < 8; round++) {
+        const inv = uuidv7();
+        const [a] = await startOn(inv, uuidv7());
+        const [b] = await startOn(inv, uuidv7());
+        const orgA = a!.tx.orgId;
+        const wrong = ['000000', '000001', '000002'].find((c) => c !== a!.code && c !== b!.code)!;
+        for (let i = 0; i < 4; i++) await check(inv, orgA, wrong);
+        const [locked, cancelled] = await Promise.all([
+          check(inv, orgA, wrong),
+          store.apply(
+            b!.tx.id,
+            { type: 'cancel', reason: 'patient-cancelled' },
+            () => new Date(),
+            auditStep,
+          ),
+        ]);
+        expect(locked.outcome).toBe('locked');
+        expect(cancelled.ok).toBe(true);
+        // Whichever ran first, b ended exactly once, and the lock left nothing pending.
+        expect((await store.get(b!.tx.id))?.tx.status).toBe('cancelling');
+        expect((await store.get(a!.tx.id))?.tx.status).toBe('cancelling');
+      }
+    });
+
     it('confirms nothing if a code ever matches two transactions', async () => {
       const inv = uuidv7();
       const org = uuidv7();
