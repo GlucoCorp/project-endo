@@ -111,6 +111,24 @@ describe('REQ-001, RISK-S05 ADR-0021 enrolment state machine (section 10)', () =
     });
   });
 
+  it('refuses a deadline cancellation that is no longer due (a stale sweep)', () => {
+    const tx = start();
+    expect(transition(tx, { type: 'cancel', reason: 'deadline' }, at(14))).toEqual({
+      ok: false,
+      reason: 'not-overdue',
+    });
+    // It moved on to a new state with a new deadline after the sweep listed it.
+    const confirmed = run(tx, [[10, { type: 'confirm' }]]);
+    expect(transition(confirmed, { type: 'cancel', reason: 'deadline' }, at(16))).toEqual({
+      ok: false,
+      reason: 'not-overdue',
+    });
+    expect(transition(confirmed, { type: 'cancel', reason: 'deadline' }, at(25))).toMatchObject({
+      ok: true,
+      tx: { status: 'cancelling', cancelReason: 'deadline' },
+    });
+  });
+
   it('has no deadline from claiming on: consent has been given', () => {
     const tx = claiming();
     expect(isOverdue(tx, at(600))).toBe(false);
@@ -283,7 +301,7 @@ describe('REQ-001, RISK-S05 ADR-0021 enrolment state machine (section 10)', () =
   });
 
   it('finishes cleanup once, idempotently', () => {
-    const cancelling = run(start(), [[1, { type: 'cancel', reason: 'deadline' }]]);
+    const cancelling = run(start(), [[1, { type: 'cancel', reason: 'patient-cancelled' }]]);
     const cancelled = run(cancelling, [[2, { type: 'cleanup-done' }]]);
     expect(cancelled.status).toBe('cancelled');
     expect(transition(cancelled, { type: 'cleanup-done' }, at(3))).toMatchObject({

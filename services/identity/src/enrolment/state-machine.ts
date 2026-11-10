@@ -119,7 +119,8 @@ export type RefusalReason =
   | 'subject-mismatch'
   | 'credential-pending'
   | 'incomplete-consent'
-  | 'out-of-order';
+  | 'out-of-order'
+  | 'not-overdue';
 
 export type TransitionResult =
   | { readonly ok: true; readonly changed: boolean; readonly tx: EnrolmentTransaction }
@@ -167,7 +168,13 @@ export function transition(
   event: EnrolmentEvent,
   now: Date,
 ): TransitionResult {
-  if (event.type === 'cancel') return cancel(tx, event.reason);
+  if (event.type === 'cancel') {
+    // A deadline cancellation is judged now, not when the sweep listed it: the transaction may
+    // have moved on to a new state with a new deadline in between.
+    if (event.reason === 'deadline' && PRE_CLAIM.has(tx.status) && !isOverdue(tx, now))
+      return refuse('not-overdue');
+    return cancel(tx, event.reason);
+  }
   // Past its deadline, a pre-claim transaction can only be cancelled.
   if (isOverdue(tx, now)) return refuse('expired');
 
