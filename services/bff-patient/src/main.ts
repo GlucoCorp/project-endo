@@ -1,9 +1,20 @@
 import { z } from 'zod';
 import { Environment, loadConfig } from '@endo/config';
 import { uuidv7 } from '@endo/domain';
-import { ServiceTokenSigner } from '@endo/service-kit';
+import { ServiceTokenSigner, WorkloadTokenSigner } from '@endo/service-kit';
 import { buildBff } from './app.ts';
 import { DevSessionStore, SESSION_COOKIE } from './sessions.ts';
+
+const PrivateJwk = z.string().transform((s, ctx) => {
+  try {
+    return z
+      .object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string(), d: z.string() })
+      .parse(JSON.parse(s));
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'invalid' });
+    return z.NEVER;
+  }
+});
 
 const Config = z.object({
   ENDO_ENV: Environment,
@@ -24,6 +35,14 @@ const Config = z.object({
     }
   }),
   BFF_PATIENT_DEV_SESSIONS_ENABLED: z.enum(['true', 'false']).default('false'),
+  /** Patient enrolment (ADR-0021): all three, or none. */
+  BFF_PATIENT_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
+  /** Exact origin of the patient app, e.g. https://app.example (no path, no trailing slash). */
+  BFF_PATIENT_ORIGIN: z
+    .url({ protocol: /^https?$/ })
+    .refine((u) => new URL(u).origin === u, 'must be an origin')
+    .optional(),
 });
 
 async function main(): Promise<void> {
@@ -42,6 +61,17 @@ async function main(): Promise<void> {
     patient_id: uuidv7(),
   });
 
+  const enrolmentSettings = [
+    config.BFF_PATIENT_IDENTITY_BASE_URL,
+    config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK,
+    config.BFF_PATIENT_ORIGIN,
+  ];
+  if (enrolmentSettings.some(Boolean) && !enrolmentSettings.every(Boolean)) {
+    throw new Error(
+      'Enrolment needs BFF_PATIENT_IDENTITY_BASE_URL, BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK and BFF_PATIENT_ORIGIN together.',
+    );
+  }
+
   const app = await buildBff({
     logLevel: config.ENDO_LOG_LEVEL,
     sessions,
@@ -49,6 +79,22 @@ async function main(): Promise<void> {
     apiBaseUrl: config.BFF_PATIENT_API_BASE_URL,
     fetch,
     rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
+    ...(config.BFF_PATIENT_IDENTITY_BASE_URL &&
+    config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK &&
+    config.BFF_PATIENT_ORIGIN
+      ? {
+          enrolment: {
+            identityBaseUrl: config.BFF_PATIENT_IDENTITY_BASE_URL,
+            signer: new WorkloadTokenSigner(
+              config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK,
+              'bff-patient',
+            ),
+            patientOrigin: config.BFF_PATIENT_ORIGIN,
+            fetch,
+            now: () => new Date(),
+          },
+        }
+      : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

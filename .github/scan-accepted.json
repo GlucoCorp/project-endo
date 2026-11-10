@@ -1,0 +1,11 @@
+[
+  {
+    "tool": "CodeQL",
+    "rule": "js/clear-text-storage-of-sensitive-data",
+    "file": "services/bff-patient/src/enrolment.ts",
+    "line": "`${ENROLMENT_COOKIE}=${txId}${secret}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(seconds)}`,",
+    "justification": "The browser-binding secret is a random bearer credential, and the cookie is where it must live, like a session id: Secure, HttpOnly, __Host- prefixed, SameSite=Lax, expiring with the transaction (ADR-0021 section 4). Only its SHA-256 leaves the BFF, and the identity service checks it on every call. Encrypting it would not change what a stolen cookie allows.",
+    "approved_by": "product owner (MbuviM)",
+    "date": "2026-11-10"
+  }
+]

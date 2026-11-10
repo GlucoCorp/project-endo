@@ -3,7 +3,8 @@
 # GitHub Code Security (paid) is not enabled on this private repository, so results cannot be
 # uploaded to code scanning. Free substitute: the analysis runs with `upload: never`;
 # tools/sarif-report.mjs turns findings into inline PR annotations and a job-summary table, and
-# FAILS the job on any finding, so the check stays blocking.
+# FAILS the job on any finding, so the check stays blocking. The only exceptions are reviewed
+# entries in .github/scan-accepted.json, each tied to one exact source line (see the tool).
 name: codeql
 
 on:
