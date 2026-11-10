@@ -80,6 +80,11 @@ resource "kubernetes_deployment_v1" "keycloak" {
           app                                                 = "keycloak"
           "endo.glucorp.health/postgres-${local.keycloak_pg}" = "client"
         }
+        # Environment variables do not refresh in a running pod. A new database password changes
+        # this hash and rolls Keycloak out, after the roles Job has applied it (depends_on below).
+        annotations = {
+          "endo.glucorp.health/db-credentials" = substr(sha256(random_password.db_owner["keycloak"].result), 0, 16)
+        }
       }
       spec {
         automount_service_account_token = false

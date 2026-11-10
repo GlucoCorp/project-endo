@@ -57,7 +57,7 @@ Every `tofu apply` whose role scripts changed runs the `postgres-<instance>-role
 
 - creates any missing database and closes it to PUBLIC;
 - creates any missing role: owners, the stores' group roles from `packages/*/bootstrap/roles.sql`, and login roles;
-- sets each login's password from the current secret, so rotating a password in OpenTofu takes effect;
+- sets each login's password from the current secret, so rotating a password in OpenTofu takes effect (the Job reruns when a password changes, and workloads that read a password from their environment, such as Keycloak, roll out after it);
 - strips any attribute beyond LOGIN.
 
 When a migration needs a new role, add it to the store's `bootstrap/roles.sql` (and, for a login, to the database's file in `postgres-roles/`), run `tofu apply`, then migrate. `tools/check-postgres-roles.mjs` runs the same scripts in CI.
