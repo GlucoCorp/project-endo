@@ -16,6 +16,7 @@ const ALLOWED = new Set([
   'ISC',
   'BlueOak-1.0.0', // permissive, equivalent to MIT/ISC; used by several npm tooling packages
   'CC0-1.0',
+  'Unlicense', // public-domain dedication like CC0-1.0; isbot (TanStack Router), ADR-0024
   'Python-2.0', // argparse (eslint dependency), permissive
 ]);
 // package name -> ADR that approved a licence outside ALLOWED (e.g. MPL-2.0).
