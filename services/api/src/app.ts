@@ -33,6 +33,7 @@ import { registerConsentRoutes } from './routes/consents.ts';
 import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerMembershipRoutes } from './routes/memberships.ts';
+import { registerCoordinatorRoutes, type EnrolmentCoordination } from './routes/coordinator.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
 /**
@@ -109,6 +110,11 @@ export interface ApiDeps {
   readonly now: () => Date;
   /** Her consent decisions (spec 13.1). Authorisation reads the current state on every request. */
   readonly consents: ConsentStore;
+  /**
+   * Clinical-store reads for the enrolment coordinator (ADR-0021 section 13). Only with a
+   * clinical database; without it the coordinator routes do not exist (fail closed).
+   */
+  readonly coordination?: EnrolmentCoordination;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
@@ -134,6 +140,8 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   registerHealthRoutes(app);
   registerHelloRoutes(app);
   registerMembershipRoutes(app, { memberships: deps.memberships, audit: deps.audit });
+  if (deps.coordination)
+    registerCoordinatorRoutes(app, { coordination: deps.coordination, audit: deps.audit });
   registerConsentRoutes(app, { consents: deps.consents });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
