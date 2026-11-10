@@ -63,6 +63,12 @@ export type CodeCheckResult =
       readonly cancelled: readonly string[];
     };
 
+/** A pending code of the same invitation, which a new code must differ from. */
+export interface PendingCode {
+  readonly binding: CodeBinding;
+  readonly sealed: SealedCode;
+}
+
 export type CodeMatcher = (
   code: string,
   binding: CodeBinding,
@@ -84,13 +90,41 @@ export class PostgresEnrolmentStore {
     this.#db = db;
   }
 
-  /** Stores a new transaction (from startTransaction) with its browser binding and code. */
+  /**
+   * Stores a new transaction (from startTransaction) with its browser binding, and returns its
+   * code. The code is drawn by `issue` while the invitation's guard row is held, from the codes
+   * of the transactions then awaiting confirmation, so concurrent starts on one invitation can
+   * never get the same code (ADR-0021 section 3). Refused while the invitation is locked.
+   */
   async create(
     tx: EnrolmentTransaction,
-    binding: { bindingHash: string; code: SealedCode },
+    bindingHash: string,
+    issue: (pending: readonly PendingCode[]) => Promise<{ code: string; sealed: SealedCode }>,
     audit: OutboxEvent,
-  ): Promise<void> {
-    await this.#db.transaction().execute(async (trx) => {
+  ): Promise<{ code: string }> {
+    return this.#db.transaction().execute(async (trx) => {
+      await trx
+        .insertInto('enrolment_invitation_guard')
+        .values({ invitation_id: tx.invitationId })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      await trx
+        .selectFrom('enrolment_invitation_guard')
+        .select('invitation_id')
+        .where('invitation_id', '=', tx.invitationId)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const pending = (await awaiting(trx, tx.invitationId, null)).flatMap((s) =>
+        s.code === null
+          ? []
+          : [
+              {
+                binding: { invitationId: tx.invitationId, transactionId: s.tx.id },
+                sealed: s.code,
+              },
+            ],
+      );
+      const { code, sealed } = await issue(pending);
       await trx
         .insertInto('enrolment_transaction')
         .values({
@@ -101,12 +135,13 @@ export class PostgresEnrolmentStore {
           started_at: tx.startedAt,
           expires_at: tx.expiresAt,
           state_deadline: tx.stateDeadline,
-          binding_hash: binding.bindingHash,
-          code_wrapped_key: binding.code.wrappedKey,
-          code_mac: binding.code.mac,
+          binding_hash: bindingHash,
+          code_wrapped_key: sealed.wrappedKey,
+          code_mac: sealed.mac,
         })
         .execute();
       await queue(trx, audit);
+      return { code };
     });
   }
 
@@ -190,12 +225,16 @@ export class PostgresEnrolmentStore {
         return { outcome: 'locked', lockedUntil: guard.locked_until, cancelled: [] };
 
       const pending = await awaiting(trx, entry.invitationId, entry.orgId);
-      let match: StoredTransaction | null = null;
+      const hits: StoredTransaction[] = [];
       for (const s of pending) {
         if (s.code === null || isOverdue(s.tx, now)) continue;
         const binding = { invitationId: entry.invitationId, transactionId: s.tx.id };
-        if ((await matches(entry.code, binding, s.code)) && match === null) match = s;
+        if (await matches(entry.code, binding, s.code)) hits.push(s);
       }
+      // Codes of one invitation are distinct (create), so two matches mean something is wrong:
+      // confirm neither, and change nothing.
+      if (hits.length > 1) throw new Error('an enrolment code matched more than one transaction');
+      const match = hits[0] ?? null;
 
       if (match !== null) {
         const before = match.tx;

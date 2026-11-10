@@ -26,6 +26,8 @@ const url = testDatabaseUrl();
 const SUBJECT = 'kc-subject-synthetic';
 const sealed = { wrappedKey: 'd3JhcHBlZA', mac: 'bWFj' };
 const binding = () => createHash('sha256').update(randomBytes(32)).digest('hex');
+/** A fixed stand-in code for tests that never check one. */
+const fixedCode = () => Promise.resolve({ code: '123456', sealed });
 
 describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', () => {
   let admin: pg.Pool;
@@ -107,7 +109,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
   async function newTransaction(now = new Date()) {
     const tx = startTransaction({ id: uuidv7(), invitationId: uuidv7(), orgId: uuidv7(), now });
     const started = audit('identity.enrolment.started', tx.id);
-    await store.create(tx, { bindingHash: binding(), code: sealed }, started);
+    await store.create(tx, binding(), fixedCode, started);
     return { tx, started };
   }
 
@@ -227,6 +229,18 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     expect((await store.get(tx.id))?.tx.status).toBe('awaiting-confirmation');
   });
 
+  it('refuses a stale deadline cancellation from the sweep', async () => {
+    const { tx } = await newTransaction();
+    const at = (min: number) => new Date(tx.startedAt.getTime() + min * 60_000);
+    expect(await store.listOverdue(at(16), 10_000)).toContain(tx.id);
+    // Before the sweep acts, the clinic confirms (at minute 10): a new 15-minute deadline.
+    await confirm(tx, at(10));
+    expect(
+      await store.apply(tx.id, { type: 'cancel', reason: 'deadline' }, () => at(16), auditStep),
+    ).toEqual({ ok: false, reason: 'not-overdue' });
+    expect((await store.get(tx.id))?.tx.status).toBe('confirmed');
+  });
+
   it('serialises concurrent events on one transaction: exactly one cancel changes it', async () => {
     const { tx } = await newTransaction();
     const results = await Promise.all(
@@ -259,25 +273,23 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
     const codes = new EnrolmentCodes(kms);
     const realCode: CodeMatcher = (c, b, s) => codes.matches(c, b, s);
 
+    /** Starts one transaction with a real code, drawn by `create` under the guard row. */
+    async function startOne(invitationId: string, orgId: string, issuer: EnrolmentCodes) {
+      const tx = startTransaction({ id: uuidv7(), invitationId, orgId, now: new Date() });
+      const { code } = await store.create(
+        tx,
+        binding(),
+        (pending) => issuer.issue({ invitationId, transactionId: tx.id }, pending),
+        audit('identity.enrolment.started', tx.id),
+      );
+      return { tx, code };
+    }
+
     /** Starts transactions on one invitation, each with a real code distinct from the others. */
     async function startOn(invitationId: string, orgId: string, n = 1) {
       const out: { tx: EnrolmentTransaction; code: string }[] = [];
       for (let i = 0; i < n; i++) {
-        const tx = startTransaction({ id: uuidv7(), invitationId, orgId, now: new Date() });
-        const pending = (await Promise.all(out.map((o) => store.get(o.tx.id)))).map((s, j) => ({
-          binding: { invitationId, transactionId: out[j]!.tx.id },
-          sealed: s!.code!,
-        }));
-        const { code, sealed: real } = await codes.issue(
-          { invitationId, transactionId: tx.id },
-          pending,
-        );
-        await store.create(
-          tx,
-          { bindingHash: binding(), code: real },
-          audit('identity.enrolment.started', tx.id),
-        );
-        out.push({ tx, code });
+        out.push(await startOne(invitationId, orgId, codes));
       }
       return out;
     }
@@ -296,6 +308,70 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
           [invitationId],
         )
       ).rows[0] as { wrong_attempts: number; locked_until: Date | null } | undefined;
+
+    it('gives concurrent starts on one invitation distinct codes', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      // The guard row must exist already: on a first start, inserting it alone would serialise
+      // the two starts. A wrong code creates it.
+      await store.confirmByCode(
+        { invitationId: inv, orgId: org, code: '999999' },
+        anyCode,
+        () => new Date(),
+        codeAudit,
+      );
+      // Every draw is 111111 until two have been made: unserialised starts would share it.
+      let draws = 0;
+      const colliding = new EnrolmentCodes(kms, () => (draws++ < 2 ? '111111' : '222222'));
+      // Force overlap: each start's draw waits (up to 1 s) for the other start to reach its draw.
+      // Serialised, the second is held at the guard row, so the first goes on after the wait.
+      let arrived = 0;
+      const start = (tx: EnrolmentTransaction) =>
+        store.create(
+          tx,
+          binding(),
+          async (pending) => {
+            arrived++;
+            for (let i = 0; i < 20 && arrived < 2; i++) await new Promise((r) => setTimeout(r, 50));
+            return colliding.issue({ invitationId: inv, transactionId: tx.id }, pending);
+          },
+          audit('identity.enrolment.started', tx.id),
+        );
+      const txs = [0, 1].map(() =>
+        startTransaction({ id: uuidv7(), invitationId: inv, orgId: org, now: new Date() }),
+      );
+      const [a, b] = await Promise.all(txs.map(start));
+      expect([a!.code, b!.code].sort()).toEqual(['111111', '222222']);
+    });
+
+    it('confirms nothing if a code ever matches two transactions', async () => {
+      const inv = uuidv7();
+      const org = uuidv7();
+      const one = startTransaction({
+        id: uuidv7(),
+        invitationId: inv,
+        orgId: org,
+        now: new Date(),
+      });
+      const two = startTransaction({
+        id: uuidv7(),
+        invitationId: inv,
+        orgId: org,
+        now: new Date(),
+      });
+      for (const tx of [one, two])
+        await store.create(tx, binding(), fixedCode, audit('identity.enrolment.started', tx.id));
+      await expect(
+        store.confirmByCode(
+          { invitationId: inv, orgId: org, code: '123456' },
+          anyCode,
+          () => new Date(),
+          codeAudit,
+        ),
+      ).rejects.toThrow(/more than one/);
+      for (const tx of [one, two])
+        expect((await store.get(tx.id))?.tx.status).toBe('awaiting-confirmation');
+    });
 
     it('confirms the transaction whose code was typed and cancels its siblings', async () => {
       const inv = uuidv7();
@@ -903,7 +979,7 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
 
     it('never changes a final transaction or its identity', async () => {
       const { tx } = await newTransaction();
-      await step(tx.id, { type: 'cancel', reason: 'deadline' });
+      await step(tx.id, { type: 'cancel', reason: 'patient-cancelled' });
       await expect(
         admin.query(`UPDATE enrolment_transaction SET binding_hash = $2 WHERE id = $1`, [
           tx.id,
@@ -952,17 +1028,14 @@ describe.skipIf(!url)('REQ-001, RISK-S05 ADR-0021 enrolment transaction store', 
         now: new Date(),
       });
       await expect(
-        store.create(
-          { ...tx, status: 'confirmed' },
-          { bindingHash: binding(), code: sealed },
-          audit('x', tx.id),
-        ),
+        store.create({ ...tx, status: 'confirmed' }, binding(), fixedCode, audit('x', tx.id)),
       ).rejects.toThrow(/starts awaiting confirmation|check constraint/);
       const old = new Date(Date.now() - 10 * 60_000);
       await expect(
         store.create(
           startTransaction({ id: uuidv7(), invitationId: uuidv7(), orgId: uuidv7(), now: old }),
-          { bindingHash: binding(), code: sealed },
+          binding(),
+          fixedCode,
           audit('x', uuidv7()),
         ),
       ).rejects.toThrow(/start time is not now/);
