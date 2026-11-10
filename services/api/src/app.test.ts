@@ -122,6 +122,7 @@ describe('GET /v1/hello (M0 walking skeleton, spec 2.5, 2.6)', () => {
     const failing = new AuditWriter({
       head: () => Promise.resolve(null),
       append: () => Promise.reject(new Error('audit store down')),
+      appendNext: () => Promise.reject(new Error('audit store down')),
       readRange: () => Promise.resolve([]),
     });
     const { app, bearer } = await setup({ audit: failing });

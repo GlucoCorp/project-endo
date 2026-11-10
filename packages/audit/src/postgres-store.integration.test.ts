@@ -54,8 +54,12 @@ describe.skipIf(!url)('RISK-R01 PostgresAuditStore (spec 2.6, 12.9)', () => {
 
   it('keeps one valid chain when several processes write at once', async () => {
     // Separate writers (no shared in-process queue) behave like separate service instances.
-    const writers = Array.from({ length: 4 }, () => new AuditWriter(new PostgresAuditStore(db)));
-    await Promise.all(writers.flatMap((w) => [w.write(input()), w.write(input())]));
+    // appendNext is exclusive across processes, so no writer can be starved by the others.
+    const writers = Array.from({ length: 8 }, () => new AuditWriter(new PostgresAuditStore(db)));
+    const written = await Promise.all(
+      writers.flatMap((w) => [w.write(input()), w.write(input()), w.write(input())]),
+    );
+    expect(written).toHaveLength(24);
     const events = await new PostgresAuditStore(db).readRange(1, 1000);
     expect(verifyChain(events).ok).toBe(true);
   });

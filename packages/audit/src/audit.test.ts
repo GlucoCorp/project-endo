@@ -93,10 +93,17 @@ describe('RISK-R01 hash-chained audit log (spec 12.9)', () => {
   it('a failed append does not poison later writes', async () => {
     const store = new InMemoryAuditStore();
     let fail = true;
+    const append = (e: AuditEvent) =>
+      fail ? Promise.reject(new Error('db down')) : store.append(e);
     const flaky = {
       head: () => store.head(),
       readRange: (a: number, b: number) => store.readRange(a, b),
-      append: (e: AuditEvent) => (fail ? Promise.reject(new Error('db down')) : store.append(e)),
+      append,
+      appendNext: async (build: (head: AuditEvent | null) => AuditEvent) => {
+        const e = build(await store.head());
+        await append(e);
+        return e;
+      },
     };
     const writer = new AuditWriter(flaky);
     await expect(writer.write(input())).rejects.toThrow('db down');
@@ -141,11 +148,18 @@ describe('cross-process sequence conflicts', () => {
   function racingStore(conflicts: number) {
     const store = new InMemoryAuditStore();
     let remaining = conflicts;
+    // A writer outside the exclusive lock (e.g. an older version) keeps winning the race.
+    const append = (e: AuditEvent) =>
+      remaining-- > 0 ? Promise.reject(new AuditSequenceConflictError()) : store.append(e);
     return {
       head: () => store.head(),
       readRange: (a: number, b: number) => store.readRange(a, b),
-      append: (e: AuditEvent) =>
-        remaining-- > 0 ? Promise.reject(new AuditSequenceConflictError()) : store.append(e),
+      append,
+      appendNext: async (build: (head: AuditEvent | null) => AuditEvent) => {
+        const e = build(await store.head());
+        await append(e);
+        return e;
+      },
       store,
     };
   }

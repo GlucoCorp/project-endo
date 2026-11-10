@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AuditEvent } from './schema.ts';
 import { AuditSequenceConflictError, type AuditStore } from './writer.ts';
 
@@ -58,44 +58,27 @@ export class PostgresAuditStore implements AuditStore {
     this.#db = db;
   }
 
-  async head(): Promise<AuditEvent | null> {
-    const row = await this.#db
-      .selectFrom('audit_event')
-      .selectAll()
-      .orderBy('sequence', 'desc')
-      .limit(1)
-      .executeTakeFirst();
-    return row ? toEvent(row) : null;
+  head(): Promise<AuditEvent | null> {
+    return readHead(this.#db);
+  }
+
+  /**
+   * One transaction holding a transaction-scoped advisory lock, so writers in every process queue
+   * here: the head read inside the lock is still the head when the event is inserted.
+   */
+  async appendNext(build: (head: AuditEvent | null) => AuditEvent): Promise<AuditEvent> {
+    return this.#db.transaction().execute(async (trx) => {
+      await sql`SELECT pg_advisory_xact_lock(hashtextextended('endo-audit-append', 0))`.execute(
+        trx,
+      );
+      const event = build(await readHead(trx));
+      await insert(trx, event);
+      return event;
+    });
   }
 
   async append(event: AuditEvent): Promise<void> {
-    try {
-      await this.#db
-        .insertInto('audit_event')
-        .values({
-          sequence: String(event.sequence),
-          id: event.id,
-          occurred_at: new Date(event.occurred_at),
-          prev_hash: event.prev_hash,
-          hash: event.hash,
-          actor_id: event.actor.id,
-          actor_role: event.actor.role,
-          action: event.action,
-          resource_type: event.resource.type,
-          resource_id: event.resource.id,
-          org_id: event.org_id,
-          purpose_of_use: event.purpose_of_use,
-          outcome: event.outcome,
-          reason: event.reason,
-          request_id: event.request_id,
-        })
-        .execute();
-    } catch (error) {
-      if ((error as { code?: string }).code === PG_UNIQUE_VIOLATION) {
-        throw new AuditSequenceConflictError();
-      }
-      throw error;
-    }
+    await insert(this.#db, event);
   }
 
   async readRange(fromSequence: number, limit: number): Promise<readonly AuditEvent[]> {
@@ -107,5 +90,47 @@ export class PostgresAuditStore implements AuditStore {
       .limit(limit)
       .execute();
     return rows.map(toEvent);
+  }
+}
+
+type Db = Kysely<AuditDatabase> | Transaction<AuditDatabase>;
+
+async function readHead(db: Db): Promise<AuditEvent | null> {
+  const row = await db
+    .selectFrom('audit_event')
+    .selectAll()
+    .orderBy('sequence', 'desc')
+    .limit(1)
+    .executeTakeFirst();
+  return row ? toEvent(row) : null;
+}
+
+async function insert(db: Db, event: AuditEvent): Promise<void> {
+  try {
+    await db
+      .insertInto('audit_event')
+      .values({
+        sequence: String(event.sequence),
+        id: event.id,
+        occurred_at: new Date(event.occurred_at),
+        prev_hash: event.prev_hash,
+        hash: event.hash,
+        actor_id: event.actor.id,
+        actor_role: event.actor.role,
+        action: event.action,
+        resource_type: event.resource.type,
+        resource_id: event.resource.id,
+        org_id: event.org_id,
+        purpose_of_use: event.purpose_of_use,
+        outcome: event.outcome,
+        reason: event.reason,
+        request_id: event.request_id,
+      })
+      .execute();
+  } catch (error) {
+    if ((error as { code?: string }).code === PG_UNIQUE_VIOLATION) {
+      throw new AuditSequenceConflictError();
+    }
+    throw error;
   }
 }
