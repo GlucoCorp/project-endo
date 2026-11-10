@@ -11,7 +11,9 @@
 // An accepted entry names the tool, the rule, the file and the exact (trimmed) source line, with
 // a justification and who approved it. It matches only that line's text: if the line changes, the
 // finding blocks again. Accepted findings are still printed (as notices). An entry that matches no
-// finding fails the run, so the list cannot quietly outlive its reason. Changes to the file are
+// finding is reported as a warning, not a failure: on pull requests CodeQL reports only findings in
+// the changed lines (diff-informed analysis), so an entry for an untouched file is expected to match
+// nothing there. Full analyses on main show which entries are truly stale. Changes to the file are
 // reviewed like code (CODEOWNERS covers .github/).
 // Usage: node tools/sarif-report.mjs <title> <file.sarif> [more.sarif …]
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
@@ -107,7 +109,7 @@ for (const f of findings) {
 const stale = relevant.filter((_, i) => !used.has(i));
 for (const a of stale) {
   console.log(
-    `::error title=${escProp(title)}::accepted entry matches no finding (remove it): ${esc(`${a.rule} ${a.file}`)}`,
+    `::warning title=${escProp(title)}::accepted entry matches no finding in this run (remove it if a full analysis on main agrees): ${esc(`${a.rule} ${a.file}`)}`,
   );
 }
 
@@ -134,4 +136,4 @@ if (summary) {
 console.log(
   `${title}: ${blocking.length} blocking, ${findings.length - blocking.length} accepted, ${stale.length} stale`,
 );
-process.exit(blocking.length === 0 && stale.length === 0 ? 0 : 1);
+process.exit(blocking.length === 0 ? 0 : 1);
