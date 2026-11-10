@@ -1,0 +1,87 @@
+/* Generated from packages/ui/src/tokens/tokens.ts by `pnpm --filter @endo/ui tokens:css`. Do not edit. */
+:root {
+  color-scheme: light dark;
+  --surface: #f2f4f3;
+  --surface-raised: #ffffff;
+  --ink: #1e2422;
+  --ink-muted: #56625e;
+  --rule: #d3d9d6;
+  --action: #0e5a52;
+  --on-action: #ffffff;
+  --control-border: #56625e;
+  --focus-ring: #0e5a52;
+  --lane-benefit: #2e6b4a;
+  --lane-side-effects: #8a5a08;
+  --lane-taken: #34508f;
+  --lane-barriers: #6a4f86;
+  --critical: #a0102c;
+  --font-body: 'Atkinson Hyperlegible Next', system-ui, sans-serif;
+  --font-reading: 'Literata', Georgia, serif;
+  --text-xs: 0.8125rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.375rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.25rem;
+  --line-height-body: 1.5;
+  --line-height-title: 1.2;
+  --measure: 66ch;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-48: 48px;
+  --space-64: 64px;
+  --radius-control: 4px;
+  --radius-sheet: 12px;
+  --motion-state: 150ms ease-out;
+  --motion-sheet: 220ms ease-out;
+  --focus-width: 3px;
+  --focus-offset: 2px;
+  --target-min: 44px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #151918;
+    --surface-raised: #1d2221;
+    --ink: #e7ecea;
+    --ink-muted: #a3afab;
+    --rule: #2e3533;
+    --action: #5fc2b5;
+    --on-action: #151918;
+    --control-border: #a3afab;
+    --focus-ring: #5fc2b5;
+    --lane-benefit: #6fc79a;
+    --lane-side-effects: #e3b04f;
+    --lane-taken: #8ea8e8;
+    --lane-barriers: #bba2d8;
+    --critical: #ff7a8f;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --ink-muted: #323b38;
+    --rule: #56625e;
+    --control-border: #1e2422;
+  }
+}
+
+@media (prefers-contrast: more) and (prefers-color-scheme: dark) {
+  :root {
+    --ink-muted: #d3dbd8;
+    --rule: #a3afab;
+    --control-border: #e7ecea;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-state: 0ms linear;
+    --motion-sheet: 0ms linear;
+  }
+}

@@ -938,7 +938,7 @@ The **Trial Card** wraps the strip with: treatment name and dose (Atkinson, semi
 
 ### 21.12 Design deliverables before UI code
 
-1. Token file and contrast test (`packages/ui/tokens`).
+1. Token file and contrast test (`packages/ui/tokens`). **Built (2026-11-10):** `packages/ui` (`@endo/ui/tokens`, `tokens.css`); every pairing passes in light, dark and more-contrast modes.
 2. Trial Strip prototype with three synthetic patients (working, not taken enough, not tolerated), reviewed by a clinician and two women from the patient panel.
 3. Check-in flow prototype tested for under-30-second completion.
 4. Review desk prototype tested with two clinicians.
