@@ -58,7 +58,11 @@ if (!Array.isArray(accepted)) {
   process.exit(2);
 }
 for (const [i, a] of accepted.entries()) {
-  const missing = FIELDS.filter((k) => typeof a?.[k] !== 'string' || a[k].trim() === '');
+  const fields = new Map(Object.entries(a ?? {}));
+  const missing = FIELDS.filter((k) => {
+    const v = fields.get(k);
+    return typeof v !== 'string' || v.trim() === '';
+  });
   if (missing.length > 0) {
     console.log(
       `::error title=${escProp(title)}::${esc(ACCEPTED_FILE)} entry ${i} lacks ${missing.join(', ')}`,
@@ -87,7 +91,7 @@ for (const f of findings) {
   );
   if (match >= 0) {
     used.add(match);
-    f.accepted = relevant[match];
+    f.accepted = relevant.at(match);
     console.log(`${f.tool} ${f.rule}: ${f.file}:${f.line} ACCEPTED (${f.accepted.justification})`);
     console.log(
       `::notice file=${escProp(f.file)},line=${f.line},title=${escProp(`${f.tool}: ${f.rule} (accepted)`)}::${esc(f.accepted.justification)}`,
