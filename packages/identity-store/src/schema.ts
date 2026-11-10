@@ -23,6 +23,28 @@ export interface IdentityDatabase {
   };
   /** Migration 0002 (spec 2.6). The service may only insert; the relay reads and acknowledges. */
   audit_outbox: AuditOutboxTable;
+  /** Migration 0003 (ADR-0021 section 10). The database refuses transitions the machine forbids. */
+  enrolment_transaction: {
+    id: string;
+    invitation_id: string;
+    org_id: string;
+    status: string;
+    started_at: Date;
+    expires_at: Date;
+    state_deadline: Date | null;
+    binding_hash: string;
+    code_wrapped_key: string | null;
+    code_mac: string | null;
+    provisional_subject: string | null;
+    decisions: unknown;
+    person_id: string | null;
+    patient_id: string | null;
+    cancel_requested: string | null;
+    cancel_reason: string | null;
+    activation_step: Generated<number>;
+    version: Generated<number>;
+    updated_at: Generated<Date>;
+  };
   patient_link: {
     person_id: string;
     patient_record_id: string;

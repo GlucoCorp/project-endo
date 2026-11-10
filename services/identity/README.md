@@ -19,7 +19,9 @@ The identity service coordinates patient enrolment. Built so far:
 - `src/enrolment/state-machine.ts`: the pure transaction state machine (ADR-0021 section 10), including per-state deadlines capped by a 60-minute absolute deadline, the cancellable `claiming` step, and forward-only activation.
 - `src/enrolment/code.ts`: the 6-digit confirmation code (section 3). It is drawn with a secure generator, distinct from the invitation's other pending codes, and verified in constant time by an HMAC under its own `kms/identity` data key, bound to the invitation and transaction.
 
-Persistence, routes and the audit outbox come in later slices.
+- `src/enrolment/store.ts`: `PostgresEnrolmentStore` (identity migration 0003). Every change is decided by the state machine under a row lock and written with its audit event in one transaction. The database also refuses transitions outside the section 10 table, changes to a final transaction or its identity, and rewrites of decisions or claim ids.
+
+The code check and wrong-code limits, routes and the deadline sweep come in later slices.
 
 ## Rules
 
