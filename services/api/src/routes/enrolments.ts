@@ -165,12 +165,22 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentRou
       },
     }) as const;
 
-  /** GET /v1/enrolments: the organisation's open invitations (ids and times; never tokens). */
+  /**
+   * GET /v1/enrolments: the organisation's open invitations (ids and times; never tokens), and
+   * those accepted in the last 30 days with only her sharing decision (REQ-001 acceptance: a
+   * declined `share_with_care_team` shows only "invitation accepted, sharing declined").
+   */
   app.get('/v1/enrolments', { config: { policy: own('enrolment.read') } }, async (request) => {
     const orgId = request.subject?.orgId;
     if (!orgId) throw new ProblemError(403, 'authz.org_mismatch', 'Not allowed.');
     const open = await deps.invitations.listOpen(orgId);
+    const accepted = await deps.invitations.listAccepted(orgId);
     return {
+      accepted: accepted.map((a) => ({
+        id: a.id,
+        accepted_at: a.acceptedAt.toISOString(),
+        sharing: a.sharing,
+      })),
       invitations: open.map((i) => ({
         id: i.id,
         created_at: i.createdAt.toISOString(),

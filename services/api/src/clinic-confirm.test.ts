@@ -101,6 +101,24 @@ describe('REQ-001 ADR-0021 sections 2 and 3: the clinician lists invitations and
     expect(res.body).not.toContain('a'.repeat(64));
   });
 
+  it('REQ-001 lists accepted invitations with only the sharing decision, own organisation only', async () => {
+    const { app, auth, invitations } = await setup();
+    const at = (min: number) => new Date(Date.now() - min * 60_000);
+    const [early, late, other] = [at(9), at(5), at(1)];
+    const id = (n: number) => `01900000-0000-7000-8000-0000000000e${String(n)}`;
+    invitations.accepted.push(
+      { id: id(1), orgId: ORG, acceptedAt: early, sharing: 'shared' },
+      { id: id(2), orgId: ORG, acceptedAt: late, sharing: 'declined' },
+      { id: id(3), orgId: OTHER_ORG, acceptedAt: other, sharing: 'declined' },
+    );
+    const res = await app.inject({ url: '/v1/enrolments', headers: await auth() });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ accepted: unknown[] }>().accepted).toEqual([
+      { id: id(2), accepted_at: late.toISOString(), sharing: 'declined' },
+      { id: id(1), accepted_at: early.toISOString(), sharing: 'shared' },
+    ]);
+  });
+
   it('passes the code, the organisation and the clinician to identity, with the attestation', async () => {
     const { confirm, asked, audit } = await setup();
     const res = await confirm(good);

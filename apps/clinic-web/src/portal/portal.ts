@@ -19,6 +19,20 @@ export interface Invitation {
   readonly inUse: boolean;
 }
 
+/** REQ-001: accepted, and whether she shares with the care team. Nothing that says who she is. */
+export interface AcceptedInvitation {
+  readonly id: string;
+  readonly acceptedAt: string;
+  readonly sharing: 'shared' | 'declined' | 'pending';
+}
+
+export interface InvitationLists {
+  readonly open: readonly Invitation[];
+  readonly accepted: readonly AcceptedInvitation[];
+}
+
+const SHARING: ReadonlySet<string> = new Set(['shared', 'declined', 'pending']);
+
 export type SessionView =
   | { readonly kind: 'signed-out' }
   | { readonly kind: 'choose-org'; readonly organisations: readonly Organisation[] }
@@ -99,13 +113,27 @@ export class Portal {
     }
   }
 
-  async invitations(): Promise<Invitation[] | null> {
+  async invitations(): Promise<InvitationLists | null> {
     try {
       const res = await this.#fetch('/v1/enrolments', { credentials: 'same-origin' });
       if (!res.ok) return null;
-      const b = (await res.json()) as { invitations?: unknown };
-      if (!Array.isArray(b.invitations)) return null;
-      return (b.invitations as Record<string, unknown>[]).flatMap((i) =>
+      const b = (await res.json()) as { invitations?: unknown; accepted?: unknown };
+      if (!Array.isArray(b.invitations) || !Array.isArray(b.accepted)) return null;
+      const accepted = (b.accepted as Record<string, unknown>[]).flatMap((a) =>
+        typeof a['id'] === 'string' &&
+        typeof a['accepted_at'] === 'string' &&
+        typeof a['sharing'] === 'string' &&
+        SHARING.has(a['sharing'])
+          ? [
+              {
+                id: a['id'],
+                acceptedAt: a['accepted_at'],
+                sharing: a['sharing'] as AcceptedInvitation['sharing'],
+              },
+            ]
+          : [],
+      );
+      const open = (b.invitations as Record<string, unknown>[]).flatMap((i) =>
         typeof i['id'] === 'string' &&
         typeof i['created_at'] === 'string' &&
         typeof i['expires_at'] === 'string' &&
@@ -120,6 +148,7 @@ export class Portal {
             ]
           : [],
       );
+      return { open, accepted };
     } catch {
       return null;
     }

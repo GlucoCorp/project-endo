@@ -97,6 +97,7 @@ async function setup(api: (req: Request) => Response | Promise<Response>, confir
   return { app, seen, active, confirm, verifier };
 }
 
+const ACCEPTED = '01900000-0000-7000-8000-0000000000e1';
 const good = { code: '123456', identified: true, own_phone: true };
 
 describe('REQ-001 ADR-0021 slice 3: the clinic portal lists invitations and confirms by code', () => {
@@ -111,6 +112,9 @@ describe('REQ-001 ADR-0021 slice 3: the clinic portal lists invitations and conf
             in_use: false,
           },
         ],
+        accepted: [
+          { id: ACCEPTED, accepted_at: '2026-11-11T10:00:00Z', sharing: 'declined', extra: 'x' },
+        ],
       }),
     );
     const res = await app.inject({ url: '/v1/enrolments', headers: { cookie: active } });
@@ -124,9 +128,20 @@ describe('REQ-001 ADR-0021 slice 3: the clinic portal lists invitations and conf
           in_use: false,
         },
       ],
+      accepted: [{ id: ACCEPTED, accepted_at: '2026-11-11T10:00:00Z', sharing: 'declined' }],
     });
     const claims = await verifier.verifyHeader(seen[0]?.headers.get('authorization') ?? undefined);
     expect(claims).toMatchObject({ sub: PERSON, role: 'clinician', org_id: ORG, patient_id: null });
+  });
+
+  it.each([
+    [{ invitations: [] }],
+    [{ invitations: [], accepted: [{ id: ACCEPTED, accepted_at: 'x', sharing: 'unknown' }] }],
+    [{ invitations: [], accepted: [{ id: 'nope', accepted_at: 'x', sharing: 'shared' }] }],
+  ])('REQ-001 refuses a malformed accepted list from the API: %o', async (body) => {
+    const { app, active } = await setup(() => json(200, body));
+    const res = await app.inject({ url: '/v1/enrolments', headers: { cookie: active } });
+    expect(res.statusCode).toBe(502);
   });
 
   it('confirms by code, passing the attestation on to the API', async () => {

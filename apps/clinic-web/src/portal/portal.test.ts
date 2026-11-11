@@ -71,21 +71,26 @@ describe('ADR-0019, ADR-0021 slice 3: clinic portal logic', () => {
     expect(await p.chooseOrganisation(0)).toEqual({ kind: 'error', message: 'common.try-later' });
   });
 
-  it('lists invitations, dropping malformed rows, or reports failure', async () => {
+  it('REQ-001 lists open and accepted invitations, dropping malformed rows, or reports failure', async () => {
     const { p } = portal([
       json(200, {
         invitations: [
           { id: INV, created_at: 'c', expires_at: 'e', in_use: false },
           { id: 1, created_at: 'c' },
         ],
+        accepted: [
+          { id: INV, accepted_at: 'a', sharing: 'declined' },
+          { id: INV, accepted_at: 'a', sharing: 'maybe' },
+        ],
       }),
-      json(200, {}),
+      json(200, { invitations: [] }),
       json(500, {}),
       new TypeError('offline'),
     ]);
-    expect(await p.invitations()).toEqual([
-      { id: INV, createdAt: 'c', expiresAt: 'e', inUse: false },
-    ]);
+    expect(await p.invitations()).toEqual({
+      open: [{ id: INV, createdAt: 'c', expiresAt: 'e', inUse: false }],
+      accepted: [{ id: INV, acceptedAt: 'a', sharing: 'declined' }],
+    });
     expect(await p.invitations()).toBeNull();
     expect(await p.invitations()).toBeNull();
     expect(await p.invitations()).toBeNull();

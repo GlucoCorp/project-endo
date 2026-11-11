@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { t } from '../i18n.ts';
-import { Portal, type ConfirmResult, type Invitation, type SessionView } from './portal.ts';
+import {
+  Portal,
+  type AcceptedInvitation,
+  type ConfirmResult,
+  type Invitation,
+  type SessionView,
+} from './portal.ts';
 import styles from './portal.module.css';
 
 const day = (iso: string) =>
@@ -61,7 +67,8 @@ export function PortalPage() {
 }
 
 function Enrolments({ portal }: { portal: Portal }) {
-  const [invitations, setInvitations] = useState<Invitation[] | null>(null);
+  const [invitations, setInvitations] = useState<readonly Invitation[] | null>(null);
+  const [accepted, setAccepted] = useState<readonly AcceptedInvitation[]>([]);
   const [failed, setFailed] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [code, setCode] = useState('');
@@ -71,9 +78,10 @@ function Enrolments({ portal }: { portal: Portal }) {
   const [busy, setBusy] = useState(false);
 
   const load = () => {
-    void portal.invitations().then((list) => {
-      setFailed(list === null);
-      setInvitations(list ?? []);
+    void portal.invitations().then((lists) => {
+      setFailed(lists === null);
+      setInvitations(lists?.open ?? []);
+      setAccepted(lists?.accepted ?? []);
     });
   };
   useEffect(load, [portal]);
@@ -190,6 +198,19 @@ function Enrolments({ portal }: { portal: Portal }) {
             {t('clinic.confirm')}
           </button>
         </form>
+      )}
+      {!failed && accepted.length > 0 && (
+        <>
+          <h2 className={styles['subtitle']}>{t('clinic.accepted-title')}</h2>
+          <ul className={styles['list']}>
+            {accepted.map((a) => (
+              <li key={a.id} className={styles['invitation']}>
+                {t('clinic.accepted', { day: day(a.acceptedAt) })}{' '}
+                <span className={styles['muted']}>{t(`clinic.sharing-${a.sharing}`)}</span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </>
   );
