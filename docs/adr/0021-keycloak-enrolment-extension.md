@@ -87,6 +87,7 @@ endo patient browser (top level)
 - On success it ignores any existing authenticated user. It creates, or on a bound retry resumes, exactly one provisional user with an opaque username and the attribute `endo_enrolment=<transaction id>`.
 - A **resume** reference (section 11) authenticates only that same provisional user, with the passkey she has just registered.
 - Ordinary login (alternatives 2 and 3) refuses users who carry `endo_enrolment`, enforced by the extension's user-storage guard. Until activation (section 10), a provisional user cannot sign in any other way.
+- **As built (ADR-0025, 2026-11-11):** Keycloak cannot run a REQUIRED step after top-level alternatives, so the tree is: `endo passkey browser` = [`endo patient sign-in` sub-flow REQUIRED: (`endo-enrolment`, `auth-cookie`, `webauthn-authenticator-passwordless`, all ALTERNATIVE), then `endo-quarantine-guard` REQUIRED]. The guard is an authenticator, not a user-storage provider: a user still carrying `endo_enrolment` may finish only the sign-in that redeemed that transaction. `check:realm` asserts this exact tree, and that `webauthn-register-passwordless` is disabled and `endo-enrolment-passkey` enabled.
 
 ### 8. Guarded registration
 
