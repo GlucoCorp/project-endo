@@ -92,6 +92,26 @@ public class IdentityClient {
     }
   }
 
+  /**
+   * ADR-0021 section 8: may this provisional user register a passkey for this transaction now?
+   * False for any refusal or failure (the registration is then refused, closed).
+   */
+  public boolean registrationAllowed(String transactionId, String subject) {
+    if (!UUID_RE.matcher(transactionId).matches() || !UUID_RE.matcher(subject).matches()) return false;
+    try {
+      return post(
+                  "/internal/v1/enrolment/transactions/" + transactionId + "/registration-check",
+                  Map.of("subject", subject))
+              .statusCode()
+          == 200;
+    } catch (IOException | GeneralSecurityException e) {
+      return false;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+  }
+
   /** Reports the committed passkey (ADR-0021 section 10). True when the coordinator accepted it. */
   public boolean credentialCommitted(String transactionId) {
     if (!UUID_RE.matcher(transactionId).matches()) return false;

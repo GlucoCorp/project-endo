@@ -4,6 +4,7 @@ import { uuidv7 } from '@endo/domain';
 import { CONSENT_PURPOSES, type ConsentPurpose } from '@endo/authz';
 import { ProblemError } from '@endo/service-kit';
 import type { ConsentDecisions } from './state-machine.ts';
+import { ClinicalUnavailableError } from './clinical.ts';
 import {
   boundTransaction,
   enrolmentAudit,
@@ -70,6 +71,45 @@ const binding = (b: BindingBody) => ({
  * the BFF's callback then moves her on to consent.
  */
 export function registerHandoffRoutes(app: FastifyInstance, deps: HandoffRouteDeps): void {
+  /**
+   * A handoff needs the clinical store's reservation (identity migration 0007). If the confirm
+   * route could not learn the outcome (a timeout), ask again now: reserving is idempotent per
+   * transaction. Refused means the invitation is revoked, expired or held by another transaction:
+   * the transaction is cancelled. Unreachable fails closed.
+   */
+  const ensureReserved = async (id: string, requestId: string): Promise<void> => {
+    if (await deps.store.isReserved(id)) return;
+    const stored = await deps.store.get(id);
+    if (stored?.tx.status !== 'confirmed') return; // createHandoff refuses it in any case.
+    const tx = stored.tx;
+    let out: 'done' | 'refused';
+    try {
+      out = await deps.clinical.reserve({
+        orgId: tx.orgId,
+        invitationId: tx.invitationId,
+        transactionId: tx.id,
+      });
+    } catch (error) {
+      if (error instanceof ClinicalUnavailableError)
+        throw new ProblemError(503, 'upstream.unavailable', 'Try again later.');
+      throw error;
+    }
+    if (out === 'done') {
+      await deps.store.recordReservation(
+        tx.id,
+        enrolmentAudit('identity.enrolment.reserved', tx, requestId),
+      );
+      return;
+    }
+    await deps.store.apply(
+      tx.id,
+      { type: 'cancel', reason: 'claim-refused' },
+      deps.now,
+      (_, after) => enrolmentAudit('identity.enrolment.cancelled', after, requestId),
+    );
+    throw new ProblemError(409, 'enrolment.unavailable', 'This invitation can no longer be used.');
+  };
+
   app.post(
     '/internal/v1/enrolment/transactions/:id/handoff',
     {
@@ -91,6 +131,7 @@ export function registerHandoffRoutes(app: FastifyInstance, deps: HandoffRouteDe
       // Only this deployment's identity provider (single-issuer invariant).
       if (b.issuer !== deps.issuer)
         throw new ProblemError(400, 'request.invalid', 'Unknown identity provider.');
+      if (b.kind === 'enrol') await ensureReserved(id, request.id);
       const ref = randomBytes(32).toString('base64url');
       const created = await deps.store.createHandoff(
         { ...binding(b), refHash: sha256Hex(ref), transactionId: id },
@@ -157,6 +198,36 @@ export function registerHandoffRoutes(app: FastifyInstance, deps: HandoffRouteDe
         provisional_subject: result.provisionalSubject,
         kind: result.kind,
       };
+    },
+  );
+
+  /**
+   * ADR-0021 section 8: Keycloak asks before showing the passkey challenge and again before
+   * accepting the answer. Only a transaction still `redeemed`, for this provisional user, before
+   * its deadline, may register a passkey; a cancellation from another tab stops it at once.
+   */
+  app.post(
+    '/internal/v1/enrolment/transactions/:id/registration-check',
+    {
+      config: {
+        access: access(KEYCLOAK_SCOPE, 'identity.enrolment.registration_check', txIdParam),
+      },
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['subject'],
+          properties: { subject: { type: 'string', pattern: UUID } },
+        },
+      },
+    },
+    async (request) => {
+      const { id } = request.params as { id: string };
+      const { subject } = request.body as { subject: string };
+      if (!(await deps.store.registrationAllowed(id, subject, deps.now())))
+        throw new ProblemError(409, 'enrolment.wrong_state', 'Not in that state.');
+      return { allowed: true };
     },
   );
 
