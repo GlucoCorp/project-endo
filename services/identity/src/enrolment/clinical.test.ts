@@ -92,4 +92,67 @@ describe('REQ-001 ADR-0021 identity -> API invitation lookup client', () => {
         ClinicalUnavailableError,
       );
   });
+
+  it('claims and writes consents with the coordinate scope, failing closed', async () => {
+    const tx = '01900000-0000-7000-8000-0000000000f1';
+    const patient = '01900000-0000-7000-8000-0000000000f2';
+    const person = '01900000-0000-7000-8000-0000000000f3';
+    const claim = {
+      orgId: ORG,
+      invitationId: INVITATION,
+      transactionId: tx,
+      patientId: patient,
+      identityRef: person,
+    };
+    const ok = await client(() => json(200, { outcome: 'done', changed: true, state: {} }));
+    expect(await ok.c.claim(claim)).toBe('done');
+    expect(ok.seen[0]?.url).toBe('http://api.test/internal/v1/enrolment/invitations/claim');
+    expect(await ok.seen[0]?.json()).toEqual({
+      org_id: ORG,
+      invitation_id: INVITATION,
+      transaction_id: tx,
+      patient_id: patient,
+      identity_ref: person,
+    });
+    expect(await (await client(() => json(200, { outcome: 'refused' }))).c.claim(claim)).toBe(
+      'refused',
+    );
+    for (const bad of [
+      () => json(500, {}),
+      () => json(200, { outcome: 'x' }),
+      () => Promise.reject(new TypeError('down')),
+    ])
+      await expect((await client(bad)).c.claim(claim)).rejects.toBeInstanceOf(
+        ClinicalUnavailableError,
+      );
+
+    const chosen = new Date('2026-11-11T11:00:00Z');
+    const consents = {
+      orgId: ORG,
+      patientId: patient,
+      decisions: [
+        { purpose: 'self_tracking', status: 'granted' as const, version: 1, chosenAt: chosen },
+      ],
+    };
+    const written = await client(() => json(200, { written: 1 }));
+    await written.c.consents(consents);
+    expect(await written.seen[0]?.json()).toEqual({
+      org_id: ORG,
+      patient_id: patient,
+      decisions: [
+        {
+          purpose: 'self_tracking',
+          status: 'granted',
+          version: 1,
+          chosen_at: chosen.toISOString(),
+        },
+      ],
+    });
+    await expect((await client(() => json(500, {}))).c.consents(consents)).rejects.toBeInstanceOf(
+      ClinicalUnavailableError,
+    );
+    await expect(
+      (await client(() => Promise.reject(new TypeError('down')))).c.consents(consents),
+    ).rejects.toBeInstanceOf(ClinicalUnavailableError);
+  });
 });

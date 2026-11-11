@@ -12,7 +12,15 @@ import {
 } from '@endo/service-kit';
 import { buildIdentity } from '../app.ts';
 import { InMemoryPersonStore } from '../persons.ts';
-import { ClinicalUnavailableError, type ClinicalClient, type LiveInvitation } from './clinical.ts';
+import {
+  ClinicalUnavailableError,
+  type ClaimInput,
+  type ClinicalClient,
+  type ConsentsInput,
+  type LiveInvitation,
+} from './clinical.ts';
+import { Activator } from './activation.ts';
+import { enrolmentAudit } from './routes.ts';
 import { EnrolmentCodes } from './code.ts';
 import { PostgresEnrolmentStore } from './store.ts';
 import { setupIdentityTestDb, type TestIdentityDb } from './test-db.ts';
@@ -40,11 +48,24 @@ describe.skipIf(!url)(
     /** What the fake API answers to the next reserve: done, refused, or down. */
     let reserveAnswer: 'done' | 'refused' | 'down' = 'done';
     const reserved: string[] = [];
+    let claimAnswer: 'done' | 'refused' | 'down' = 'done';
+    const claimed: ClaimInput[] = [];
+    const consentsWritten: ConsentsInput[] = [];
     const clinical: ClinicalClient = {
       find: (h) =>
         apiDown
           ? Promise.reject(new ClinicalUnavailableError())
           : Promise.resolve(links.get(h) ?? null),
+      claim: (r) => {
+        claimed.push(r);
+        return claimAnswer === 'down'
+          ? Promise.reject(new ClinicalUnavailableError())
+          : Promise.resolve(claimAnswer);
+      },
+      consents: (r) => {
+        consentsWritten.push(r);
+        return Promise.resolve();
+      },
       reserve: (r) => {
         reserved.push(r.transactionId);
         return reserveAnswer === 'down'
@@ -515,6 +536,230 @@ describe.skipIf(!url)(
           c.release();
         }
         expect((await redeem(lateRef, late)).statusCode).toBe(403);
+      });
+
+      /** A transaction at consent-pending: confirmed, redeemed, passkey committed, called back. */
+      async function consentPending() {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const subject = (await redeem(ref, req)).json<{ provisional_subject: string }>()
+          .provisional_subject;
+        await app.inject({
+          method: 'POST',
+          url: `/internal/v1/enrolment/transactions/${id}/credential-committed`,
+          headers: await asKeycloak(),
+        });
+        await post(`/${id}/callback`, { binding_hash: binding, subject });
+        return { id, binding };
+      }
+      const decisions = (selfTracking: 'granted' | 'declined' = 'granted', at = new Date()) => ({
+        self_tracking: { status: selfTracking, version: 1, decided_at: at.toISOString() },
+        share_with_care_team: { status: 'granted', version: 1, decided_at: at.toISOString() },
+        research_deidentified: { status: 'declined', version: 1, decided_at: at.toISOString() },
+        org_aggregate_reporting: { status: 'declined', version: 1, decided_at: at.toISOString() },
+      });
+
+      it('records all four decisions and moves on to claiming; declining self-tracking ends it', async () => {
+        const a = await consentPending();
+        const res = await post(`/${a.id}/consent`, {
+          binding_hash: a.binding,
+          decisions: decisions(),
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ status: 'claiming' });
+        const stored = (await store.get(a.id))?.tx;
+        expect(stored?.decisions?.share_with_care_team).toMatchObject({
+          status: 'granted',
+          version: 1,
+        });
+        expect(stored?.personId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(stored?.patientId).toMatch(/^[0-9a-f-]{36}$/);
+
+        const b = await consentPending();
+        const declined = await post(`/${b.id}/consent`, {
+          binding_hash: b.binding,
+          decisions: decisions('declined'),
+        });
+        expect(declined.json()).toMatchObject({ status: 'cancelling' });
+        expect((await store.get(b.id))?.tx.cancelReason).toBe('declined');
+      });
+
+      it('activates: claim, person and link, consents, Keycloak; one durable step at a time', async () => {
+        const a = await consentPending();
+        await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: decisions() });
+        const finalised: string[] = [];
+        let keycloakUp = false;
+        const activator = new Activator({
+          store,
+          clinical,
+          keycloak: {
+            finalise: (subject) => {
+              if (!keycloakUp) return Promise.resolve(false);
+              finalised.push(subject);
+              return Promise.resolve(true);
+            },
+          },
+          now: () => new Date(),
+          audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+        });
+        // Keycloak not reachable yet: it stops before step 3, quarantined, never half-active.
+        expect(await activator.run(a.id)).toBe('waiting');
+        const mid = (await store.get(a.id))?.tx;
+        expect(mid).toMatchObject({ status: 'activating', activationStep: 2 });
+        expect(claimed.find((c) => c.transactionId === a.id)).toMatchObject({
+          patientId: mid?.patientId,
+          identityRef: mid?.personId,
+        });
+        const person = await t.admin.query<{ idp_subject: string }>(
+          'SELECT idp_subject FROM person WHERE id = $1',
+          [mid?.personId],
+        );
+        expect(person.rows[0]?.idp_subject).toBe(mid?.provisionalSubject);
+        const link = await t.admin.query(
+          'SELECT 1 FROM patient_link WHERE patient_record_id = $1',
+          [mid?.patientId],
+        );
+        expect(link.rowCount).toBe(1);
+        const written = consentsWritten.find((c) => c.patientId === mid?.patientId);
+        expect(written?.decisions.map((d) => [d.purpose, d.status, d.version])).toEqual([
+          ['self_tracking', 'granted', 1],
+          ['share_with_care_team', 'granted', 1],
+          ['research_deidentified', 'declined', 1],
+          ['org_aggregate_reporting', 'declined', 1],
+        ]);
+        keycloakUp = true;
+        expect(await activator.run(a.id)).toBe('active');
+        expect(finalised).toEqual([mid?.provisionalSubject]);
+        expect((await store.get(a.id))?.tx).toMatchObject({ status: 'active', activationStep: 3 });
+        // Running again changes nothing.
+        expect(await activator.run(a.id)).toBe('active');
+      });
+
+      it('cancels on a definite claim refusal, and waits on an unknown outcome', async () => {
+        const activator = new Activator({
+          store,
+          clinical,
+          keycloak: null,
+          now: () => new Date(),
+          audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+        });
+        const a = await consentPending();
+        await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: decisions() });
+        claimAnswer = 'down';
+        try {
+          expect(await activator.run(a.id)).toBe('waiting');
+          expect((await store.get(a.id))?.tx.status).toBe('claiming');
+          claimAnswer = 'refused';
+          expect(await activator.run(a.id)).toBe('cancelling');
+          expect((await store.get(a.id))?.tx.cancelReason).toBe('claim-refused');
+        } finally {
+          claimAnswer = 'done';
+        }
+        // The sweep finds work only in claiming or activating.
+        await activator.sweep();
+      });
+
+      it('refuses missing decisions, future times, another browser, or the wrong moment', async () => {
+        const a = await consentPending();
+        const partial: Record<string, unknown> = decisions();
+        delete partial['research_deidentified'];
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: partial }))
+            .statusCode,
+        ).toBe(400);
+        const future = decisions('granted', new Date(Date.now() + 3_600_000));
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: future }))
+            .statusCode,
+        ).toBe(400);
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: secret(), decisions: decisions() }))
+            .statusCode,
+        ).toBe(404);
+        const early = await confirmed();
+        expect(
+          (
+            await post(`/${early.id}/consent`, {
+              binding_hash: early.binding,
+              decisions: decisions(),
+            })
+          ).statusCode,
+        ).toBe(409);
+      });
+
+      it('lets Keycloak register a passkey only while the redeemed enrolment is live', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const subject = (await redeem(ref, req)).json<{ provisional_subject: string }>()
+          .provisional_subject;
+        const check = async (s: string) =>
+          app.inject({
+            method: 'POST',
+            url: `/internal/v1/enrolment/transactions/${id}/registration-check`,
+            headers: await asKeycloak(),
+            payload: { subject: s },
+          });
+        expect((await check(subject)).json()).toEqual({ allowed: true });
+        expect((await check(uuidv7())).statusCode).toBe(409);
+        // She cancels from another tab: registration stops, and a retried redemption is refused.
+        expect((await post(`/${id}/cancel`, { binding_hash: binding })).statusCode).toBe(200);
+        expect((await check(subject)).statusCode).toBe(409);
+        expect((await redeem(ref, req)).statusCode).toBe(403);
+      });
+
+      it('retries an unknown reservation at Continue: reserved, refused, or unreachable', async () => {
+        // The clinic confirms, but the reservation's outcome is unknown (the API timed out).
+        async function confirmedUnreserved() {
+          const link = newLink();
+          const binding = secret();
+          const started = (await start(link.tokenHash, binding)).json<{
+            transaction_id: string;
+            code: string;
+          }>();
+          reserveAnswer = 'down';
+          try {
+            const res = await app.inject({
+              method: 'POST',
+              url: '/internal/v1/enrolment/confirm',
+              headers: await as(apiKey, 'api', 'identity.enrolment.clinic'),
+              payload: {
+                org_id: link.orgId,
+                invitation_id: link.invitationId,
+                code: started.code,
+                clinician_id: '01900000-0000-7000-8000-0000000000c1',
+                attestation: { identified: true, own_phone: true },
+              },
+            });
+            expect(res.statusCode).toBe(503);
+          } finally {
+            reserveAnswer = 'done';
+          }
+          expect(await store.isReserved(started.transaction_id)).toBe(false);
+          return { id: started.transaction_id, binding };
+        }
+        const ok = await confirmedUnreserved();
+        expect((await handoff(ok.id, ok.binding)).statusCode).toBe(201);
+        expect(await store.isReserved(ok.id)).toBe(true);
+
+        const refused = await confirmedUnreserved();
+        reserveAnswer = 'refused';
+        try {
+          expect((await handoff(refused.id, refused.binding)).statusCode).toBe(409);
+        } finally {
+          reserveAnswer = 'done';
+        }
+        expect((await store.get(refused.id))?.tx.cancelReason).toBe('claim-refused');
+
+        const down = await confirmedUnreserved();
+        reserveAnswer = 'down';
+        try {
+          expect((await handoff(down.id, down.binding)).statusCode).toBe(503);
+        } finally {
+          reserveAnswer = 'done';
+        }
+        expect(await store.isReserved(down.id)).toBe(false);
       });
 
       it('refuses a handoff before confirmation, for another browser, or for another issuer', async () => {

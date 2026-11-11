@@ -83,5 +83,7 @@ export interface ClinicalDatabase {
     status: ConsentStatus;
     version: number;
     decided_at: Generated<Date>;
+    /** Migration 0007: when she chose, at enrolment only; shortly before `decided_at`. */
+    chosen_at: Date | null;
   };
 }

@@ -1,6 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import type { AuditWriter } from '@endo/audit';
-import type { InvitationState, ReservationOutcome, ReservationRequest } from '@endo/clinical-store';
+import type {
+  ConsentStore,
+  ClaimRequest,
+  InvitationState,
+  ReservationOutcome,
+  ReservationRequest,
+} from '@endo/clinical-store';
 import { uuidv7 } from '@endo/domain';
 import { ProblemError } from '@endo/service-kit';
 
@@ -18,6 +24,11 @@ export interface EnrolmentCoordination {
   reserve(r: ReservationRequest): Promise<ReservationOutcome>;
   /** Section 6: ends this transaction's hold for good (idempotent; fenced). */
   release(r: ReservationRequest): Promise<ReservationOutcome>;
+  /**
+   * Section 10: creates the patient record and claims the invitation this transaction reserved,
+   * in one clinical transaction (idempotent; a retry must name the same patient and person).
+   */
+  claim(r: ClaimRequest): Promise<ReservationOutcome>;
 }
 
 export interface CoordinatorRouteDeps {
@@ -25,6 +36,8 @@ export interface CoordinatorRouteDeps {
   readonly audit: AuditWriter;
   /** Relays queued audit events promptly after a change. */
   readonly onCommitted?: () => void;
+  /** Her consent decisions (activation step 2, ADR-0021 section 10). */
+  readonly consents: ConsentStore;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
@@ -190,4 +203,145 @@ export function registerCoordinatorRoutes(app: FastifyInstance, deps: Coordinato
       },
     );
   }
+
+  /**
+   * POST /internal/v1/enrolment/invitations/claim (ADR-0021 section 10): the last step that can
+   * still fail cleanly. A definite refusal (revoked, expired, not reserved by this transaction)
+   * lets the coordinator cancel; an unknown outcome is resolved by asking `state`.
+   */
+  app.post(
+    '/internal/v1/enrolment/invitations/claim',
+    {
+      config: { policy: policy('api.enrolment.invitation.claim') },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['org_id', 'invitation_id', 'transaction_id', 'patient_id', 'identity_ref'],
+          properties: {
+            org_id: { type: 'string', pattern: UUID },
+            invitation_id: { type: 'string', pattern: UUID },
+            transaction_id: { type: 'string', pattern: UUID },
+            patient_id: { type: 'string', pattern: UUID },
+            identity_ref: { type: 'string', pattern: UUID },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const b = request.body as {
+        org_id: string;
+        invitation_id: string;
+        transaction_id: string;
+        patient_id: string;
+        identity_ref: string;
+      };
+      const out = await deps.coordination.claim({
+        orgId: b.org_id,
+        invitationId: b.invitation_id,
+        transactionId: b.transaction_id,
+        patientId: b.patient_id,
+        identityRef: b.identity_ref,
+        auditEvent: {
+          id: uuidv7(),
+          actor: { id: null, role: 'system' },
+          action: 'api.enrolment.invitation.claimed',
+          resource: { type: 'enrolment_invitation', id: b.invitation_id },
+          org_id: b.org_id,
+          purpose_of_use: 'operations',
+          outcome: 'success',
+          reason: null,
+          request_id: request.id,
+        },
+      });
+      deps.onCommitted?.();
+      return out.outcome === 'done'
+        ? { outcome: 'done', changed: out.changed, state: stateBody(out.state) }
+        : { outcome: 'refused', state: stateBody(out.state) };
+    },
+  );
+
+  /**
+   * POST /internal/v1/enrolment/consents (ADR-0021 section 10, activation step 2): her four
+   * decisions from enrolment, each with its version and the time she chose, written once in one
+   * clinical transaction with their audit events. A repeat writes nothing.
+   */
+  const purposes = [
+    'self_tracking',
+    'share_with_care_team',
+    'research_deidentified',
+    'org_aggregate_reporting',
+  ] as const;
+  app.post(
+    '/internal/v1/enrolment/consents',
+    {
+      config: { policy: policy('api.enrolment.consents') },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['org_id', 'patient_id', 'decisions'],
+          properties: {
+            org_id: { type: 'string', pattern: UUID },
+            patient_id: { type: 'string', pattern: UUID },
+            decisions: {
+              type: 'array',
+              minItems: 4,
+              maxItems: 4,
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['purpose', 'status', 'version', 'chosen_at'],
+                properties: {
+                  purpose: { type: 'string', enum: [...purposes] },
+                  status: { type: 'string', enum: ['granted', 'declined'] },
+                  version: { type: 'integer', minimum: 1, maximum: 999_999_999 },
+                  chosen_at: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const b = request.body as {
+        org_id: string;
+        patient_id: string;
+        decisions: {
+          purpose: (typeof purposes)[number];
+          status: 'granted' | 'declined';
+          version: number;
+          chosen_at: string;
+        }[];
+      };
+      // Exactly the four purposes, once each.
+      if (new Set(b.decisions.map((d) => d.purpose)).size !== purposes.length)
+        throw new ProblemError(400, 'request.invalid', 'Each purpose exactly once.');
+      const out = await deps.consents.recordEnrolment(
+        b.org_id,
+        b.patient_id,
+        b.decisions.map((d) => ({
+          id: uuidv7(),
+          purpose: d.purpose,
+          status: d.status,
+          version: d.version,
+          chosenAt: new Date(d.chosen_at),
+          auditEvent: {
+            id: uuidv7(),
+            actor: { id: null, role: 'system' },
+            action: `consent.${d.status}`,
+            resource: { type: 'consent', id: b.patient_id },
+            org_id: b.org_id,
+            purpose_of_use: 'operations',
+            outcome: 'success',
+            reason: null,
+            request_id: request.id,
+          },
+        })),
+      );
+      deps.onCommitted?.();
+      return { written: out.written };
+    },
+  );
 }

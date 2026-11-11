@@ -94,6 +94,18 @@ function fake(
           : { outcome: 'refused', state: { status: 'revoked', reservedBy: null } },
       );
     },
+    claim: (r) => {
+      reservations.push({ op: 'claim', ...r });
+      return Promise.resolve(
+        r.invitationId === INVITATION
+          ? {
+              outcome: 'done',
+              changed: true,
+              state: { status: 'claimed', reservedBy: r.transactionId, patientId: r.patientId },
+            }
+          : { outcome: 'refused', state: { status: 'revoked', reservedBy: null } },
+      );
+    },
     release: (r) => {
       reservations.push({ op: 'release', ...r });
       return Promise.resolve({
@@ -208,6 +220,7 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
       state: () => Promise.reject(new Error('store failed SYNTHETIC_PHI_MARKER')),
       reserve: () => Promise.reject(new Error('unused')),
       release: () => Promise.reject(new Error('unused')),
+      claim: () => Promise.reject(new Error('unused')),
     };
     const { post, audit, logs } = await setup(failing);
     const res = await post('find', { token_hash: HASH });
@@ -267,5 +280,58 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     expect((await post('reserve', body, {})).statusCode).toBe(401);
     expect((await post('release', body, await asClinic())).statusCode).toBe(403);
     expect((await post('reserve', { ...body, transaction_id: 'x' })).statusCode).toBe(400);
+  });
+
+  it('claims for the transaction that reserved it, creating the patient record (section 10)', async () => {
+    const { post, asClinic } = await setup();
+    reservations.length = 0;
+    const body = {
+      org_id: ORG,
+      invitation_id: INVITATION,
+      transaction_id: TX,
+      patient_id: PATIENT,
+      identity_ref: '01900000-0000-7000-8000-0000000000e2',
+    };
+    expect((await post('claim', body)).json()).toEqual({
+      outcome: 'done',
+      changed: true,
+      state: { status: 'claimed', reserved_by: TX, patient_id: PATIENT },
+    });
+    expect(reservations[0]).toMatchObject({
+      op: 'claim',
+      patientId: PATIENT,
+      identityRef: '01900000-0000-7000-8000-0000000000e2',
+      auditEvent: { action: 'api.enrolment.invitation.claimed', org_id: ORG },
+    });
+    expect((await post('claim', { ...body, invitation_id: PATIENT })).json()).toMatchObject({
+      outcome: 'refused',
+    });
+    expect((await post('claim', body, await asClinic())).statusCode).toBe(403);
+    expect((await post('claim', { ...body, identity_ref: 'x' })).statusCode).toBe(400);
+  });
+
+  it('writes her four enrolment decisions once (activation step 2)', async () => {
+    const { post, asClinic } = await setup();
+    const at = new Date().toISOString();
+    const four = [
+      'self_tracking',
+      'share_with_care_team',
+      'research_deidentified',
+      'org_aggregate_reporting',
+    ].map((purpose, i) => ({
+      purpose,
+      status: i < 2 ? 'granted' : 'declined',
+      version: 1,
+      chosen_at: at,
+    }));
+    const body = { org_id: ORG, patient_id: PATIENT, decisions: four };
+    expect((await post('../consents', body)).json()).toEqual({ written: 4 });
+    expect((await post('../consents', body)).json()).toEqual({ written: 0 });
+    const twice = { ...body, decisions: [four[0], four[0], four[1], four[2]] };
+    expect((await post('../consents', twice)).statusCode).toBe(400);
+    expect((await post('../consents', { ...body, decisions: four.slice(0, 3) })).statusCode).toBe(
+      400,
+    );
+    expect((await post('../consents', body, await asClinic())).statusCode).toBe(403);
   });
 });

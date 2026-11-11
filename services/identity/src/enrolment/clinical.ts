@@ -21,6 +21,32 @@ export interface ClinicalClient {
     invitationId: string;
     transactionId: string;
   }): Promise<'done' | 'refused'>;
+  /**
+   * Creates the patient record and claims the invitation (ADR-0021 section 10). `refused` is
+   * definite (revoked, expired, not reserved by this transaction); an error means unknown.
+   */
+  claim(r: ClaimInput): Promise<'done' | 'refused'>;
+  /** Writes her four enrolment decisions (activation step 2); resolves once they are stored. */
+  consents(r: ConsentsInput): Promise<void>;
+}
+
+export interface ClaimInput {
+  readonly orgId: string;
+  readonly invitationId: string;
+  readonly transactionId: string;
+  readonly patientId: string;
+  readonly identityRef: string;
+}
+
+export interface ConsentsInput {
+  readonly orgId: string;
+  readonly patientId: string;
+  readonly decisions: readonly {
+    readonly purpose: string;
+    readonly status: 'granted' | 'declined';
+    readonly version: number;
+    readonly chosenAt: Date;
+  }[];
 }
 
 /** The API could not be reached or answered something unexpected. Callers fail closed. */
@@ -108,5 +134,48 @@ export class HttpClinicalClient implements ClinicalClient {
     const body = (await res.json().catch(() => null)) as { outcome?: unknown } | null;
     if (body?.outcome === 'done' || body?.outcome === 'refused') return body.outcome;
     throw new ClinicalUnavailableError();
+  }
+
+  async #post(path: string, body: object): Promise<Response> {
+    const token = await this.#signer.sign(['api.enrolment.coordinate'], 'api');
+    try {
+      return await this.#fetch(`${this.#apiUrl}${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        redirect: 'error',
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch {
+      throw new ClinicalUnavailableError();
+    }
+  }
+
+  async claim(r: ClaimInput): Promise<'done' | 'refused'> {
+    const res = await this.#post('/internal/v1/enrolment/invitations/claim', {
+      org_id: r.orgId,
+      invitation_id: r.invitationId,
+      transaction_id: r.transactionId,
+      patient_id: r.patientId,
+      identity_ref: r.identityRef,
+    });
+    if (!res.ok) throw new ClinicalUnavailableError();
+    const body = (await res.json().catch(() => null)) as { outcome?: unknown } | null;
+    if (body?.outcome === 'done' || body?.outcome === 'refused') return body.outcome;
+    throw new ClinicalUnavailableError();
+  }
+
+  async consents(r: ConsentsInput): Promise<void> {
+    const res = await this.#post('/internal/v1/enrolment/consents', {
+      org_id: r.orgId,
+      patient_id: r.patientId,
+      decisions: r.decisions.map((d) => ({
+        purpose: d.purpose,
+        status: d.status,
+        version: d.version,
+        chosen_at: d.chosenAt.toISOString(),
+      })),
+    });
+    if (!res.ok) throw new ClinicalUnavailableError();
   }
 }

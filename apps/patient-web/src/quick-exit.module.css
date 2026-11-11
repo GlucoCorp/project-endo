@@ -1,0 +1,23 @@
+/* Spec 13.2: persistent and clearly labelled; fixed in the top corner, a full-size target. */
+.exit {
+  position: fixed;
+  top: var(--space-8);
+  right: var(--space-8);
+  z-index: 10;
+  min-height: var(--target-min);
+  min-width: var(--target-min);
+  padding: var(--space-8) var(--space-12);
+  font: inherit;
+  font-family: var(--font-body);
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.exit:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

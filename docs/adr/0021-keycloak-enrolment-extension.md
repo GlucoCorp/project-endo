@@ -87,6 +87,7 @@ endo patient browser (top level)
 - On success it ignores any existing authenticated user. It creates, or on a bound retry resumes, exactly one provisional user with an opaque username and the attribute `endo_enrolment=<transaction id>`.
 - A **resume** reference (section 11) authenticates only that same provisional user, with the passkey she has just registered.
 - Ordinary login (alternatives 2 and 3) refuses users who carry `endo_enrolment`, enforced by the extension's user-storage guard. Until activation (section 10), a provisional user cannot sign in any other way.
+- **As built (ADR-0025, 2026-11-11):** Keycloak cannot run a REQUIRED step after top-level alternatives, so the tree is: `endo passkey browser` = [`endo patient sign-in` sub-flow REQUIRED: (`endo-enrolment`, `auth-cookie`, `webauthn-authenticator-passwordless`, all ALTERNATIVE), then `endo-quarantine-guard` REQUIRED]. The guard is an authenticator, not a user-storage provider: a user still carrying `endo_enrolment` may finish only the sign-in that redeemed that transaction. `check:realm` asserts this exact tree, and that `webauthn-register-passwordless` is disabled and `endo-enrolment-passkey` enabled.
 
 ### 8. Guarded registration
 
@@ -143,6 +144,8 @@ The coordinator's transition table (identity database). Each state before `claim
 - Stalled transactions raise an alert.
 
 ### 12. Consent-pending session
+
+- **As built so far (2026-11-11):** her consent is recorded through the enrolment cookie (the browser binding), which lasts to the transaction's 60-minute absolute deadline, not yet through a separate consent-pending session. The consent screens (one purpose per screen, two equal buttons, `apps/patient-web`) send all four decisions with their versions and times; declining self-tracking ends enrolment. The ID token's signature, nonce, `acr` and freshness are already checked at the callback; the consent-pending session and its rotation into a patient session come with activation (slice 6). The four explanation texts are version 1 drafts that need data protection review before real use (`TODO_LEGAL`).
 
 - The BFF accepts the callback only if the ID token passes ADR-0019-style validation (signature, issuer, audience, nonce, `acr`, freshness) **and** its subject equals the transaction's provisional subject.
 - It then creates a **consent-pending** session that allows only: reading the explanations, recording each decision (into the transaction), signing out and cancelling.

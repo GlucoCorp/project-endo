@@ -65,6 +65,18 @@ async function setup() {
       state.lastHandoff = body;
       return json(201, { handoff_ref: 'R'.repeat(43), expires_at: new Date().toISOString() });
     }
+    if (url.pathname.endsWith('/consent')) {
+      if (state.status !== 'consent-pending') return json(409, {});
+      state.status = 'claiming';
+      const later = new Date(Date.now() + 3_600_000).toISOString();
+      return json(200, {
+        transaction_id: txId,
+        status: 'claiming',
+        expired: false,
+        state_deadline: null,
+        expires_at: later,
+      });
+    }
     if (url.pathname.endsWith('/callback')) {
       if (body['subject'] !== subject) return json(403, {});
       state.status = 'consent-pending';
@@ -158,5 +170,35 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
     expect((await continueReq()).statusCode).toBe(409);
     expect((await continueReq({ origin: 'https://evil.test' })).statusCode).toBe(403);
     expect((await continueReq({ cookie: '' })).statusCode).toBe(404);
+  });
+
+  it('passes her four decisions on, with the browser binding, then shows where she is', async () => {
+    const { app, calls, state, cookie, secret, txId } = await setup();
+    state.status = 'consent-pending';
+    const at = new Date().toISOString();
+    const decisions = {
+      self_tracking: { status: 'granted', version: 1, decided_at: at },
+      share_with_care_team: { status: 'granted', version: 1, decided_at: at },
+      research_deidentified: { status: 'declined', version: 1, decided_at: at },
+      org_aggregate_reporting: { status: 'declined', version: 1, decided_at: at },
+    };
+    const send = (payload: object, headers: Record<string, string> = {}) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/enrolment/consent',
+        headers: { origin: ORIGIN, 'content-type': 'application/json', cookie, ...headers },
+        payload,
+      });
+    expect((await send({ decisions }, { origin: 'https://evil.test' })).statusCode).toBe(403);
+    expect((await send({ decisions: { self_tracking: decisions.self_tracking } })).statusCode).toBe(
+      400,
+    );
+    const res = await send({ decisions });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ status: 'claiming' });
+    const sent = calls.find((c) => c.path.endsWith('/consent'));
+    expect(sent?.path).toBe(`/internal/v1/enrolment/transactions/${txId}/consent`);
+    expect(sent?.body).toEqual({ binding_hash: sha256(secret), decisions });
+    expect((await send({ decisions })).statusCode).toBe(409);
   });
 });

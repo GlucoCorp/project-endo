@@ -13,9 +13,29 @@ const ALLOWED_AUTHENTICATORS = new Set([
   'auth-cookie',
   'webauthn-authenticator-passwordless',
   'deny-access-authenticator',
+  // ADR-0021, ADR-0025: the enrolment extension.
+  'endo-enrolment',
+  'endo-quarantine-guard',
 ]);
-const ALLOWED_ENABLED_REQUIRED_ACTIONS = new Set(['webauthn-register-passwordless']);
-const MUST_BE_DISABLED_REQUIRED_ACTIONS = ['UPDATE_PASSWORD', 'CONFIGURE_TOTP'];
+/** The one approved sub-flow: the patient sign-in alternatives (ADR-0021 section 7). */
+const SIGN_IN_SUBFLOW = 'endo patient sign-in';
+/** The exact patient browser flow (ADR-0021 section 7). */
+const PATIENT_BROWSER = [
+  { flowAlias: SIGN_IN_SUBFLOW, requirement: 'REQUIRED' },
+  { authenticator: 'endo-quarantine-guard', requirement: 'REQUIRED' },
+];
+const PATIENT_SIGN_IN = [
+  { authenticator: 'endo-enrolment', requirement: 'ALTERNATIVE' },
+  { authenticator: 'auth-cookie', requirement: 'ALTERNATIVE' },
+  { authenticator: 'webauthn-authenticator-passwordless', requirement: 'ALTERNATIVE' },
+];
+// Only the guarded enrolment registration (ADR-0021 section 8): no self-service passkey adding.
+const ALLOWED_ENABLED_REQUIRED_ACTIONS = new Set(['endo-enrolment-passkey']);
+const MUST_BE_DISABLED_REQUIRED_ACTIONS = [
+  'UPDATE_PASSWORD',
+  'CONFIGURE_TOTP',
+  'webauthn-register-passwordless',
+];
 const ROLES = ['patient', 'clinician', 'org_admin', 'glucorp_support', 'glucorp_platform_admin'];
 const BUILTIN_CLIENTS = ['account', 'account-console', 'admin-cli', 'security-admin-console'];
 const ALLOWED_SCOPES = new Set(['basic', 'roles', 'acr']);
@@ -91,17 +111,36 @@ function checkRealm(realm) {
   const flows = new Map((realm.authenticationFlows ?? []).map((f) => [f.alias, f]));
   for (const f of flows.values()) {
     for (const e of f.authenticationExecutions ?? []) {
+      const subflow = e.authenticatorFlow === true && e.flowAlias === SIGN_IN_SUBFLOW;
       expect(
-        e.authenticatorFlow !== true && ALLOWED_AUTHENTICATORS.has(e.authenticator),
+        subflow || (e.authenticatorFlow !== true && ALLOWED_AUTHENTICATORS.has(e.authenticator)),
         `flow "${f.alias}": step "${e.authenticator ?? e.flowAlias}" is not approved`,
+      );
+      expect(
+        e.requirement !== 'CONDITIONAL',
+        `flow "${f.alias}": no CONDITIONAL steps (ADR-0021 s7)`,
       );
     }
   }
-  const browser = flows.get(realm.browserFlow)?.authenticationExecutions ?? [];
+  // ADR-0021 section 7: exactly this tree, in this order, nothing else.
+  const steps = (alias) =>
+    (flows.get(alias)?.authenticationExecutions ?? [])
+      .slice()
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0))
+      .map((e) =>
+        e.authenticatorFlow
+          ? { flowAlias: e.flowAlias, requirement: e.requirement }
+          : { authenticator: e.authenticator, requirement: e.requirement },
+      );
   expect(
-    browser.some((e) => e.authenticator === 'webauthn-authenticator-passwordless'),
-    'browserFlow must be a flow in this file that signs in with a passkey',
+    JSON.stringify(steps(realm.browserFlow)) === JSON.stringify(PATIENT_BROWSER),
+    'browserFlow must be exactly: patient sign-in (REQUIRED), then endo-quarantine-guard (REQUIRED)',
   );
+  expect(
+    JSON.stringify(steps(SIGN_IN_SUBFLOW)) === JSON.stringify(PATIENT_SIGN_IN),
+    'patient sign-in must be exactly: endo-enrolment, auth-cookie, passkey (all ALTERNATIVE)',
+  );
+  expect(flows.get(SIGN_IN_SUBFLOW)?.topLevel === false, 'patient sign-in must be a sub-flow');
   const unusedFlowBindings = {
     directGrantFlow: realm.directGrantFlow,
     resetCredentialsFlow: realm.resetCredentialsFlow,
@@ -135,10 +174,9 @@ function checkRealm(realm) {
       );
     }
   }
-  const register = actions.find((a) => a.providerId === 'webauthn-register-passwordless');
   expect(
-    register?.config?.max_auth_age === '0',
-    'adding a passkey must require fresh authentication (max_auth_age 0)',
+    actions.some((a) => a.providerId === 'endo-enrolment-passkey' && a.enabled === true),
+    'the guarded enrolment passkey action (endo-enrolment-passkey) must be enabled',
   );
 
   // Clients.
@@ -157,14 +195,34 @@ function checkRealm(realm) {
   const clinicianFlow = (realm.authenticationFlows ?? []).find(
     (f) => f.id !== undefined && f.id === clinicianOverride.get('browser'),
   );
-  const clinicianSteps = clinicianFlow?.authenticationExecutions ?? [];
+  const clinicianSteps = (clinicianFlow?.authenticationExecutions ?? [])
+    .slice()
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
   expect(
     clinicianOverride.size === 1 &&
-      clinicianSteps.length === 1 &&
+      clinicianSteps.length === 2 &&
       clinicianSteps[0].authenticator === 'webauthn-authenticator-passwordless' &&
-      clinicianSteps[0].requirement === 'REQUIRED',
-    'bff-clinician must use a browser flow of exactly one fresh passkey step (no SSO cookie)',
+      clinicianSteps[0].requirement === 'REQUIRED' &&
+      clinicianSteps[1].authenticator === 'endo-quarantine-guard' &&
+      clinicianSteps[1].requirement === 'REQUIRED',
+    'bff-clinician must use a browser flow of one fresh passkey step, then the enrolment quarantine (no SSO cookie)',
   );
+  // ADR-0021 section 7: every flow that can sign someone in ends with the enrolment quarantine.
+  for (const f of flows.values()) {
+    if (f.topLevel === false) continue;
+    const ordered = (f.authenticationExecutions ?? [])
+      .slice()
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+    const signsIn = ordered.some(
+      (e) => e.authenticatorFlow === true || e.authenticator !== 'deny-access-authenticator',
+    );
+    const last = ordered.at(-1);
+    expect(
+      !signsIn ||
+        (last?.authenticator === 'endo-quarantine-guard' && last.requirement === 'REQUIRED'),
+      `flow "${f.alias}" signs people in, so it must end with endo-quarantine-guard (REQUIRED)`,
+    );
+  }
   for (const c of realm.clients ?? []) {
     const id = c.clientId;
     expect(
@@ -278,10 +336,39 @@ const MUTATIONS = [
   ],
   ['required actions omitted', (r) => delete r.requiredActions],
   [
-    'stale-session passkey add',
+    'stock passkey registration enabled',
     (r) =>
-      (r.requiredActions.find((a) => a.providerId === 'webauthn-register-passwordless').config =
-        {}),
+      (r.requiredActions.find((a) => a.providerId === 'webauthn-register-passwordless').enabled =
+        true),
+  ],
+  [
+    'clinician flow without the quarantine',
+    (r) =>
+      r.authenticationFlows
+        .find((f) => f.alias === 'endo clinician passkey')
+        .authenticationExecutions.pop(),
+  ],
+  [
+    'enrolment guard removed',
+    (r) =>
+      r.authenticationFlows
+        .find((f) => f.alias === 'endo passkey browser')
+        .authenticationExecutions.pop(),
+  ],
+  [
+    'cookie before the enrolment step',
+    (r) =>
+      (r.authenticationFlows
+        .find((f) => f.alias === 'endo patient sign-in')
+        .authenticationExecutions.find((e) => e.authenticator === 'auth-cookie').priority = 1),
+  ],
+  [
+    'conditional enrolment step',
+    (r) =>
+      (r.authenticationFlows
+        .find((f) => f.alias === 'endo patient sign-in')
+        .authenticationExecutions.find((e) => e.authenticator === 'endo-enrolment').requirement =
+        'CONDITIONAL'),
   ],
   ['admin-cli enabled', (r) => (r.clients.find((c) => c.clientId === 'admin-cli').enabled = true)],
   ['email scope', (r) => bff(r, 'bff-patient').defaultClientScopes.push('email')],

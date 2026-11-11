@@ -90,6 +90,7 @@ No names, emails, phones or addresses (spec 5.1). Every table has row-level secu
 | `consent.status`                             | `granted`, `declined` (at enrolment) or `revoked` (later withdrawal)                                                               | as above                                                         | as above                                                                    | S2          |
 | `consent.version`                            | Version of the explanation she saw                                                                                                 | as above                                                         | as above                                                                    | S1          |
 | `consent.decided_at`                         | When she decided                                                                                                                   | as above                                                         | as above                                                                    | S1          |
+| `consent.chosen_at`                          | When she chose, at enrolment only (clinical migration 0007); shortly before `decided_at`                                           | as above                                                         | as above                                                                    | S1          |
 
 ### Idempotency and audit outbox — `packages/clinical-store/migrations/0002`
 
@@ -199,6 +200,15 @@ One-time, five-minute grants from the coordinator into Keycloak (ADR-0021 sectio
 | `enrolment_handoff.kc_root_session` | Keycloak authentication session that redeemed it                                | as above                                          | as above                 | S1          |
 | `enrolment_handoff.kc_client_uuid`  | Keycloak client of that session                                                 | as above                                          | as above                 | S0          |
 | `enrolment_handoff.kc_tab_id`       | Keycloak tab of that session                                                    | as above                                          | as above                 | S1          |
+
+### Enrolment reservations — `packages/identity-store/migrations/0007`
+
+The clinical store's reservation of an invitation, acknowledged for a transaction (ADR-0021 sections 6 and 10). A handoff into Keycloak requires it. No identity data. Retention: `TODO_LEGAL` (proposed: as the enrolment transactions).
+
+| Column                                 | Purpose                                              | Legal basis                                       | Retention                | Sensitivity |
+| -------------------------------------- | ---------------------------------------------------- | ------------------------------------------------- | ------------------------ | ----------- |
+| `enrolment_reservation.transaction_id` | Enrolment transaction the invitation is reserved for | Contract / consent to use the service (enrolment) | `TODO_LEGAL` (see above) | S0          |
+| `enrolment_reservation.reserved_at`    | When the reservation was recorded (database clock)   | as above                                          | as above                 | S0          |
 
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 

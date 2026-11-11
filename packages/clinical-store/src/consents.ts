@@ -29,6 +29,26 @@ export interface ConsentStore {
    * has this status and version, nothing is written (a repeated request changes nothing).
    */
   record(decision: ConsentDecision): Promise<{ changed: boolean; state: ConsentState }>;
+  /**
+   * Her four decisions from enrolment (ADR-0021 section 10, activation step 2), in one
+   * transaction, each with its audit event and the time she chose. A purpose that already has a
+   * decision is left as it is, so a retried activation step changes nothing.
+   */
+  recordEnrolment(
+    orgId: string,
+    patientId: string,
+    decisions: readonly EnrolmentConsent[],
+  ): Promise<{ written: number }>;
+}
+
+/** One decision she made at enrolment. */
+export interface EnrolmentConsent {
+  readonly id: string;
+  readonly purpose: ConsentPurpose;
+  readonly status: 'granted' | 'declined';
+  readonly version: number;
+  readonly chosenAt: Date;
+  readonly auditEvent: Readonly<Record<string, unknown>> & { readonly id: string };
 }
 
 export class PostgresConsentStore implements ConsentStore {
@@ -53,6 +73,46 @@ export class PostgresConsentStore implements ConsentStore {
         decidedAt: r.decided_at,
       })),
     );
+  }
+
+  recordEnrolment(
+    orgId: string,
+    patientId: string,
+    decisions: readonly EnrolmentConsent[],
+  ): Promise<{ written: number }> {
+    return withOrg(this.#db, orgId, async (trx) => {
+      const existing = new Set(
+        (
+          await trx
+            .selectFrom('consent')
+            .select('purpose')
+            .where('patient_id', '=', patientId)
+            .execute()
+        ).map((r) => r.purpose),
+      );
+      let written = 0;
+      for (const d of decisions) {
+        if (existing.has(d.purpose)) continue;
+        await trx
+          .insertInto('consent')
+          .values({
+            id: d.id,
+            patient_id: patientId,
+            org_id: orgId,
+            purpose: d.purpose,
+            status: d.status,
+            version: d.version,
+            chosen_at: d.chosenAt,
+          })
+          .execute();
+        await trx
+          .insertInto('audit_outbox')
+          .values({ id: d.auditEvent.id, event: JSON.stringify(d.auditEvent) })
+          .execute();
+        written += 1;
+      }
+      return { written };
+    });
   }
 
   record(d: ConsentDecision): Promise<{ changed: boolean; state: ConsentState }> {
@@ -125,6 +185,27 @@ export class InMemoryConsentStore implements ConsentStore {
     return Promise.resolve(
       [...this.#state].filter(([k]) => k.startsWith(prefix)).map(([, v]) => v),
     );
+  }
+
+  recordEnrolment(
+    orgId: string,
+    patientId: string,
+    decisions: readonly EnrolmentConsent[],
+  ): Promise<{ written: number }> {
+    let written = 0;
+    for (const d of decisions) {
+      const key = `${orgId}:${patientId}:${d.purpose}`;
+      if (this.#state.has(key)) continue;
+      this.#state.set(key, {
+        purpose: d.purpose,
+        status: d.status,
+        version: d.version,
+        decidedAt: this.#now(),
+      });
+      this.outbox.push(d.auditEvent);
+      written += 1;
+    }
+    return Promise.resolve({ written });
   }
 
   record(d: ConsentDecision): Promise<{ changed: boolean; state: ConsentState }> {

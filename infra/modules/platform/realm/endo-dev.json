@@ -115,23 +115,53 @@
   "authenticationFlows": [
     {
       "alias": "endo passkey browser",
-      "description": "Spec 10.1/10.2: usernameless passkey sign-in with user verification. No password, no self-service passkey setup at login (enrolment sets the passkey).",
+      "description": "Spec 10.1/10.2, ADR-0021 section 7: sign in (enrolment handoff first, then the SSO cookie or a passkey with user verification), then the enrolment quarantine. No password, no self-service passkey setup.",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
       "authenticationExecutions": [
         {
-          "authenticator": "auth-cookie",
+          "flowAlias": "endo patient sign-in",
+          "authenticatorFlow": true,
+          "requirement": "REQUIRED",
+          "priority": 10,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "endo-quarantine-guard",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
+        }
+      ]
+    },
+    {
+      "alias": "endo patient sign-in",
+      "description": "ADR-0021 section 7: with a handoff reference, the enrolment step succeeds or ends the flow; without one it is skipped and the ordinary alternatives run.",
+      "providerId": "basic-flow",
+      "topLevel": false,
+      "builtIn": false,
+      "authenticationExecutions": [
+        {
+          "authenticator": "endo-enrolment",
           "authenticatorFlow": false,
           "requirement": "ALTERNATIVE",
           "priority": 10,
           "userSetupAllowed": false
         },
         {
-          "authenticator": "webauthn-authenticator-passwordless",
+          "authenticator": "auth-cookie",
           "authenticatorFlow": false,
           "requirement": "ALTERNATIVE",
           "priority": 20,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "webauthn-authenticator-passwordless",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 30,
           "userSetupAllowed": false
         }
       ]
@@ -155,7 +185,7 @@
     {
       "id": "5f0d1c2e-7a3b-4c4d-9e5f-6a7b8c9d0e1f",
       "alias": "endo clinician passkey",
-      "description": "ADR-0019: clinicians always sign in with a fresh passkey and user verification. No SSO cookie step, so a session from any other flow (for example a patient email code) can never sign a clinician in.",
+      "description": "ADR-0019: clinicians always sign in with a fresh passkey and user verification. No SSO cookie step, so a session from any other flow (for example a patient email code) can never sign a clinician in. Then the enrolment quarantine: a provisional patient can never sign in here (ADR-0021 section 7).",
       "providerId": "basic-flow",
       "topLevel": true,
       "builtIn": false,
@@ -166,16 +196,32 @@
           "requirement": "REQUIRED",
           "priority": 10,
           "userSetupAllowed": false
+        },
+        {
+          "authenticator": "endo-quarantine-guard",
+          "authenticatorFlow": false,
+          "requirement": "REQUIRED",
+          "priority": 20,
+          "userSetupAllowed": false
         }
       ]
     }
   ],
   "requiredActions": [
     {
+      "alias": "endo-enrolment-passkey",
+      "name": "Endo enrolment passkey",
+      "providerId": "endo-enrolment-passkey",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 10,
+      "config": {}
+    },
+    {
       "alias": "webauthn-register-passwordless",
       "name": "Webauthn Register Passwordless",
       "providerId": "webauthn-register-passwordless",
-      "enabled": true,
+      "enabled": false,
       "defaultAction": false,
       "priority": 10,
       "config": {

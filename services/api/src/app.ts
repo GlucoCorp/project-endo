@@ -154,6 +154,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
       coordination: deps.coordination,
       audit: deps.audit,
       onCommitted,
+      consents: deps.consents,
     });
   registerConsentRoutes(app, { consents: deps.consents });
   registerEnrolmentRoutes(app, {

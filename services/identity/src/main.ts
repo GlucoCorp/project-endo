@@ -29,6 +29,10 @@ import { HttpClinicalClient } from './enrolment/clinical.ts';
 import { EnrolmentCodes } from './enrolment/code.ts';
 import type { PatientRouteDeps } from './enrolment/routes.ts';
 import { PostgresEnrolmentStore } from './enrolment/store.ts';
+import { Activator } from './enrolment/activation.ts';
+import { HttpKeycloakAdmin } from './enrolment/keycloak.ts';
+import { enrolmentAudit } from './enrolment/routes.ts';
+import { uuidv7 } from '@endo/domain';
 
 const Jwk = z.string().transform((s, ctx) => {
   try {
@@ -75,6 +79,8 @@ const Config = z.object({
   IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK: Jwk.optional(),
   IDENTITY_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   IDENTITY_API_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
+  /** The realm's base URL; activation's last step calls the extension's admin endpoint there. */
+  IDENTITY_KEYCLOAK_REALM_URL: z.url({ protocol: /^https?$/ }).optional(),
 });
 
 async function main(): Promise<void> {
@@ -100,6 +106,7 @@ async function main(): Promise<void> {
   const kms = new DevKeyManager(config.ENDO_ENV);
   let persons: PersonStore;
   let enrolment: PatientRouteDeps | undefined;
+  let onConsented: ((transactionId: string) => void) | undefined;
   let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
@@ -146,16 +153,35 @@ async function main(): Promise<void> {
       config.IDENTITY_WORKLOAD_PRIVATE_KEY_JWK &&
       config.IDENTITY_API_BASE_URL
     ) {
+      const signer = new WorkloadTokenSigner(config.IDENTITY_WORKLOAD_PRIVATE_KEY_JWK, 'identity');
       enrolment = {
         store: new PostgresEnrolmentStore(db),
         codes: new EnrolmentCodes(kms),
         clinical: new HttpClinicalClient({
           apiBaseUrl: config.IDENTITY_API_BASE_URL,
-          signer: new WorkloadTokenSigner(config.IDENTITY_WORKLOAD_PRIVATE_KEY_JWK, 'identity'),
+          signer,
           fetch,
         }),
         now: () => new Date(),
       };
+      // Activation (ADR-0021 section 10). Without the realm URL activation waits before step 3:
+      // the account stays quarantined, never half-active.
+      const activator = new Activator({
+        store: enrolment.store,
+        clinical: enrolment.clinical,
+        keycloak: config.IDENTITY_KEYCLOAK_REALM_URL
+          ? new HttpKeycloakAdmin({ realmUrl: config.IDENTITY_KEYCLOAK_REALM_URL, signer, fetch })
+          : null,
+        now: () => new Date(),
+        audit: (action, tx) => enrolmentAudit(action, tx, uuidv7()),
+      });
+      onConsented = (id) => {
+        activator.run(id).catch(() => process.stderr.write('enrolment activation failed\n'));
+      };
+      const activationTimer = setInterval(() => {
+        activator.sweep().catch(() => process.stderr.write('enrolment activation sweep failed\n'));
+      }, 30_000);
+      activationTimer.unref();
     }
     closeVault = async () => {
       clearInterval(relayTimer);
@@ -211,6 +237,7 @@ async function main(): Promise<void> {
     persons,
     idpIssuer: config.IDENTITY_IDP_ISSUER,
     ...(enrolment ? { enrolment } : {}),
+    ...(onConsented ? { onConsented } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

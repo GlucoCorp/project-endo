@@ -227,6 +227,69 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
   );
 
   if (deps.handoff) registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
+
+  const decision = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['status', 'version', 'decided_at'],
+    properties: {
+      status: { type: 'string', enum: ['granted', 'declined'] },
+      version: { type: 'integer', minimum: 1, maximum: 999_999_999 },
+      decided_at: { type: 'string', format: 'date-time' },
+    },
+  } as const;
+
+  /**
+   * Her four consent decisions (spec 13.1; ADR-0021 sections 10 and 12), each with the version of
+   * the explanation she read and when she chose. Declining self-tracking ends enrolment.
+   */
+  app.post(
+    '/v1/enrolment/consent',
+    {
+      config: { auth: { kind: 'enrolment' } },
+      preValidation: sameOrigin,
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['decisions'],
+          properties: {
+            decisions: {
+              type: 'object',
+              additionalProperties: false,
+              required: [
+                'self_tracking',
+                'share_with_care_team',
+                'research_deidentified',
+                'org_aggregate_reporting',
+              ],
+              properties: {
+                self_tracking: decision,
+                share_with_care_team: decision,
+                research_deidentified: decision,
+                org_aggregate_reporting: decision,
+              },
+            },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const bound = fromCookie(request);
+      if (!bound) throw noEnrolment();
+      const { decisions } = request.body as { decisions: object };
+      const res = await call(request, `/internal/v1/enrolment/transactions/${bound.txId}/consent`, {
+        binding_hash: sha256(bound.secret),
+        decisions,
+      });
+      if (res.status === 404) throw noEnrolment();
+      if (res.status === 400)
+        throw new ProblemError(400, 'request.invalid', 'Every choice is needed.');
+      if (res.status === 409) throw new ProblemError(409, 'enrolment.not_ready', 'Not ready yet.');
+      if (!res.ok) throw unavailable();
+      return parseView(await res.json().catch(() => null), false);
+    },
+  );
 }
 
 /**

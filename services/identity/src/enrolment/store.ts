@@ -229,7 +229,7 @@ export class PostgresEnrolmentStore {
       const now = clock();
       const allowed =
         h.kind === 'enrol'
-          ? tx.status === 'confirmed'
+          ? tx.status === 'confirmed' && (await reservedIn(trx, tx.id))
           : tx.status === 'redeemed' || tx.status === 'credential-committed';
       if (!allowed || isOverdue(tx, now)) return null;
       const inserted = await trx
@@ -294,7 +294,13 @@ export class PostgresEnrolmentStore {
           h.kc_root_session === r.session.rootSessionId &&
           h.kc_client_uuid === r.session.clientUuid &&
           h.kc_tab_id === r.session.tabId;
-        return sameSession && tx.provisionalSubject !== null
+        // A retry is answered only while the enrolment is still live at that step: never after a
+        // cancellation, completion or deadline (independent review, 2026-11-11).
+        const live =
+          (tx.status === 'redeemed' ||
+            (r.kind === 'resume' && tx.status === 'credential-committed')) &&
+          !isOverdue(tx, clock());
+        return sameSession && live && tx.provisionalSubject !== null
           ? {
               ok: true,
               transactionId: tx.id,
@@ -307,6 +313,8 @@ export class PostgresEnrolmentStore {
       if (now.getTime() >= h.expires_at.getTime()) return { ok: false, reason: 'expired' };
 
       let subject = tx.provisionalSubject;
+      if (r.kind === 'enrol' && !(await reservedIn(trx, tx.id)))
+        return { ok: false, reason: 'wrong-state' };
       if (r.kind === 'enrol') {
         const moved = transition(tx, { type: 'redeem', provisionalSubject: newSubject() }, now);
         if (!moved.ok) return { ok: false, reason: 'wrong-state' };
@@ -331,6 +339,94 @@ export class PostgresEnrolmentStore {
       if (subject === null) throw new Error('a redeemed transaction has a provisional subject');
       return { ok: true, transactionId: tx.id, provisionalSubject: subject, kind: r.kind };
     });
+  }
+
+  /**
+   * Records that the clinical store reserved the invitation for this transaction (identity
+   * migration 0007). Repeating it changes nothing; the database allows it only while confirmed.
+   */
+  recordReservation(transactionId: string, audit: OutboxEvent): Promise<void> {
+    return this.#db.transaction().execute(async (trx) => {
+      const inserted = await trx
+        .insertInto('enrolment_reservation')
+        .values({ transaction_id: transactionId })
+        .onConflict((oc) => oc.doNothing())
+        .returning('transaction_id')
+        .executeTakeFirst();
+      if (inserted) await queue(trx, audit);
+    });
+  }
+
+  /** Whether the clinical store's reservation for this transaction has been recorded. */
+  async isReserved(transactionId: string): Promise<boolean> {
+    return reservedIn(this.#db, transactionId);
+  }
+
+  /**
+   * ADR-0021 section 8, asked by Keycloak before showing and before accepting the passkey
+   * registration: is this transaction still redeemed, for this provisional user, and in time?
+   */
+  async registrationAllowed(transactionId: string, subject: string, now: Date): Promise<boolean> {
+    const s = await this.get(transactionId);
+    return (
+      s !== null &&
+      s.tx.status === 'redeemed' &&
+      s.tx.provisionalSubject === subject &&
+      !isOverdue(s.tx, now)
+    );
+  }
+
+  /**
+   * Activation step 1 (ADR-0021 section 10), in one identity transaction: the identity-vault
+   * person (bound to her provisional subject) and the link to her clinical patient record, then
+   * the step recorded. Idempotent: an existing person or link is left as it is.
+   */
+  activatePerson(
+    id: string,
+    clock: () => Date,
+    audit: (before: EnrolmentTransaction, after: EnrolmentTransaction) => OutboxEvent,
+  ): Promise<ApplyResult> {
+    return this.#db.transaction().execute(async (trx): Promise<ApplyResult> => {
+      const row = await trx
+        .selectFrom('enrolment_transaction')
+        .selectAll()
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return { ok: false, reason: 'not-found' };
+      const before = toStored(row).tx;
+      if (before.status !== 'activating' || before.activationStep !== 0)
+        return { ok: false, reason: 'wrong-state' };
+      const { personId, patientId, provisionalSubject } = before;
+      if (personId === null || patientId === null || provisionalSubject === null)
+        throw new Error('an activating transaction has its ids');
+      await trx
+        .insertInto('person')
+        .values({ id: personId, idp_subject: provisionalSubject })
+        .onConflict((oc) => oc.column('id').doNothing())
+        .execute();
+      await trx
+        .insertInto('patient_link')
+        .values({ person_id: personId, patient_record_id: patientId, org_id: before.orgId })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      const result = transition(before, { type: 'activation-step-done', step: 1 }, clock());
+      if (!result.ok || !result.changed) return result;
+      await write(trx, result.tx, audit(before, result.tx));
+      return result;
+    });
+  }
+
+  /** Transactions activation still has work for: claiming or activating, oldest first. */
+  async listActivating(limit = 50): Promise<string[]> {
+    const rows = await this.#db
+      .selectFrom('enrolment_transaction')
+      .select('id')
+      .where('status', 'in', ['claiming', 'activating'])
+      .orderBy('updated_at')
+      .limit(limit)
+      .execute();
+    return rows.map((r) => r.id);
   }
 
   async get(id: string): Promise<StoredTransaction | null> {
@@ -523,6 +619,18 @@ async function openByBinding(
     .orderBy('started_at', 'desc')
     .executeTakeFirst();
   return row ? toStored(row) : null;
+}
+
+async function reservedIn(
+  q: Kysely<IdentityDatabase> | Transaction<IdentityDatabase>,
+  transactionId: string,
+): Promise<boolean> {
+  const row = await q
+    .selectFrom('enrolment_reservation')
+    .select('transaction_id')
+    .where('transaction_id', '=', transactionId)
+    .executeTakeFirst();
+  return row !== undefined;
 }
 
 /** Transactions of an invitation awaiting confirmation, locked in id order. */
