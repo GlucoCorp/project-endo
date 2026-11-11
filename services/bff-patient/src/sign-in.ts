@@ -108,10 +108,13 @@ export function registerSignIn(
         const { idToken } = await exchangeCode(oidc, q.code, attempt, deps.fetch);
         const who = await validateIdToken(oidc, idToken, attempt, h.keys, deps.now);
         const claims = await resolve(request, who.issuer, who.subject);
-        // A fresh session, never one the browser brought (fixation); any old one ends.
+        // A fresh session, never one the browser brought (fixation); any old one ends. Signing in
+        // again is also how she unlocks: her app-lock choice carries over, for the same person only.
         const old = readCookie(request.headers.cookie, SESSION_COOKIE);
+        const before = old ? await deps.sessionsResolver?.resolve(old) : null;
         if (old) await h.sessions.revoke(old);
-        sessionCookie(reply, await h.sessions.createPatient(claims), PATIENT_ABSOLUTE_MS);
+        const keepLock = before?.claims.sub === claims.sub && before.appLock;
+        sessionCookie(reply, await h.sessions.createPatient(claims, keepLock), PATIENT_ABSOLUTE_MS);
         // A same-origin page completes the navigation, so the Strict session cookie is sent on
         // the next request (this callback arrives cross-site).
         return await reply
@@ -127,7 +130,4 @@ export function registerSignIn(
       }
     },
   );
-
-  /** Whether this browser has a patient session; never her ids. */
-  app.get('/v1/session', { config: { auth: { kind: 'session' } } }, () => ({ signed_in: true }));
 }

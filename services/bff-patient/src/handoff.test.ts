@@ -355,7 +355,11 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
 
 describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () => {
   /** /auth/sign-in, then Keycloak's return to /auth/callback with this attempt's state. */
-  async function signInFlow(s: Awaited<ReturnType<typeof setup>>, cookieOverride?: string) {
+  async function signInFlow(
+    s: Awaited<ReturnType<typeof setup>>,
+    cookieOverride?: string,
+    session?: string,
+  ) {
     const start = await s.app.inject({ url: '/auth/sign-in' });
     expect(start.statusCode).toBe(302);
     const location = new URL(start.headers.location ?? '');
@@ -363,7 +367,11 @@ describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () 
     const binding = /^__Host-endo_signin=([^;]+)/.exec(String(start.headers['set-cookie']))?.[1];
     const back = await s.app.inject({
       url: `/auth/callback?code=c2&state=${location.searchParams.get('state') ?? ''}`,
-      headers: { cookie: cookieOverride ?? `__Host-endo_signin=${binding ?? ''}` },
+      headers: {
+        cookie:
+          (cookieOverride ?? `__Host-endo_signin=${binding ?? ''}`) +
+          (session ? `; ${SESSION_COOKIE}=${session}` : ''),
+      },
     });
     return { start, location, back };
   }
@@ -398,7 +406,7 @@ describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () 
       url: '/v1/session',
       headers: { cookie: `${SESSION_COOKIE}=${token ?? ''}` },
     });
-    expect(me.json()).toEqual({ signed_in: true });
+    expect(me.json()).toEqual({ signed_in: true, locked: false, app_lock: false });
     expect(me.body).not.toContain(PATIENT);
     expect((await s.app.inject({ url: '/v1/session' })).statusCode).toBe(401);
   });
@@ -436,5 +444,41 @@ describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () 
     });
     expect(again.statusCode).toBe(401);
     expect((await errored.app.inject({ url: '/auth/sign-in?prompt=none' })).statusCode).toBe(400);
+  });
+
+  it('spec 10.1 unlocking is signing in again: her app-lock choice carries over, same person only', async () => {
+    const s = await setup();
+    const own = s.sessions.create({
+      sub: PERSON,
+      role: 'patient',
+      org_id: ORG,
+      patient_id: PATIENT,
+    });
+    await s.sessions.setAppLock(own, true);
+    await s.sessions.lock(own);
+    const start = await s.app.inject({ url: '/auth/sign-in' });
+    const location = new URL(start.headers.location ?? '');
+    s.state.nonce = location.searchParams.get('nonce') ?? '';
+    const binding = /^__Host-endo_signin=([^;]+)/.exec(String(start.headers['set-cookie']))?.[1];
+    const back = await s.app.inject({
+      url: `/auth/callback?code=c2&state=${location.searchParams.get('state') ?? ''}`,
+      headers: { cookie: `__Host-endo_signin=${binding ?? ''}; ${SESSION_COOKIE}=${own}` },
+    });
+    const fresh = sessionFrom(back.headers['set-cookie']) ?? '';
+    expect(await s.sessions.resolve(own)).toBeNull();
+    expect(await s.sessions.resolve(fresh)).toMatchObject({ locked: false, appLock: true });
+
+    // Someone else's locked session on this phone: its choice is not hers.
+    const other = s.sessions.create({
+      sub: uuidv7(),
+      role: 'patient',
+      org_id: ORG,
+      patient_id: uuidv7(),
+    });
+    await s.sessions.setAppLock(other, true);
+    const again = await signInFlow(s, undefined, other);
+    expect(
+      await s.sessions.resolve(sessionFrom(again.back.headers['set-cookie']) ?? ''),
+    ).toMatchObject({ appLock: false });
   });
 });

@@ -18,6 +18,7 @@ import {
   SESSION_COOKIE,
   readCookie,
   type ConsentSessions,
+  type SessionResolver,
 } from './sessions.ts';
 
 /**
@@ -50,6 +51,8 @@ export interface EnrolmentDeps {
     /** Her consent-pending session and its rotation into a patient session (section 12). */
     readonly sessions: ConsentSessions;
   };
+  /** Reads her current patient session at sign-in (app-lock choice carries over). */
+  readonly sessionsResolver?: SessionResolver;
 }
 
 /** Appends a Set-Cookie header, keeping any set earlier in this reply. */

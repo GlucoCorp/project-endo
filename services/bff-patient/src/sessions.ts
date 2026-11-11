@@ -9,6 +9,10 @@ export interface Session {
   readonly claims: ServiceClaims;
   readonly createdAt: number;
   lastSeenAt: number;
+  /** Spec 10.1 app lock: she chose to lock the app when she leaves it. */
+  appLock: boolean;
+  /** Locked until she signs in again with her passkey; refused for everything but the lock screen. */
+  locked: boolean;
 }
 
 /**
@@ -28,11 +32,20 @@ export const PATIENT_IDLE_MS = 30 * 60 * 1000;
 export const PATIENT_ABSOLUTE_MS = 12 * 60 * 60 * 1000;
 /** A consent-pending session never outlives the enrolment's own absolute deadline (60 minutes). */
 export const CONSENT_PENDING_ABSOLUTE_MS = 60 * 60 * 1000;
+/** With app lock on, a session unused this long locks itself (shared phones, RISK-S02). */
+export const APP_LOCK_IDLE_MS = 5 * 60 * 1000;
 
 export interface SessionResolver {
-  /** Patient sessions only: a consent-pending session never resolves here. */
+  /**
+   * Patient sessions only: a consent-pending session never resolves here. A locked session does
+   * resolve (with `locked`); the BFF refuses it on every route but the lock screen.
+   */
   resolve(token: string): Promise<Session | null>;
   revoke(token: string): Promise<void>;
+  /** Turns app lock on or off for this session; false if it is gone or locked. */
+  setAppLock(token: string, enabled: boolean): Promise<boolean>;
+  /** Locks the session now if app lock is on; idempotent. */
+  lock(token: string): Promise<void>;
 }
 
 /** What enrolment needs from the session store (ADR-0021 section 12). */
@@ -52,7 +65,7 @@ export interface ConsentSessions {
   ): Promise<string | null>;
   revoke(token: string): Promise<void>;
   /** A fresh token for a patient session (a returning patient's sign-in). */
-  createPatient(claims: ServiceClaims): Promise<string>;
+  createPatient(claims: ServiceClaims, appLock?: boolean): Promise<string>;
 }
 
 type Entry =
@@ -78,18 +91,31 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
   }
 
   /** Returns an opaque 256-bit token for the cookie. */
-  create(claims: ServiceClaims): string {
+  create(claims: ServiceClaims, appLock = false): string {
     const token = random();
     const t = this.#now();
     this.#sessions.set(token, {
       kind: 'patient',
-      session: { claims, createdAt: t, lastSeenAt: t },
+      session: { claims, createdAt: t, lastSeenAt: t, appLock, locked: false },
     });
     return token;
   }
 
-  createPatient(claims: ServiceClaims): Promise<string> {
-    return Promise.resolve(this.create(claims));
+  createPatient(claims: ServiceClaims, appLock = false): Promise<string> {
+    return Promise.resolve(this.create(claims, appLock));
+  }
+
+  setAppLock(token: string, enabled: boolean): Promise<boolean> {
+    const e = this.#live(token);
+    if (e?.kind !== 'patient' || e.session.locked) return Promise.resolve(false);
+    e.session.appLock = enabled;
+    return Promise.resolve(true);
+  }
+
+  lock(token: string): Promise<void> {
+    const e = this.#live(token);
+    if (e?.kind === 'patient' && e.session.appLock) e.session.locked = true;
+    return Promise.resolve();
   }
 
   createConsentPending(transactionId: string, subject: string): Promise<string> {
@@ -145,6 +171,8 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
       this.#sessions.delete(token);
       return undefined;
     }
+    if (e.kind === 'patient' && e.session.appLock && t - e.session.lastSeenAt > APP_LOCK_IDLE_MS)
+      e.session.locked = true;
     e.session.lastSeenAt = t;
     return e;
   }
