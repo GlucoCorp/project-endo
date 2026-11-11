@@ -73,6 +73,8 @@ export interface IdentityDeps {
    * without it these routes do not exist (fail closed).
    */
   readonly enrolment?: PatientRouteDeps;
+  /** Starts activation after her consent (ADR-0021 section 10). */
+  readonly onConsented?: (transactionId: string) => void;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -325,7 +327,11 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
   if (deps.enrolment) {
     registerPatientEnrolmentRoutes(app, deps.enrolment);
     registerClinicEnrolmentRoutes(app, deps.enrolment);
-    registerHandoffRoutes(app, { ...deps.enrolment, issuer: deps.idpIssuer });
+    registerHandoffRoutes(app, {
+      ...deps.enrolment,
+      issuer: deps.idpIssuer,
+      ...(deps.onConsented ? { onConsented: deps.onConsented } : {}),
+    });
   }
 
   await app.ready();

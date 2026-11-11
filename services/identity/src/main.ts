@@ -29,6 +29,9 @@ import { HttpClinicalClient } from './enrolment/clinical.ts';
 import { EnrolmentCodes } from './enrolment/code.ts';
 import type { PatientRouteDeps } from './enrolment/routes.ts';
 import { PostgresEnrolmentStore } from './enrolment/store.ts';
+import { Activator } from './enrolment/activation.ts';
+import { enrolmentAudit } from './enrolment/routes.ts';
+import { uuidv7 } from '@endo/domain';
 
 const Jwk = z.string().transform((s, ctx) => {
   try {
@@ -100,6 +103,7 @@ async function main(): Promise<void> {
   const kms = new DevKeyManager(config.ENDO_ENV);
   let persons: PersonStore;
   let enrolment: PatientRouteDeps | undefined;
+  let onConsented: ((transactionId: string) => void) | undefined;
   let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
@@ -156,6 +160,22 @@ async function main(): Promise<void> {
         }),
         now: () => new Date(),
       };
+      // Activation (ADR-0021 section 10). Keycloak's finalise endpoint arrives with the
+      // extension's admin endpoint; until then activation waits before step 3 (quarantined).
+      const activator = new Activator({
+        store: enrolment.store,
+        clinical: enrolment.clinical,
+        keycloak: null,
+        now: () => new Date(),
+        audit: (action, tx) => enrolmentAudit(action, tx, uuidv7()),
+      });
+      onConsented = (id) => {
+        activator.run(id).catch(() => process.stderr.write('enrolment activation failed\n'));
+      };
+      const activationTimer = setInterval(() => {
+        activator.sweep().catch(() => process.stderr.write('enrolment activation sweep failed\n'));
+      }, 30_000);
+      activationTimer.unref();
     }
     closeVault = async () => {
       clearInterval(relayTimer);
@@ -211,6 +231,7 @@ async function main(): Promise<void> {
     persons,
     idpIssuer: config.IDENTITY_IDP_ISSUER,
     ...(enrolment ? { enrolment } : {}),
+    ...(onConsented ? { onConsented } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

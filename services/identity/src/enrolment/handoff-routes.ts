@@ -15,6 +15,8 @@ import {
 /** The one identity-provider issuer this deployment trusts (ADR-0019 single-issuer invariant). */
 export interface HandoffRouteDeps extends PatientRouteDeps {
   readonly issuer: string;
+  /** Starts activation at once after her consent (the periodic sweep catches anything missed). */
+  readonly onConsented?: (transactionId: string) => void;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
@@ -330,6 +332,7 @@ export function registerHandoffRoutes(app: FastifyInstance, deps: HandoffRouteDe
           throw new ProblemError(400, 'request.invalid', 'Every choice is needed.');
         throw new ProblemError(409, 'enrolment.not_ready', 'Not ready yet.');
       }
+      if (r.tx.status === 'claiming') deps.onConsented?.(id);
       return enrolmentView(r.tx, now);
     },
   );

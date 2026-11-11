@@ -376,6 +376,59 @@ export class PostgresEnrolmentStore {
     );
   }
 
+  /**
+   * Activation step 1 (ADR-0021 section 10), in one identity transaction: the identity-vault
+   * person (bound to her provisional subject) and the link to her clinical patient record, then
+   * the step recorded. Idempotent: an existing person or link is left as it is.
+   */
+  activatePerson(
+    id: string,
+    clock: () => Date,
+    audit: (before: EnrolmentTransaction, after: EnrolmentTransaction) => OutboxEvent,
+  ): Promise<ApplyResult> {
+    return this.#db.transaction().execute(async (trx): Promise<ApplyResult> => {
+      const row = await trx
+        .selectFrom('enrolment_transaction')
+        .selectAll()
+        .where('id', '=', id)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return { ok: false, reason: 'not-found' };
+      const before = toStored(row).tx;
+      if (before.status !== 'activating' || before.activationStep !== 0)
+        return { ok: false, reason: 'wrong-state' };
+      const { personId, patientId, provisionalSubject } = before;
+      if (personId === null || patientId === null || provisionalSubject === null)
+        throw new Error('an activating transaction has its ids');
+      await trx
+        .insertInto('person')
+        .values({ id: personId, idp_subject: provisionalSubject })
+        .onConflict((oc) => oc.column('id').doNothing())
+        .execute();
+      await trx
+        .insertInto('patient_link')
+        .values({ person_id: personId, patient_record_id: patientId, org_id: before.orgId })
+        .onConflict((oc) => oc.doNothing())
+        .execute();
+      const result = transition(before, { type: 'activation-step-done', step: 1 }, clock());
+      if (!result.ok || !result.changed) return result;
+      await write(trx, result.tx, audit(before, result.tx));
+      return result;
+    });
+  }
+
+  /** Transactions activation still has work for: claiming or activating, oldest first. */
+  async listActivating(limit = 50): Promise<string[]> {
+    const rows = await this.#db
+      .selectFrom('enrolment_transaction')
+      .select('id')
+      .where('status', 'in', ['claiming', 'activating'])
+      .orderBy('updated_at')
+      .limit(limit)
+      .execute();
+    return rows.map((r) => r.id);
+  }
+
   async get(id: string): Promise<StoredTransaction | null> {
     const row = await this.#db
       .selectFrom('enrolment_transaction')

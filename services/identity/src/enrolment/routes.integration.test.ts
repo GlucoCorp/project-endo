@@ -12,7 +12,15 @@ import {
 } from '@endo/service-kit';
 import { buildIdentity } from '../app.ts';
 import { InMemoryPersonStore } from '../persons.ts';
-import { ClinicalUnavailableError, type ClinicalClient, type LiveInvitation } from './clinical.ts';
+import {
+  ClinicalUnavailableError,
+  type ClaimInput,
+  type ClinicalClient,
+  type ConsentsInput,
+  type LiveInvitation,
+} from './clinical.ts';
+import { Activator } from './activation.ts';
+import { enrolmentAudit } from './routes.ts';
 import { EnrolmentCodes } from './code.ts';
 import { PostgresEnrolmentStore } from './store.ts';
 import { setupIdentityTestDb, type TestIdentityDb } from './test-db.ts';
@@ -40,11 +48,24 @@ describe.skipIf(!url)(
     /** What the fake API answers to the next reserve: done, refused, or down. */
     let reserveAnswer: 'done' | 'refused' | 'down' = 'done';
     const reserved: string[] = [];
+    let claimAnswer: 'done' | 'refused' | 'down' = 'done';
+    const claimed: ClaimInput[] = [];
+    const consentsWritten: ConsentsInput[] = [];
     const clinical: ClinicalClient = {
       find: (h) =>
         apiDown
           ? Promise.reject(new ClinicalUnavailableError())
           : Promise.resolve(links.get(h) ?? null),
+      claim: (r) => {
+        claimed.push(r);
+        return claimAnswer === 'down'
+          ? Promise.reject(new ClinicalUnavailableError())
+          : Promise.resolve(claimAnswer);
+      },
+      consents: (r) => {
+        consentsWritten.push(r);
+        return Promise.resolve();
+      },
       reserve: (r) => {
         reserved.push(r.transactionId);
         return reserveAnswer === 'down'
@@ -562,6 +583,81 @@ describe.skipIf(!url)(
         });
         expect(declined.json()).toMatchObject({ status: 'cancelling' });
         expect((await store.get(b.id))?.tx.cancelReason).toBe('declined');
+      });
+
+      it('activates: claim, person and link, consents, Keycloak; one durable step at a time', async () => {
+        const a = await consentPending();
+        await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: decisions() });
+        const finalised: string[] = [];
+        let keycloakUp = false;
+        const activator = new Activator({
+          store,
+          clinical,
+          keycloak: {
+            finalise: (subject) => {
+              if (!keycloakUp) return Promise.resolve(false);
+              finalised.push(subject);
+              return Promise.resolve(true);
+            },
+          },
+          now: () => new Date(),
+          audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+        });
+        // Keycloak not reachable yet: it stops before step 3, quarantined, never half-active.
+        expect(await activator.run(a.id)).toBe('waiting');
+        const mid = (await store.get(a.id))?.tx;
+        expect(mid).toMatchObject({ status: 'activating', activationStep: 2 });
+        expect(claimed.find((c) => c.transactionId === a.id)).toMatchObject({
+          patientId: mid?.patientId,
+          identityRef: mid?.personId,
+        });
+        const person = await t.admin.query<{ idp_subject: string }>(
+          'SELECT idp_subject FROM person WHERE id = $1',
+          [mid?.personId],
+        );
+        expect(person.rows[0]?.idp_subject).toBe(mid?.provisionalSubject);
+        const link = await t.admin.query(
+          'SELECT 1 FROM patient_link WHERE patient_record_id = $1',
+          [mid?.patientId],
+        );
+        expect(link.rowCount).toBe(1);
+        const written = consentsWritten.find((c) => c.patientId === mid?.patientId);
+        expect(written?.decisions.map((d) => [d.purpose, d.status, d.version])).toEqual([
+          ['self_tracking', 'granted', 1],
+          ['share_with_care_team', 'granted', 1],
+          ['research_deidentified', 'declined', 1],
+          ['org_aggregate_reporting', 'declined', 1],
+        ]);
+        keycloakUp = true;
+        expect(await activator.run(a.id)).toBe('active');
+        expect(finalised).toEqual([mid?.provisionalSubject]);
+        expect((await store.get(a.id))?.tx).toMatchObject({ status: 'active', activationStep: 3 });
+        // Running again changes nothing.
+        expect(await activator.run(a.id)).toBe('active');
+      });
+
+      it('cancels on a definite claim refusal, and waits on an unknown outcome', async () => {
+        const activator = new Activator({
+          store,
+          clinical,
+          keycloak: null,
+          now: () => new Date(),
+          audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+        });
+        const a = await consentPending();
+        await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: decisions() });
+        claimAnswer = 'down';
+        try {
+          expect(await activator.run(a.id)).toBe('waiting');
+          expect((await store.get(a.id))?.tx.status).toBe('claiming');
+          claimAnswer = 'refused';
+          expect(await activator.run(a.id)).toBe('cancelling');
+          expect((await store.get(a.id))?.tx.cancelReason).toBe('claim-refused');
+        } finally {
+          claimAnswer = 'done';
+        }
+        // The sweep finds work only in claiming or activating.
+        await activator.sweep();
       });
 
       it('refuses missing decisions, future times, another browser, or the wrong moment', async () => {
