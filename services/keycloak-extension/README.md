@@ -12,7 +12,9 @@
 | `endo-quarantine-guard`  | Authenticator   | REQUIRED after sign-in: a user still in enrolment may finish only the sign-in that redeemed that transaction                                                                                                                                                                                             |
 | `endo-enrolment-passkey` | Required action | Keycloak's passwordless WebAuthn registration, only inside a bound enrolment (checked on challenge and on answer); not reachable through `kc_action`; reports the committed passkey after Keycloak's transaction commits                                                                                 |
 
-Configuration (environment, read at start-up): `ENDO_IDENTITY_BASE_URL` and `ENDO_KEYCLOAK_WORKLOAD_PRIVATE_KEY_JWK` (Ed25519, its own workload key; scope `identity.enrolment.keycloak`). Missing or invalid configuration makes every handoff fail closed.
+| `endo-enrolment` | Realm resource | `POST /realms/{realm}/endo-enrolment/finalise` and `/delete`, for the identity coordinator only (workload scope `keycloak.enrolment.admin`). Finalise grants `patient` and lifts the quarantine; delete removes a provisional user. Both act only on a user whose `endo_enrolment` names that transaction (otherwise 409), and both are idempotent |
+
+Configuration (environment, read at start-up): `ENDO_IDENTITY_BASE_URL` and `ENDO_KEYCLOAK_WORKLOAD_PRIVATE_KEY_JWK` (Ed25519, its own workload key; scope `identity.enrolment.keycloak`); `ENDO_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK` (the identity service's public key, for the admin endpoint). Missing or invalid configuration makes every handoff and every admin call fail closed.
 
 ## Build
 
@@ -20,4 +22,4 @@ Configuration (environment, read at start-up): `ENDO_IDENTITY_BASE_URL` and `END
 
 ## Not yet
 
-Activation's finalise and provisional-user deletion endpoints (slice 6) and the real-Keycloak browser tests (slice 8).
+The cleanup jobs that call delete (slice 6) and the real-Keycloak browser tests (slice 8).
