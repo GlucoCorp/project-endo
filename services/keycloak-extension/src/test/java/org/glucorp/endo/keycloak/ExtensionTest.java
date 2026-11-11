@@ -178,6 +178,21 @@ class ExtensionTest {
   }
 
   @Test
+  void asksTheCoordinatorBeforeRegisteringAPasskey() throws Exception {
+    List<String> seen = new ArrayList<>();
+    assertTrue(serve(200, "{\"allowed\":true}", seen).registrationAllowed(TX, SUBJECT));
+    assertTrue(seen.get(0).startsWith("/internal/v1/enrolment/transactions/" + TX + "/registration-check Bearer "));
+    assertTrue(seen.get(0).endsWith("{\"subject\":\"" + SUBJECT + "\"}"));
+    stop();
+    assertFalse(serve(409, "{}", new ArrayList<>()).registrationAllowed(TX, SUBJECT));
+    stop();
+    List<String> none = new ArrayList<>();
+    assertFalse(serve(200, "{}", none).registrationAllowed("../x", SUBJECT));
+    assertFalse(serve(200, "{}", none).registrationAllowed(TX, "not-a-uuid"));
+    assertTrue(none.isEmpty());
+  }
+
+  @Test
   void quarantinesProvisionalUsersOutsideTheirOwnSignIn() {
     assertTrue(QuarantineGuard.allowed(null, null));
     assertTrue(QuarantineGuard.allowed(TX, TX));

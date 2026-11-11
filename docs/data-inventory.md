@@ -200,6 +200,15 @@ One-time, five-minute grants from the coordinator into Keycloak (ADR-0021 sectio
 | `enrolment_handoff.kc_client_uuid`  | Keycloak client of that session                                                 | as above                                          | as above                 | S0          |
 | `enrolment_handoff.kc_tab_id`       | Keycloak tab of that session                                                    | as above                                          | as above                 | S1          |
 
+### Enrolment reservations — `packages/identity-store/migrations/0007`
+
+The clinical store's reservation of an invitation, acknowledged for a transaction (ADR-0021 sections 6 and 10). A handoff into Keycloak requires it. No identity data. Retention: `TODO_LEGAL` (proposed: as the enrolment transactions).
+
+| Column                                 | Purpose                                              | Legal basis                                       | Retention                | Sensitivity |
+| -------------------------------------- | ---------------------------------------------------- | ------------------------------------------------- | ------------------------ | ----------- |
+| `enrolment_reservation.transaction_id` | Enrolment transaction the invitation is reserved for | Contract / consent to use the service (enrolment) | `TODO_LEGAL` (see above) | S0          |
+| `enrolment_reservation.reserved_at`    | When the reservation was recorded (database clock)   | as above                                          | as above                 | S0          |
+
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.

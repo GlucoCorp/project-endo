@@ -592,6 +592,80 @@ describe.skipIf(!url)(
         ).toBe(409);
       });
 
+      it('lets Keycloak register a passkey only while the redeemed enrolment is live', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const subject = (await redeem(ref, req)).json<{ provisional_subject: string }>()
+          .provisional_subject;
+        const check = async (s: string) =>
+          app.inject({
+            method: 'POST',
+            url: `/internal/v1/enrolment/transactions/${id}/registration-check`,
+            headers: await asKeycloak(),
+            payload: { subject: s },
+          });
+        expect((await check(subject)).json()).toEqual({ allowed: true });
+        expect((await check(uuidv7())).statusCode).toBe(409);
+        // She cancels from another tab: registration stops, and a retried redemption is refused.
+        expect((await post(`/${id}/cancel`, { binding_hash: binding })).statusCode).toBe(200);
+        expect((await check(subject)).statusCode).toBe(409);
+        expect((await redeem(ref, req)).statusCode).toBe(403);
+      });
+
+      it('retries an unknown reservation at Continue: reserved, refused, or unreachable', async () => {
+        // The clinic confirms, but the reservation's outcome is unknown (the API timed out).
+        async function confirmedUnreserved() {
+          const link = newLink();
+          const binding = secret();
+          const started = (await start(link.tokenHash, binding)).json<{
+            transaction_id: string;
+            code: string;
+          }>();
+          reserveAnswer = 'down';
+          try {
+            const res = await app.inject({
+              method: 'POST',
+              url: '/internal/v1/enrolment/confirm',
+              headers: await as(apiKey, 'api', 'identity.enrolment.clinic'),
+              payload: {
+                org_id: link.orgId,
+                invitation_id: link.invitationId,
+                code: started.code,
+                clinician_id: '01900000-0000-7000-8000-0000000000c1',
+                attestation: { identified: true, own_phone: true },
+              },
+            });
+            expect(res.statusCode).toBe(503);
+          } finally {
+            reserveAnswer = 'done';
+          }
+          expect(await store.isReserved(started.transaction_id)).toBe(false);
+          return { id: started.transaction_id, binding };
+        }
+        const ok = await confirmedUnreserved();
+        expect((await handoff(ok.id, ok.binding)).statusCode).toBe(201);
+        expect(await store.isReserved(ok.id)).toBe(true);
+
+        const refused = await confirmedUnreserved();
+        reserveAnswer = 'refused';
+        try {
+          expect((await handoff(refused.id, refused.binding)).statusCode).toBe(409);
+        } finally {
+          reserveAnswer = 'done';
+        }
+        expect((await store.get(refused.id))?.tx.cancelReason).toBe('claim-refused');
+
+        const down = await confirmedUnreserved();
+        reserveAnswer = 'down';
+        try {
+          expect((await handoff(down.id, down.binding)).statusCode).toBe(503);
+        } finally {
+          reserveAnswer = 'done';
+        }
+        expect(await store.isReserved(down.id)).toBe(false);
+      });
+
       it('refuses a handoff before confirmation, for another browser, or for another issuer', async () => {
         const link = newLink();
         const binding = secret();

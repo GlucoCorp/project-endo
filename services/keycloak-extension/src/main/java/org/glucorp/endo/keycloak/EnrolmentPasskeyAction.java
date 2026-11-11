@@ -25,10 +25,19 @@ public class EnrolmentPasskeyAction implements RequiredActionProvider {
     return quarantine != null && quarantine.equals(redeemedTx) ? quarantine : null;
   }
 
+  /**
+   * The bound transaction, if this sign-in is a bound enrolment AND the coordinator says it is
+   * still live for this user (not cancelled, completed or past its deadline); otherwise null.
+   */
   private static String bound(RequiredActionContext ctx) {
-    return boundTransaction(
-        ctx.getUser().getFirstAttribute(EndoConfig.QUARANTINE),
-        ctx.getAuthenticationSession().getAuthNote(EndoConfig.TX_NOTE));
+    String tx =
+        boundTransaction(
+            ctx.getUser().getFirstAttribute(EndoConfig.QUARANTINE),
+            ctx.getAuthenticationSession().getAuthNote(EndoConfig.TX_NOTE));
+    IdentityClient client = EndoConfig.client();
+    return tx != null && client != null && client.registrationAllowed(tx, ctx.getUser().getId())
+        ? tx
+        : null;
   }
 
   private static void refuse(RequiredActionContext ctx) {
