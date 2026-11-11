@@ -37,12 +37,22 @@ describe.skipIf(!url)(
     let patientKey: Awaited<ReturnType<typeof generateServiceKeyPair>>;
     let clinicKey: Awaited<ReturnType<typeof generateServiceKeyPair>>;
 
+    /** What the fake API answers to the next reserve: done, refused, or down. */
+    let reserveAnswer: 'done' | 'refused' | 'down' = 'done';
+    const reserved: string[] = [];
     const clinical: ClinicalClient = {
       find: (h) =>
         apiDown
           ? Promise.reject(new ClinicalUnavailableError())
           : Promise.resolve(links.get(h) ?? null),
+      reserve: (r) => {
+        reserved.push(r.transactionId);
+        return reserveAnswer === 'down'
+          ? Promise.reject(new ClinicalUnavailableError())
+          : Promise.resolve(reserveAnswer);
+      },
     };
+    let apiKey: Awaited<ReturnType<typeof generateServiceKeyPair>>;
 
     /** A new live link; its token carries the PHI marker, which must never be recorded. */
     function newLink(reserved = false) {
@@ -57,6 +67,7 @@ describe.skipIf(!url)(
       store = new PostgresEnrolmentStore(t.db);
       patientKey = await generateServiceKeyPair();
       clinicKey = await generateServiceKeyPair();
+      apiKey = await generateServiceKeyPair();
       app = await buildIdentity({
         logLevel: 'info',
         verifier: new WorkloadTokenVerifier('identity', {
@@ -65,6 +76,7 @@ describe.skipIf(!url)(
             scopes: ['identity.enrolment.patient'],
           },
           'bff-clinic': { publicJwk: clinicKey.publicJwk, scopes: ['identity.subject.resolve'] },
+          api: { publicJwk: apiKey.publicJwk, scopes: ['identity.enrolment.clinic'] },
         }),
         audit: new AuditWriter(audit),
         persons: new InMemoryPersonStore(
@@ -252,6 +264,121 @@ describe.skipIf(!url)(
         expect(recorded).not.toContain(s);
       // The code is six digits, which could appear by chance inside an id; look for it as a value.
       expect(recorded).not.toContain(`"${code}"`);
+    });
+
+    describe('ADR-0021 sections 2 and 3: the clinic confirms by code (API caller only)', () => {
+      const CLINICIAN = '01900000-0000-7000-8000-0000000000c1';
+      const asApi = async () => ({
+        authorization: `Bearer ${await new WorkloadTokenSigner(apiKey.privateJwk, 'api').sign(['identity.enrolment.clinic'], 'identity')}`,
+      });
+      const confirm = async (
+        link: { invitationId: string; orgId: string },
+        code: string,
+        headers?: Record<string, string>,
+      ) =>
+        app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/confirm',
+          headers: headers ?? (await asApi()),
+          payload: {
+            org_id: link.orgId,
+            invitation_id: link.invitationId,
+            code,
+            clinician_id: CLINICIAN,
+            attestation: { identified: true, own_phone: true },
+          },
+        });
+      async function started() {
+        const link = newLink();
+        const res = await start(link.tokenHash, secret());
+        const body = res.json<{ transaction_id: string; code: string }>();
+        return { link, id: body.transaction_id, code: body.code };
+      }
+      const wrongFor = (code: string) => (code === '000000' ? '000001' : '000000');
+
+      it('confirms the right code, reserves the invitation, and audits the clinician', async () => {
+        reserveAnswer = 'done';
+        const { link, id, code } = await started();
+        const res = await confirm(link, code);
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({ outcome: 'confirmed' });
+        expect(reserved).toContain(id);
+        expect((await store.get(id))?.tx.status).toBe('confirmed');
+        const outbox = await t.relay.query<{ event: { action: string; actor: unknown } }>(
+          "SELECT event FROM audit_outbox WHERE event->'resource'->>'id' = $1",
+          [id],
+        );
+        expect(outbox.rows.map((r) => r.event)).toContainEqual(
+          expect.objectContaining({
+            action: 'identity.enrolment.confirmed_attested',
+            actor: { id: CLINICIAN, role: 'clinician' },
+          }),
+        );
+      });
+
+      it('counts a wrong code against the invitation, and never records the code', async () => {
+        const { link, id, code } = await started();
+        const res = await confirm(link, wrongFor(code));
+        expect(res.json()).toEqual({ outcome: 'wrong', remaining: 4 });
+        expect((await store.get(id))?.tx.status).toBe('awaiting-confirmation');
+        const outbox = await t.relay.query('SELECT event FROM audit_outbox');
+        expect(JSON.stringify(outbox.rows)).not.toContain(`"${wrongFor(code)}"`);
+      });
+
+      it('cancels when the invitation can no longer be reserved, and says it is unavailable', async () => {
+        reserveAnswer = 'refused';
+        try {
+          const { link, id, code } = await started();
+          expect((await confirm(link, code)).json()).toEqual({ outcome: 'unavailable' });
+          expect((await store.get(id))?.tx).toMatchObject({
+            status: 'cancelling',
+            cancelReason: 'claim-refused',
+          });
+        } finally {
+          reserveAnswer = 'done';
+        }
+      });
+
+      it('fails closed when the API cannot be reached, leaving the confirmation in place', async () => {
+        reserveAnswer = 'down';
+        try {
+          const { link, id, code } = await started();
+          expect((await confirm(link, code)).statusCode).toBe(503);
+          expect((await store.get(id))?.tx.status).toBe('confirmed');
+        } finally {
+          reserveAnswer = 'done';
+        }
+      });
+
+      it('answers only the API, and refuses a missing attestation', async () => {
+        const { link, code } = await started();
+        const patientBff = {
+          authorization: `Bearer ${await new WorkloadTokenSigner(patientKey.privateJwk, 'bff-patient').sign(['identity.enrolment.patient'], 'identity')}`,
+        };
+        expect((await confirm(link, code, patientBff)).statusCode).toBe(403);
+        expect((await confirm(link, code, {})).statusCode).toBe(401);
+        const noAttestation = await app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/confirm',
+          headers: await asApi(),
+          payload: {
+            org_id: link.orgId,
+            invitation_id: link.invitationId,
+            code,
+            clinician_id: CLINICIAN,
+            attestation: { identified: true, own_phone: false },
+          },
+        });
+        expect(noAttestation.statusCode).toBe(400);
+        // And the API cannot start transactions (that is the patient BFF's scope).
+        const startAsApi = await app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/transactions',
+          headers: await asApi(),
+          payload: { token_hash: link.tokenHash, binding_hash: secret() },
+        });
+        expect(startAsApi.statusCode).toBe(403);
+      });
     });
   },
 );

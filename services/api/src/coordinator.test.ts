@@ -6,6 +6,7 @@ import {
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
   type InvitationState,
+  type ReservationRequest,
 } from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
@@ -70,6 +71,8 @@ async function setup(coordination: EnrolmentCoordination | null = fake()) {
   };
 }
 
+const reservations: (ReservationRequest & { op: string })[] = [];
+
 function fake(
   state: InvitationState = { status: 'live', reservedBy: null },
 ): EnrolmentCoordination {
@@ -79,6 +82,26 @@ function fake(
         h === HASH ? { invitationId: INVITATION, orgId: ORG, reserved: false } : null,
       ),
     state: (o, i) => Promise.resolve(o === ORG && i === INVITATION ? state : { status: 'missing' }),
+    reserve: (r) => {
+      reservations.push({ op: 'reserve', ...r });
+      return Promise.resolve(
+        r.invitationId === INVITATION
+          ? {
+              outcome: 'done',
+              changed: true,
+              state: { status: 'live', reservedBy: r.transactionId },
+            }
+          : { outcome: 'refused', state: { status: 'revoked', reservedBy: null } },
+      );
+    },
+    release: (r) => {
+      reservations.push({ op: 'release', ...r });
+      return Promise.resolve({
+        outcome: 'done',
+        changed: false,
+        state: { status: 'live', reservedBy: null },
+      });
+    },
   };
 }
 
@@ -183,6 +206,8 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     const failing: EnrolmentCoordination = {
       find: () => Promise.reject(new Error(`store failed for ${HASH} SYNTHETIC_PHI_MARKER`)),
       state: () => Promise.reject(new Error('store failed SYNTHETIC_PHI_MARKER')),
+      reserve: () => Promise.reject(new Error('unused')),
+      release: () => Promise.reject(new Error('unused')),
     };
     const { post, audit, logs } = await setup(failing);
     const res = await post('find', { token_hash: HASH });
@@ -204,5 +229,43 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
   it('does not exist without a clinical store (fail closed)', async () => {
     const { post } = await setup(null);
     expect((await post('find', { token_hash: HASH })).statusCode).toBe(404);
+  });
+
+  it('reserves and releases for a transaction, queuing the audit event with the change', async () => {
+    const { post } = await setup();
+    reservations.length = 0;
+    const body = { org_id: ORG, invitation_id: INVITATION, transaction_id: TX };
+    const reserved = await post('reserve', body);
+    expect(reserved.statusCode).toBe(200);
+    expect(reserved.json()).toEqual({
+      outcome: 'done',
+      changed: true,
+      state: { status: 'live', reserved_by: TX },
+    });
+    const refused = await post('reserve', { ...body, invitation_id: PATIENT });
+    expect(refused.json()).toEqual({
+      outcome: 'refused',
+      state: { status: 'revoked', reserved_by: null },
+    });
+    expect((await post('release', body)).json()).toMatchObject({ outcome: 'done', changed: false });
+    expect(reservations.map((r) => r.op)).toEqual(['reserve', 'reserve', 'release']);
+    expect(reservations[0]).toMatchObject({
+      orgId: ORG,
+      invitationId: INVITATION,
+      transactionId: TX,
+      auditEvent: {
+        action: 'api.enrolment.invitation.reserved',
+        resource: { type: 'enrolment_invitation', id: INVITATION },
+        org_id: ORG,
+      },
+    });
+  });
+
+  it('refuses reserve and release to any other caller', async () => {
+    const { post, asClinic } = await setup();
+    const body = { org_id: ORG, invitation_id: INVITATION, transaction_id: TX };
+    expect((await post('reserve', body, {})).statusCode).toBe(401);
+    expect((await post('release', body, await asClinic())).statusCode).toBe(403);
+    expect((await post('reserve', { ...body, transaction_id: 'x' })).statusCode).toBe(400);
   });
 });

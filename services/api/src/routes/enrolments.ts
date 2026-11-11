@@ -5,6 +5,7 @@ import type { IdempotentInvitationStore } from '@endo/clinical-store';
 import type { EnvelopeSealer } from '@endo/crypto';
 import { uuidv7 } from '@endo/domain';
 import { ProblemError } from '@endo/service-kit';
+import { IdentityUnavailableError, type IdentityEnrolment } from '../identity-client.ts';
 
 export interface EnrolmentRouteDeps {
   readonly invitations: IdempotentInvitationStore;
@@ -12,6 +13,8 @@ export interface EnrolmentRouteDeps {
   readonly sealer: EnvelopeSealer;
   /** Called after a commit so queued audit events reach the audit store promptly. */
   readonly onCommitted: () => void;
+  /** The identity service's confirm route (ADR-0021). Without it, confirm does not exist. */
+  readonly identity?: IdentityEnrolment;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
@@ -142,4 +145,106 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentRou
       return reply.code(201).send({ id, token, expires_at: outcome.expiresAt.toISOString() });
     },
   );
+
+  const own = (action: 'enrolment.read' | 'enrolment.confirm') =>
+    ({
+      kind: 'protected',
+      action,
+      resourceType: 'enrolment_invitation',
+      purpose: 'treatment',
+      resource: (req: { params: unknown }, subject: { orgId: string | null }) => {
+        const id = (req.params as { id?: unknown }).id;
+        return {
+          type: 'enrolment_invitation',
+          id: typeof id === 'string' && new RegExp(UUID).test(id) ? id : null,
+          // Always the clinician's own organisation: the identity service only ever considers
+          // transactions of this organisation, so another organisation's invitation never matches.
+          orgId: subject.orgId,
+          patientId: null,
+        };
+      },
+    }) as const;
+
+  /** GET /v1/enrolments: the organisation's open invitations (ids and times; never tokens). */
+  app.get('/v1/enrolments', { config: { policy: own('enrolment.read') } }, async (request) => {
+    const orgId = request.subject?.orgId;
+    if (!orgId) throw new ProblemError(403, 'authz.org_mismatch', 'Not allowed.');
+    const open = await deps.invitations.listOpen(orgId);
+    return {
+      invitations: open.map((i) => ({
+        id: i.id,
+        created_at: i.createdAt.toISOString(),
+        expires_at: i.expiresAt.toISOString(),
+        in_use: i.reserved,
+      })),
+    };
+  });
+
+  /**
+   * POST /v1/enrolments/{id}/confirm (ADR-0021 sections 2 and 3). The clinician selected this
+   * invitation, identified the woman as the clinic normally does, and typed the code from her own
+   * phone. The identity service checks the code (wrong codes count per invitation; the fifth locks
+   * it for 15 minutes) and, on a match, reserves the invitation.
+   */
+  if (deps.identity) {
+    const identity = deps.identity;
+    app.post(
+      '/v1/enrolments/:id/confirm',
+      {
+        config: { policy: own('enrolment.confirm') },
+        schema: {
+          params: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id'],
+            properties: { id: { type: 'string', pattern: UUID } },
+          },
+          body: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['code', 'identified', 'own_phone'],
+            properties: {
+              code: { type: 'string', pattern: '^[0-9]{6}$' },
+              // The attestation (section 2): both must be true; anything else is refused.
+              identified: { const: true },
+              own_phone: { const: true },
+            },
+          },
+        },
+      },
+      async (request) => {
+        const orgId = request.subject?.orgId;
+        const clinicianId = request.clinicianId;
+        if (!orgId || !clinicianId)
+          throw new ProblemError(403, 'authz.org_mismatch', 'Not allowed.');
+        const { id } = request.params as { id: string };
+        const { code } = request.body as { code: string };
+        let out;
+        try {
+          out = await identity.confirm({
+            orgId,
+            invitationId: id,
+            code,
+            clinicianId,
+            attestation: { identified: true, ownPhone: true },
+            requestId: request.id,
+          });
+        } catch (error) {
+          if (error instanceof IdentityUnavailableError)
+            throw new ProblemError(503, 'upstream.unavailable', 'Try again in a minute.');
+          throw error;
+        }
+        switch (out.outcome) {
+          case 'confirmed':
+            return { outcome: 'confirmed' };
+          case 'wrong':
+            return { outcome: 'wrong', remaining: out.remaining };
+          case 'locked':
+            return { outcome: 'locked', locked_until: out.lockedUntil };
+          case 'unavailable':
+            return { outcome: 'unavailable' };
+        }
+      },
+    );
+  }
 }

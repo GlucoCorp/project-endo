@@ -15,7 +15,11 @@ import {
   type WorkloadTokenVerifier,
 } from '@endo/service-kit';
 import type { PersonStore } from './persons.ts';
-import { registerPatientEnrolmentRoutes, type PatientRouteDeps } from './enrolment/routes.ts';
+import {
+  registerClinicEnrolmentRoutes,
+  registerPatientEnrolmentRoutes,
+  type PatientRouteDeps,
+} from './enrolment/routes.ts';
 
 /**
  * Every route declares its access (ADR-0018). Workload routes name the one scope they require;
@@ -317,7 +321,10 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     });
   });
 
-  if (deps.enrolment) registerPatientEnrolmentRoutes(app, deps.enrolment);
+  if (deps.enrolment) {
+    registerPatientEnrolmentRoutes(app, deps.enrolment);
+    registerClinicEnrolmentRoutes(app, deps.enrolment);
+  }
 
   await app.ready();
   return app;

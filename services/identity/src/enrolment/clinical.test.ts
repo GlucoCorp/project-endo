@@ -67,4 +67,29 @@ describe('REQ-001 ADR-0021 identity -> API invitation lookup client', () => {
     const { c } = await client(respond);
     await expect(c.find(HASH)).rejects.toBeInstanceOf(ClinicalUnavailableError);
   });
+
+  it('reserves with the same single scope and reads done or refused', async () => {
+    const tx = '01900000-0000-7000-8000-0000000000f1';
+    const r = { orgId: ORG, invitationId: INVITATION, transactionId: tx };
+    const ok = await client(() => json(200, { outcome: 'done', changed: true, state: {} }));
+    expect(await ok.c.reserve(r)).toBe('done');
+    expect(ok.seen[0]?.url).toBe('http://api.test/internal/v1/enrolment/invitations/reserve');
+    expect(await ok.seen[0]?.json()).toEqual({
+      org_id: ORG,
+      invitation_id: INVITATION,
+      transaction_id: tx,
+    });
+    expect(await (await client(() => json(200, { outcome: 'refused' }))).c.reserve(r)).toBe(
+      'refused',
+    );
+    for (const bad of [
+      () => json(500, {}),
+      () => json(200, { outcome: 'maybe' }),
+      () => new Response('nope', { status: 200 }),
+      () => Promise.reject(new TypeError('fetch failed')),
+    ])
+      await expect((await client(bad)).c.reserve(r)).rejects.toBeInstanceOf(
+        ClinicalUnavailableError,
+      );
+  });
 });

@@ -173,7 +173,7 @@ async function main(): Promise<void> {
   if (config.IDENTITY_TRUSTED_API_PUBLIC_KEY_JWK) {
     trusted['api'] = {
       publicJwk: config.IDENTITY_TRUSTED_API_PUBLIC_KEY_JWK,
-      scopes: ['identity.person.create'],
+      scopes: ['identity.person.create', 'identity.enrolment.clinic'],
     };
   }
   if (config.IDENTITY_TRUSTED_JOBS_PUBLIC_KEY_JWK) {

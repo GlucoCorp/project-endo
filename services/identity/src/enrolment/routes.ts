@@ -218,3 +218,119 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
     },
   );
 }
+
+/**
+ * The clinic side (ADR-0021 sections 2, 3 and 13), callable only by the API with workload scope
+ * `identity.enrolment.clinic`. The API has already checked the clinician's session, membership and
+ * organisation, and that both attestations are true; it passes the clinician's clinical-store id.
+ *
+ * The code is checked against this organisation's transactions for the selected invitation only;
+ * wrong codes count per invitation, and the fifth locks it for 15 minutes. On a match the
+ * invitation is reserved in the clinical store; if that is refused (revoked, expired, held by
+ * another transaction), the transaction is cancelled and the answer is `unavailable`.
+ */
+export function registerClinicEnrolmentRoutes(app: FastifyInstance, deps: PatientRouteDeps) {
+  app.post(
+    '/internal/v1/enrolment/confirm',
+    {
+      config: {
+        access: {
+          kind: 'workload',
+          scope: 'identity.enrolment.clinic',
+          action: 'identity.enrolment.confirm',
+          resourceId: () => null,
+          resourceType: 'enrolment_transaction',
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['org_id', 'invitation_id', 'code', 'clinician_id', 'attestation'],
+          properties: {
+            org_id: { type: 'string', pattern: UUID },
+            invitation_id: { type: 'string', pattern: UUID },
+            code: { type: 'string', pattern: '^[0-9]{6}$' },
+            clinician_id: { type: 'string', pattern: UUID },
+            attestation: {
+              type: 'object',
+              additionalProperties: false,
+              required: ['identified', 'own_phone'],
+              properties: { identified: { const: true }, own_phone: { const: true } },
+            },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const b = request.body as {
+        org_id: string;
+        invitation_id: string;
+        code: string;
+        clinician_id: string;
+      };
+      // Who did it: the clinician, with the attestation the API required (section 2).
+      const byClinician = (action: string, resource: { type: string; id: string }) => ({
+        id: uuidv7(),
+        actor: { id: b.clinician_id, role: 'clinician' },
+        action,
+        resource,
+        org_id: b.org_id,
+        purpose_of_use: 'treatment',
+        outcome: 'success',
+        reason: null,
+        request_id: request.id,
+      });
+      const invitation = { type: 'enrolment_invitation', id: b.invitation_id };
+      const result = await deps.store.confirmByCode(
+        { invitationId: b.invitation_id, orgId: b.org_id, code: b.code },
+        (code, binding, sealed) => deps.codes.matches(code, binding, sealed),
+        deps.now,
+        (e) => {
+          switch (e.kind) {
+            case 'confirmed':
+              return byClinician('identity.enrolment.confirmed_attested', {
+                type: 'enrolment_transaction',
+                id: e.after.id,
+              });
+            case 'cancelled':
+              return enrolmentAudit('identity.enrolment.cancelled', e.after, request.id);
+            case 'wrong-code':
+              return byClinician('identity.enrolment.wrong_code', invitation);
+            case 'locked':
+              return byClinician('identity.enrolment.locked', invitation);
+          }
+        },
+      );
+      if (result.outcome === 'wrong') return { outcome: 'wrong', remaining: result.remaining };
+      if (result.outcome === 'locked')
+        return { outcome: 'locked', locked_until: result.lockedUntil.toISOString() };
+
+      const tx = result.tx;
+      let reserved: 'done' | 'refused';
+      try {
+        reserved = await deps.clinical.reserve({
+          orgId: tx.orgId,
+          invitationId: tx.invitationId,
+          transactionId: tx.id,
+        });
+      } catch (error) {
+        // Unknown outcome: the transaction stays confirmed (its deadline still runs); reserve is
+        // idempotent per transaction, so reconciliation can finish or release it (section 6).
+        if (error instanceof ClinicalUnavailableError)
+          throw new ProblemError(503, 'upstream.unavailable', 'Try again later.');
+        throw error;
+      }
+      if (reserved === 'refused') {
+        await deps.store.apply(
+          tx.id,
+          { type: 'cancel', reason: 'claim-refused' },
+          deps.now,
+          (_, after) => enrolmentAudit('identity.enrolment.cancelled', after, request.id),
+        );
+        return { outcome: 'unavailable' };
+      }
+      return { outcome: 'confirmed' };
+    },
+  );
+}

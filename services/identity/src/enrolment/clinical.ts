@@ -12,6 +12,15 @@ export interface LiveInvitation {
 export interface ClinicalClient {
   /** The live invitation for a link token's SHA-256, or null when the link is not live. */
   find(tokenHash: string): Promise<LiveInvitation | null>;
+  /**
+   * Holds the invitation for this transaction (ADR-0021 section 6). `done` also when this
+   * transaction already holds it; `refused` when it is revoked, expired, claimed or held by another.
+   */
+  reserve(r: {
+    orgId: string;
+    invitationId: string;
+    transactionId: string;
+  }): Promise<'done' | 'refused'>;
 }
 
 /** The API could not be reached or answered something unexpected. Callers fail closed. */
@@ -71,5 +80,33 @@ export class HttpClinicalClient implements ClinicalClient {
     )
       throw new ClinicalUnavailableError();
     return { invitationId: body.invitation_id, orgId: body.org_id, reserved: body.reserved };
+  }
+
+  async reserve(r: {
+    orgId: string;
+    invitationId: string;
+    transactionId: string;
+  }): Promise<'done' | 'refused'> {
+    const token = await this.#signer.sign(['api.enrolment.coordinate'], 'api');
+    let res: Response;
+    try {
+      res = await this.#fetch(`${this.#apiUrl}/internal/v1/enrolment/invitations/reserve`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          org_id: r.orgId,
+          invitation_id: r.invitationId,
+          transaction_id: r.transactionId,
+        }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch {
+      throw new ClinicalUnavailableError();
+    }
+    if (!res.ok) throw new ClinicalUnavailableError();
+    const body = (await res.json().catch(() => null)) as { outcome?: unknown } | null;
+    if (body?.outcome === 'done' || body?.outcome === 'refused') return body.outcome;
+    throw new ClinicalUnavailableError();
   }
 }

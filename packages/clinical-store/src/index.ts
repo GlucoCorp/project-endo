@@ -24,6 +24,7 @@ export type {
   IdempotencyKey,
   IdempotentInvitationStore,
   IdempotentOutcome,
+  OpenInvitation,
   SealedResponse,
 } from './idempotent.ts';
 export {

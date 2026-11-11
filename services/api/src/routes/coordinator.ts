@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { AuditWriter } from '@endo/audit';
-import type { InvitationState } from '@endo/clinical-store';
+import type { InvitationState, ReservationOutcome, ReservationRequest } from '@endo/clinical-store';
+import { uuidv7 } from '@endo/domain';
 import { ProblemError } from '@endo/service-kit';
 
 /**
@@ -13,11 +14,17 @@ export interface EnrolmentCoordination {
     tokenHash: string,
   ): Promise<{ invitationId: string; orgId: string; reserved: boolean } | null>;
   state(orgId: string, invitationId: string): Promise<InvitationState>;
+  /** Section 6: holds the invitation for one transaction (idempotent per transaction). */
+  reserve(r: ReservationRequest): Promise<ReservationOutcome>;
+  /** Section 6: ends this transaction's hold for good (idempotent; fenced). */
+  release(r: ReservationRequest): Promise<ReservationOutcome>;
 }
 
 export interface CoordinatorRouteDeps {
   readonly coordination: EnrolmentCoordination;
   readonly audit: AuditWriter;
+  /** Relays queued audit events promptly after a change. */
+  readonly onCommitted?: () => void;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
@@ -125,4 +132,62 @@ export function registerCoordinatorRoutes(app: FastifyInstance, deps: Coordinato
       return { status: state.status, reserved_by: state.reservedBy };
     },
   );
+
+  const RESERVATION_BODY = {
+    type: 'object',
+    additionalProperties: false,
+    required: ['org_id', 'invitation_id', 'transaction_id'],
+    properties: {
+      org_id: { type: 'string', pattern: UUID },
+      invitation_id: { type: 'string', pattern: UUID },
+      transaction_id: { type: 'string', pattern: UUID },
+    },
+  } as const;
+
+  const stateBody = (state: InvitationState) =>
+    state.status === 'missing'
+      ? { status: 'missing' }
+      : state.status === 'claimed'
+        ? { status: 'claimed', reserved_by: state.reservedBy, patient_id: state.patientId }
+        : { status: state.status, reserved_by: state.reservedBy };
+
+  for (const op of ['reserve', 'release'] as const) {
+    app.post(
+      `/internal/v1/enrolment/invitations/${op}`,
+      {
+        config: { policy: policy(`api.enrolment.invitation.${op}`) },
+        schema: { body: RESERVATION_BODY },
+      },
+      async (request) => {
+        const b = request.body as { org_id: string; invitation_id: string; transaction_id: string };
+        const r: ReservationRequest = {
+          orgId: b.org_id,
+          invitationId: b.invitation_id,
+          transactionId: b.transaction_id,
+          // Queued with the change, in the same database transaction (spec 2.6).
+          auditEvent: {
+            id: uuidv7(),
+            actor: { id: null, role: 'system' },
+            action:
+              op === 'reserve'
+                ? 'api.enrolment.invitation.reserved'
+                : 'api.enrolment.invitation.released',
+            resource: { type: 'enrolment_invitation', id: b.invitation_id },
+            org_id: b.org_id,
+            purpose_of_use: 'operations',
+            outcome: 'success',
+            reason: null,
+            request_id: request.id,
+          },
+        };
+        const out = await (op === 'reserve'
+          ? deps.coordination.reserve(r)
+          : deps.coordination.release(r));
+        deps.onCommitted?.();
+        return out.outcome === 'done'
+          ? { outcome: 'done', changed: out.changed, state: stateBody(out.state) }
+          : { outcome: 'refused', state: stateBody(out.state) };
+      },
+    );
+  }
 }
