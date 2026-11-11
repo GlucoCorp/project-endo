@@ -53,7 +53,7 @@ export function enrolmentAudit(
 }
 
 /** What the patient's page may know about her transaction: never the code after Start. */
-function view(tx: EnrolmentTransaction, now: Date) {
+export function enrolmentView(tx: EnrolmentTransaction, now: Date) {
   return {
     transaction_id: tx.id,
     status: tx.status,
@@ -87,7 +87,10 @@ const BINDING_BODY = {
 /** One answer for an unknown transaction and a wrong browser binding: nothing to tell apart. */
 const notFound = () => new ProblemError(404, 'enrolment.not_found', 'Not found.');
 
-function bound(stored: StoredTransaction | null, bindingHash: string): StoredTransaction {
+export function boundTransaction(
+  stored: StoredTransaction | null,
+  bindingHash: string,
+): StoredTransaction {
   if (!stored) throw notFound();
   const a = Buffer.from(stored.bindingHash, 'hex');
   const b = Buffer.from(bindingHash, 'hex');
@@ -136,7 +139,7 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
 
       // Start repeated from the same browser: the same transaction, never a new code (section 3).
       const open = await deps.store.findOpenByBinding(binding_hash, invitation.invitationId);
-      if (open) return reply.code(200).send(view(open.tx, deps.now()));
+      if (open) return reply.code(200).send(enrolmentView(open.tx, deps.now()));
 
       if (invitation.reserved)
         throw new ProblemError(409, 'enrolment.unavailable', 'This link is in use.');
@@ -154,13 +157,14 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
         enrolmentAudit('identity.enrolment.started', tx, request.id),
       );
       // Another request from the same browser won the race: the same transaction, no code.
-      if (created.outcome === 'existing') return reply.code(200).send(view(created.tx, deps.now()));
+      if (created.outcome === 'existing')
+        return reply.code(200).send(enrolmentView(created.tx, deps.now()));
       if (created.outcome === 'locked')
         throw new ProblemError(409, 'enrolment.locked', 'Try again later.');
       if (created.outcome === 'full')
         throw new ProblemError(409, 'enrolment.busy', 'Try again later.');
       // The only time the code leaves this service: her phone shows it to the clinician.
-      return reply.code(201).send({ ...view(tx, deps.now()), code: created.code });
+      return reply.code(201).send({ ...enrolmentView(tx, deps.now()), code: created.code });
     },
   );
 
@@ -182,8 +186,8 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
     async (request) => {
       const { id } = request.params as { id: string };
       const { binding_hash } = request.body as { binding_hash: string };
-      const stored = bound(await deps.store.get(id), binding_hash);
-      return view(stored.tx, deps.now());
+      const stored = boundTransaction(await deps.store.get(id), binding_hash);
+      return enrolmentView(stored.tx, deps.now());
     },
   );
 
@@ -205,7 +209,7 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
     async (request) => {
       const { id } = request.params as { id: string };
       const { binding_hash } = request.body as { binding_hash: string };
-      bound(await deps.store.get(id), binding_hash);
+      boundTransaction(await deps.store.get(id), binding_hash);
       const r = await deps.store.apply(
         id,
         { type: 'cancel', reason: 'patient-cancelled' },
@@ -214,7 +218,7 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
       );
       // Once her consent has been claimed, leaving is account deletion (REQ-009).
       if (!r.ok) throw new ProblemError(409, 'enrolment.cannot_cancel', 'Cannot cancel now.');
-      return view(r.tx, deps.now());
+      return enrolmentView(r.tx, deps.now());
     },
   );
 }

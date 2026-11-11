@@ -71,6 +71,8 @@ const Config = z.object({
   IDENTITY_AUDIT_RELAY_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   /** Enrolment coordination (ADR-0021): the patient BFF calls in, this service calls the API. */
   IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK: Jwk.optional(),
+  /** The Keycloak extension's workload key: redeem and credential committed (ADR-0021). */
+  IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK: Jwk.optional(),
   IDENTITY_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   IDENTITY_API_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
 });
@@ -183,6 +185,12 @@ async function main(): Promise<void> {
     };
   }
 
+  if (config.IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK) {
+    trusted['keycloak'] = {
+      publicJwk: config.IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK,
+      scopes: ['identity.enrolment.keycloak'],
+    };
+  }
   if (config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK) {
     trusted['bff-patient'] = {
       publicJwk: config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK,

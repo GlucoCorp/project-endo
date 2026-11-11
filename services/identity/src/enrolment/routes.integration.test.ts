@@ -53,6 +53,7 @@ describe.skipIf(!url)(
       },
     };
     let apiKey: Awaited<ReturnType<typeof generateServiceKeyPair>>;
+    let kcKey: Awaited<ReturnType<typeof generateServiceKeyPair>>;
 
     /** A new live link; its token carries the PHI marker, which must never be recorded. */
     function newLink(reserved = false) {
@@ -68,6 +69,7 @@ describe.skipIf(!url)(
       patientKey = await generateServiceKeyPair();
       clinicKey = await generateServiceKeyPair();
       apiKey = await generateServiceKeyPair();
+      kcKey = await generateServiceKeyPair();
       app = await buildIdentity({
         logLevel: 'info',
         verifier: new WorkloadTokenVerifier('identity', {
@@ -77,6 +79,7 @@ describe.skipIf(!url)(
           },
           'bff-clinic': { publicJwk: clinicKey.publicJwk, scopes: ['identity.subject.resolve'] },
           api: { publicJwk: apiKey.publicJwk, scopes: ['identity.enrolment.clinic'] },
+          keycloak: { publicJwk: kcKey.publicJwk, scopes: ['identity.enrolment.keycloak'] },
         }),
         audit: new AuditWriter(audit),
         persons: new InMemoryPersonStore(
@@ -378,6 +381,168 @@ describe.skipIf(!url)(
           payload: { token_hash: link.tokenHash, binding_hash: secret() },
         });
         expect(startAsApi.statusCode).toBe(403);
+      });
+    });
+
+    describe('ADR-0021 sections 5 to 7: the handoff into Keycloak', () => {
+      const ISSUER = 'https://idp.test/realms/endo';
+      const request = (kind: 'enrol' | 'resume' = 'enrol') => ({
+        kind,
+        issuer: ISSUER,
+        client_id: 'bff-patient',
+        redirect_uri: 'https://app.test/auth/callback',
+        code_challenge: 'C'.repeat(43),
+        state: `state-${randomBytes(8).toString('hex')}`,
+        nonce: `nonce-${randomBytes(8).toString('hex')}`,
+      });
+      const kcSession = { root_session_id: 'root-1', client_uuid: 'client-1', tab_id: 'tab-1' };
+      const as = async (key: typeof kcKey, who: 'keycloak' | 'api', scope: string) => ({
+        authorization: `Bearer ${await new WorkloadTokenSigner(key.privateJwk, who).sign([scope], 'identity')}`,
+      });
+      const asKeycloak = () => as(kcKey, 'keycloak', 'identity.enrolment.keycloak');
+
+      /** A transaction the clinic has confirmed, with its browser binding. */
+      async function confirmed() {
+        const link = newLink();
+        const binding = secret();
+        const started = (await start(link.tokenHash, binding)).json<{
+          transaction_id: string;
+          code: string;
+        }>();
+        const res = await app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/confirm',
+          headers: await as(apiKey, 'api', 'identity.enrolment.clinic'),
+          payload: {
+            org_id: link.orgId,
+            invitation_id: link.invitationId,
+            code: started.code,
+            clinician_id: '01900000-0000-7000-8000-0000000000c1',
+            attestation: { identified: true, own_phone: true },
+          },
+        });
+        expect(res.json()).toEqual({ outcome: 'confirmed' });
+        return { id: started.transaction_id, binding };
+      }
+      const handoff = async (id: string, binding: string, req = request()) =>
+        post(`/${id}/handoff`, { binding_hash: binding, ...req });
+      const redeem = async (ref: string, req: object, session = kcSession) =>
+        app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/handoffs/redeem',
+          headers: await asKeycloak(),
+          payload: { handoff_ref: ref, session, ...req },
+        });
+
+      it('hands off once, redeems once for one Keycloak session, then follows the passkey', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const h = await handoff(id, binding, req);
+        expect(h.statusCode).toBe(201);
+        const ref = h.json<{ handoff_ref: string }>().handoff_ref;
+        expect(ref).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+        const first = await redeem(ref, req);
+        expect(first.statusCode).toBe(200);
+        const out = first.json<{ transaction_id: string; provisional_subject: string }>();
+        expect(out).toMatchObject({ transaction_id: id, kind: 'enrol' });
+        expect((await store.get(id))?.tx).toMatchObject({
+          status: 'redeemed',
+          provisionalSubject: out.provisional_subject,
+        });
+        // The same Keycloak session retrying gets the same answer; any other session is refused.
+        expect((await redeem(ref, req)).json()).toEqual(first.json());
+        expect((await redeem(ref, req, { ...kcSession, tab_id: 'tab-2' })).statusCode).toBe(403);
+
+        // The callback must wait for the passkey to be committed.
+        const early = await post(`/${id}/callback`, {
+          binding_hash: binding,
+          subject: out.provisional_subject,
+        });
+        expect(early.statusCode).toBe(409);
+        const committed = await app.inject({
+          method: 'POST',
+          url: `/internal/v1/enrolment/transactions/${id}/credential-committed`,
+          headers: await asKeycloak(),
+        });
+        expect(committed.json()).toEqual({ status: 'credential-committed' });
+        const wrongSubject = await post(`/${id}/callback`, {
+          binding_hash: binding,
+          subject: 'other',
+        });
+        expect(wrongSubject.statusCode).toBe(403);
+        const cb = await post(`/${id}/callback`, {
+          binding_hash: binding,
+          subject: out.provisional_subject,
+        });
+        expect(cb.statusCode).toBe(200);
+        expect(cb.json()).toMatchObject({ status: 'consent-pending' });
+      });
+
+      it('refuses a handoff before confirmation, for another browser, or for another issuer', async () => {
+        const link = newLink();
+        const binding = secret();
+        const id = (await start(link.tokenHash, binding)).json<{ transaction_id: string }>()
+          .transaction_id;
+        expect((await handoff(id, binding)).statusCode).toBe(409);
+        const ok = await confirmed();
+        expect((await handoff(ok.id, secret())).statusCode).toBe(404);
+        expect(
+          (await handoff(ok.id, ok.binding, { ...request(), issuer: 'https://evil.test' }))
+            .statusCode,
+        ).toBe(400);
+      });
+
+      it('refuses a redemption that differs from the handoff in any bound value, or is unknown', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        for (const changed of [
+          { ...req, client_id: 'other-client' },
+          { ...req, redirect_uri: 'https://evil.test/cb' },
+          { ...req, code_challenge: 'D'.repeat(43) },
+          { ...req, state: `${req.state}x` },
+          { ...req, nonce: `${req.nonce}x` },
+          { ...req, kind: 'resume' as const },
+        ])
+          expect((await redeem(ref, changed)).statusCode).toBe(403);
+        expect((await redeem(randomBytes(32).toString('base64url'), req)).statusCode).toBe(403);
+        // None of those consumed it.
+        expect((await redeem(ref, req)).statusCode).toBe(200);
+      });
+
+      it('lets only Keycloak redeem, and never records the reference', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const asPatientBff = await asPatient();
+        const res = await app.inject({
+          method: 'POST',
+          url: '/internal/v1/enrolment/handoffs/redeem',
+          headers: asPatientBff,
+          payload: { handoff_ref: ref, session: kcSession, ...req },
+        });
+        expect(res.statusCode).toBe(403);
+        const outbox = await t.relay.query('SELECT event FROM audit_outbox');
+        expect(JSON.stringify(outbox.rows) + logs.join('')).not.toContain(ref);
+      });
+
+      it('the database allows one redemption, never changes a binding, and caps the lifetime', async () => {
+        const { id, binding } = await confirmed();
+        const ref = (await handoff(id, binding)).json<{ handoff_ref: string }>().handoff_ref;
+        const hash = createHash('sha256').update(ref).digest('hex');
+        await expect(
+          t.admin.query('UPDATE enrolment_handoff SET redirect_uri = $2 WHERE ref_hash = $1', [
+            hash,
+            'https://evil.test',
+          ]),
+        ).rejects.toThrow(/binding is fixed/);
+        await expect(
+          t.admin.query(
+            "UPDATE enrolment_handoff SET expires_at = now() + interval '1 hour' WHERE ref_hash = $1",
+            [hash],
+          ),
+        ).rejects.toThrow(/binding is fixed|check constraint/);
       });
     });
   },

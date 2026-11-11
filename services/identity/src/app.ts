@@ -20,6 +20,7 @@ import {
   registerPatientEnrolmentRoutes,
   type PatientRouteDeps,
 } from './enrolment/routes.ts';
+import { registerHandoffRoutes } from './enrolment/handoff-routes.ts';
 
 /**
  * Every route declares its access (ADR-0018). Workload routes name the one scope they require;
@@ -324,6 +325,7 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
   if (deps.enrolment) {
     registerPatientEnrolmentRoutes(app, deps.enrolment);
     registerClinicEnrolmentRoutes(app, deps.enrolment);
+    registerHandoffRoutes(app, { ...deps.enrolment, issuer: deps.idpIssuer });
   }
 
   await app.ready();

@@ -178,6 +178,28 @@ Wrong confirmation codes per invitation and the 15-minute lock after the fifth (
 | `enrolment_invitation_guard.version`        | Changes so far (set by the database)                | as above                                                                       | as above                 | S0          |
 | `enrolment_invitation_guard.updated_at`     | Last change (database clock)                        | as above                                                                       | as above                 | S0          |
 
+### Enrolment handoffs — `packages/identity-store/migrations/0006`
+
+One-time, five-minute grants from the coordinator into Keycloak (ADR-0021 sections 5 and 6). No identity data. Retention: `TODO_LEGAL` (proposed: as the enrolment transactions).
+
+| Column                              | Purpose                                                                         | Legal basis                                       | Retention                | Sensitivity |
+| ----------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------ | ----------- |
+| `enrolment_handoff.ref_hash`        | SHA-256 of the one-time handoff reference; the reference itself is never stored | Contract / consent to use the service (enrolment) | `TODO_LEGAL` (see above) | S0          |
+| `enrolment_handoff.transaction_id`  | Enrolment transaction the handoff belongs to                                    | as above                                          | as above                 | S0          |
+| `enrolment_handoff.kind`            | `enrol` (first passkey) or `resume` (lost callback)                             | as above                                          | as above                 | S0          |
+| `enrolment_handoff.issuer`          | Identity provider issuer the request must use                                   | as above                                          | as above                 | S0          |
+| `enrolment_handoff.client_id`       | OIDC client the request must use                                                | as above                                          | as above                 | S0          |
+| `enrolment_handoff.redirect_uri`    | Exact redirect URI the request must use                                         | as above                                          | as above                 | S0          |
+| `enrolment_handoff.code_challenge`  | PKCE S256 challenge of the BFF's request (the verifier never leaves the BFF)    | as above                                          | as above                 | S0          |
+| `enrolment_handoff.state`           | OIDC `state` of the BFF's request                                               | as above                                          | as above                 | S0          |
+| `enrolment_handoff.nonce`           | OIDC `nonce` of the BFF's request                                               | as above                                          | as above                 | S0          |
+| `enrolment_handoff.created_at`      | Issue time (database clock)                                                     | as above                                          | as above                 | S0          |
+| `enrolment_handoff.expires_at`      | At most five minutes after issue                                                | as above                                          | as above                 | S0          |
+| `enrolment_handoff.redeemed_at`     | When Keycloak redeemed it (once)                                                | as above                                          | as above                 | S0          |
+| `enrolment_handoff.kc_root_session` | Keycloak authentication session that redeemed it                                | as above                                          | as above                 | S1          |
+| `enrolment_handoff.kc_client_uuid`  | Keycloak client of that session                                                 | as above                                          | as above                 | S0          |
+| `enrolment_handoff.kc_tab_id`       | Keycloak tab of that session                                                    | as above                                          | as above                 | S1          |
+
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
