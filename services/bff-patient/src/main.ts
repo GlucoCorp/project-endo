@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { Environment, loadConfig } from '@endo/config';
 import { uuidv7 } from '@endo/domain';
 import { ServiceTokenSigner, WorkloadTokenSigner } from '@endo/service-kit';
+import { createRemoteJWKSet } from 'jose';
+import { TransactionStore } from '@endo/oidc';
 import { buildBff } from './app.ts';
 import { loadAppShell } from './app-shell.ts';
 import { DevSessionStore, SESSION_COOKIE } from './sessions.ts';
@@ -46,6 +48,17 @@ const Config = z.object({
     .url({ protocol: /^https?$/ })
     .refine((u) => new URL(u).origin === u, 'must be an origin')
     .optional(),
+  /**
+   * Keycloak for her first passkey (ADR-0021 section 5). All of these, or none. Endpoints come from
+   * trusted configuration, never discovery at request time (ADR-0019).
+   */
+  BFF_PATIENT_OIDC_ISSUER: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_OIDC_AUTHORIZATION_ENDPOINT: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_OIDC_TOKEN_ENDPOINT: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_OIDC_JWKS_URI: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_OIDC_END_SESSION_ENDPOINT: z.url({ protocol: /^https?$/ }).optional(),
+  BFF_PATIENT_OIDC_CLIENT_ID: z.string().min(1).default('bff-patient'),
+  BFF_PATIENT_OIDC_CLIENT_SECRET: z.string().min(32).optional(),
 });
 
 async function main(): Promise<void> {
@@ -75,6 +88,42 @@ async function main(): Promise<void> {
     );
   }
 
+  const oidc = [
+    config.BFF_PATIENT_OIDC_ISSUER,
+    config.BFF_PATIENT_OIDC_AUTHORIZATION_ENDPOINT,
+    config.BFF_PATIENT_OIDC_TOKEN_ENDPOINT,
+    config.BFF_PATIENT_OIDC_JWKS_URI,
+    config.BFF_PATIENT_OIDC_END_SESSION_ENDPOINT,
+    config.BFF_PATIENT_OIDC_CLIENT_SECRET,
+  ];
+  if (oidc.some(Boolean) && !oidc.every(Boolean))
+    throw new Error('Set every BFF_PATIENT_OIDC_* setting, or none.');
+  const handoff =
+    config.BFF_PATIENT_OIDC_ISSUER &&
+    config.BFF_PATIENT_OIDC_AUTHORIZATION_ENDPOINT &&
+    config.BFF_PATIENT_OIDC_TOKEN_ENDPOINT &&
+    config.BFF_PATIENT_OIDC_JWKS_URI &&
+    config.BFF_PATIENT_OIDC_END_SESSION_ENDPOINT &&
+    config.BFF_PATIENT_OIDC_CLIENT_SECRET &&
+    config.BFF_PATIENT_ORIGIN
+      ? {
+          oidc: {
+            issuer: config.BFF_PATIENT_OIDC_ISSUER,
+            authorizationEndpoint: config.BFF_PATIENT_OIDC_AUTHORIZATION_ENDPOINT,
+            tokenEndpoint: config.BFF_PATIENT_OIDC_TOKEN_ENDPOINT,
+            clientId: config.BFF_PATIENT_OIDC_CLIENT_ID,
+            clientSecret: config.BFF_PATIENT_OIDC_CLIENT_SECRET,
+            redirectUri: `${config.BFF_PATIENT_ORIGIN}/auth/enrolment/callback`,
+            // ADR-0021 section 12: the first passkey is a fresh authentication.
+            requiredAcr: '1',
+            endSessionEndpoint: config.BFF_PATIENT_OIDC_END_SESSION_ENDPOINT,
+            postLogoutRedirectUri: `${config.BFF_PATIENT_ORIGIN}/`,
+          },
+          keys: createRemoteJWKSet(new URL(config.BFF_PATIENT_OIDC_JWKS_URI)),
+          transactions: new TransactionStore(),
+        }
+      : undefined;
+
   const app = await buildBff({
     logLevel: config.ENDO_LOG_LEVEL,
     sessions,
@@ -96,6 +145,7 @@ async function main(): Promise<void> {
             patientOrigin: config.BFF_PATIENT_ORIGIN,
             fetch,
             now: () => new Date(),
+            ...(handoff ? { handoff } : {}),
           },
         }
       : {}),

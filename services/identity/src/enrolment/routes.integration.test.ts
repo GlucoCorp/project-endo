@@ -479,6 +479,44 @@ describe.skipIf(!url)(
         expect(cb.json()).toMatchObject({ status: 'consent-pending' });
       });
 
+      it('resumes the same provisional user after a lost callback, and refuses expired handoffs', async () => {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const subject = (await redeem(ref, req)).json<{ provisional_subject: string }>()
+          .provisional_subject;
+        // A resume handoff (section 11) authenticates the same provisional user; no transition.
+        const again = request('resume');
+        const resumeRef = (await handoff(id, binding, again)).json<{ handoff_ref: string }>()
+          .handoff_ref;
+        const resumed = await redeem(resumeRef, again, { ...kcSession, tab_id: 'tab-9' });
+        expect(resumed.json()).toEqual({
+          transaction_id: id,
+          provisional_subject: subject,
+          kind: 'resume',
+        });
+        expect((await store.get(id))?.tx.status).toBe('redeemed');
+        // An enrol handoff is no longer possible once redeemed.
+        expect((await handoff(id, binding, request('enrol'))).statusCode).toBe(409);
+
+        // A handoff past its five minutes is refused.
+        const late = request('resume');
+        const lateRef = (await handoff(id, binding, late)).json<{ handoff_ref: string }>()
+          .handoff_ref;
+        const c = await t.admin.connect();
+        try {
+          await c.query("SET session_replication_role = 'replica'");
+          await c.query(
+            "UPDATE enrolment_handoff SET created_at = now() - interval '10 minutes', expires_at = now() - interval '5 minutes' WHERE ref_hash = $1",
+            [createHash('sha256').update(lateRef).digest('hex')],
+          );
+        } finally {
+          await c.query("SET session_replication_role = 'origin'");
+          c.release();
+        }
+        expect((await redeem(lateRef, late)).statusCode).toBe(403);
+      });
+
       it('refuses a handoff before confirmation, for another browser, or for another issuer', async () => {
         const link = newLink();
         const binding = secret();

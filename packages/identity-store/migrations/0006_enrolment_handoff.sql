@@ -24,7 +24,8 @@ CREATE TABLE enrolment_handoff (
   state             text        NOT NULL CHECK (char_length(state) BETWEEN 16 AND 255),
   nonce             text        NOT NULL CHECK (char_length(nonce) BETWEEN 16 AND 255),
   created_at        timestamptz NOT NULL DEFAULT now(),
-  expires_at        timestamptz NOT NULL,
+  -- Set by the database: five minutes after creation (the guard trigger).
+  expires_at        timestamptz NOT NULL DEFAULT now(),
   redeemed_at       timestamptz,
   -- Keycloak's authentication session that redeemed it (section 6): an identical retry from the
   -- same session gets the same answer; any other session is refused.
@@ -51,10 +52,9 @@ BEGIN
         IF NEW.redeemed_at IS NOT NULL THEN
           RAISE EXCEPTION 'a handoff starts unredeemed' USING ERRCODE = 'check_violation';
         END IF;
+        -- The database clock sets both times: a handoff lasts exactly five minutes.
         NEW.created_at := clock_timestamp();
-        IF NEW.expires_at > NEW.created_at + interval '5 minutes' THEN
-          RAISE EXCEPTION 'a handoff lasts at most five minutes' USING ERRCODE = 'check_violation';
-        END IF;
+        NEW.expires_at := NEW.created_at + interval '5 minutes';
         RETURN NEW;
       END IF;
       IF ROW(NEW.ref_hash, NEW.transaction_id, NEW.kind, NEW.issuer, NEW.client_id,
@@ -106,6 +106,6 @@ CREATE CONSTRAINT TRIGGER enrolment_handoff_audited AFTER INSERT OR UPDATE ON en
 REVOKE ALL ON FUNCTION enrolment_handoff_audited() FROM PUBLIC;
 GRANT SELECT ON enrolment_handoff TO endo_identity_app;
 GRANT INSERT (ref_hash, transaction_id, kind, issuer, client_id, redirect_uri, code_challenge,
-  state, nonce, expires_at) ON enrolment_handoff TO endo_identity_app;
+  state, nonce) ON enrolment_handoff TO endo_identity_app;
 GRANT UPDATE (redeemed_at, kc_root_session, kc_client_uuid, kc_tab_id)
   ON enrolment_handoff TO endo_identity_app;

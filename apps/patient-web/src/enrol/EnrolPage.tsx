@@ -50,7 +50,7 @@ export function EnrolPage() {
 
   // While the clinic has not confirmed, ask again every few seconds.
   useEffect(() => {
-    if (view.kind !== 'code') return undefined;
+    if (view.kind !== 'code' && view.kind !== 'signing-in') return undefined;
     const id = window.setInterval(() => {
       void flow.status().then(show);
     }, POLL_MS);
@@ -61,7 +61,11 @@ export function EnrolPage() {
 
   const act = (step: () => Promise<View>) => {
     setView({ kind: 'busy' });
-    void step().then(show);
+    void step().then((v) => {
+      // Continue: a full navigation to Keycloak, which returns her to this page.
+      if (v.kind === 'navigate') window.location.assign(v.url);
+      else show(v);
+    });
   };
 
   return (
@@ -75,12 +79,25 @@ export function EnrolPage() {
         onStop={() => {
           act(() => flow.cancel());
         }}
+        onContinue={() => {
+          act(() => flow.continue());
+        }}
       />
     </main>
   );
 }
 
-function Body({ view, onStart, onStop }: { view: View; onStart: () => void; onStop: () => void }) {
+function Body({
+  view,
+  onStart,
+  onStop,
+  onContinue,
+}: {
+  view: View;
+  onStart: () => void;
+  onStop: () => void;
+  onContinue: () => void;
+}) {
   switch (view.kind) {
     case 'busy':
       return <p role="status">{t('common.loading')}</p>;
@@ -124,12 +141,25 @@ function Body({ view, onStart, onStop }: { view: View; onStart: () => void; onSt
           <p role="status" aria-live="polite">
             {t('enrol.confirmed')}
           </p>
-          {/* The passkey handoff (ADR-0021 slice 4) enables this. */}
-          <button type="button" className={styles['primary']} disabled>
+          <button type="button" className={styles['primary']} onClick={onContinue}>
             {t('enrol.create-sign-in')}
           </button>
         </>
       );
+    case 'signing-in':
+      return (
+        <p role="status" aria-live="polite">
+          {t('enrol.signing-in')}
+        </p>
+      );
+    case 'signed-in':
+      return (
+        <p role="status" aria-live="polite">
+          {t('enrol.signed-in')}
+        </p>
+      );
+    case 'navigate':
+      return <p role="status">{t('common.loading')}</p>;
     case 'ended':
     case 'error':
       return (

@@ -1,6 +1,16 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ProblemError, rateLimitedError, type WorkloadTokenSigner } from '@endo/service-kit';
+import type { JWTVerifyGetKey } from 'jose';
+import {
+  OidcError,
+  authorizationUrl,
+  codeChallenge,
+  exchangeCode,
+  validateIdToken,
+  type OidcConfig,
+  type TransactionStore,
+} from '@endo/oidc';
 import { readCookie } from './sessions.ts';
 
 /**
@@ -21,6 +31,16 @@ export interface EnrolmentDeps {
   readonly now: () => Date;
   /** Starts per client IP per minute (default 10), on top of the BFF's general limit. */
   readonly startsPerMinute?: number;
+  /**
+   * The handoff into Keycloak for her first passkey (ADR-0021 sections 5 and 7). Without it,
+   * "Continue" and the callback do not exist.
+   */
+  readonly handoff?: {
+    readonly oidc: OidcConfig;
+    /** Keycloak's signing keys, from the configured JWKS URL (never from a token). */
+    readonly keys: JWTVerifyGetKey;
+    readonly transactions: TransactionStore;
+  };
 }
 
 const LINK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -203,6 +223,85 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
       const view = parseView(await res.json().catch(() => null), false);
       clearCookie(reply);
       return reply.send(view);
+    },
+  );
+
+  if (deps.handoff) registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
+}
+
+/**
+ * "Create your sign-in" (ADR-0021 sections 5 and 7). The BFF starts its own OIDC attempt, bound
+ * to this browser's enrolment secret, and asks the coordinator for a handoff bound to that exact
+ * request. Only the opaque handoff reference goes into Keycloak's URL. The callback is accepted
+ * only for this browser's attempt, with a valid ID token, and the coordinator checks the subject
+ * is the provisional user it created.
+ */
+function registerHandoff(
+  app: FastifyInstance,
+  deps: EnrolmentDeps,
+  h: NonNullable<EnrolmentDeps['handoff']>,
+  helpers: {
+    sameOrigin: (request: FastifyRequest) => Promise<void>;
+    call: (request: FastifyRequest, path: string, body: object) => Promise<Response>;
+    fromCookie: (request: FastifyRequest) => { txId: string; secret: string } | null;
+  },
+): void {
+  app.post(
+    '/v1/enrolment/continue',
+    { config: { auth: { kind: 'enrolment' } }, preValidation: helpers.sameOrigin },
+    async (request) => {
+      const bound = helpers.fromCookie(request);
+      if (!bound) throw noEnrolment();
+      const attempt = h.transactions.create(bound.secret);
+      const res = await helpers.call(
+        request,
+        `/internal/v1/enrolment/transactions/${bound.txId}/handoff`,
+        {
+          binding_hash: sha256(bound.secret),
+          kind: 'enrol',
+          issuer: h.oidc.issuer,
+          client_id: h.oidc.clientId,
+          redirect_uri: h.oidc.redirectUri,
+          code_challenge: codeChallenge(attempt),
+          state: attempt.state,
+          nonce: attempt.nonce,
+        },
+      );
+      if (res.status === 404) throw noEnrolment();
+      if (res.status === 409) throw new ProblemError(409, 'enrolment.not_ready', 'Not ready yet.');
+      if (res.status !== 201) throw unavailable();
+      const ref = ((await res.json().catch(() => null)) as { handoff_ref?: unknown } | null)
+        ?.handoff_ref;
+      if (typeof ref !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(ref)) throw unavailable();
+      // The page navigates there; nothing else about the request is in the URL.
+      return { location: authorizationUrl(h.oidc, attempt, { endo_handoff: ref }) };
+    },
+  );
+
+  app.get(
+    '/auth/enrolment/callback',
+    { config: { auth: { kind: 'enrolment' } } },
+    async (request, reply) => {
+      const q = request.query as { code?: unknown; state?: unknown };
+      const bound = helpers.fromCookie(request);
+      // One way back for every failure: her page shows where she is from the transaction.
+      const back = () => reply.redirect('/enrol', 303);
+      if (!bound || typeof q.code !== 'string' || typeof q.state !== 'string') return back();
+      try {
+        const attempt = h.transactions.consume(bound.secret, q.state);
+        const { idToken } = await exchangeCode(h.oidc, q.code, attempt, deps.fetch);
+        const who = await validateIdToken(h.oidc, idToken, attempt, h.keys, deps.now);
+        const res = await helpers.call(
+          request,
+          `/internal/v1/enrolment/transactions/${bound.txId}/callback`,
+          { binding_hash: sha256(bound.secret), subject: who.subject },
+        );
+        if (!res.ok) request.log.warn({ event: 'enrolment.callback_refused', status: res.status });
+      } catch (error) {
+        if (!(error instanceof OidcError) && !(error instanceof ProblemError)) throw error;
+        request.log.warn({ event: 'enrolment.callback_failed' });
+      }
+      return back();
     },
   );
 }

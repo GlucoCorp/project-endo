@@ -65,7 +65,8 @@ export interface IdentityDatabase {
     state: string;
     nonce: string;
     created_at: Generated<Date>;
-    expires_at: Date;
+    /** Set by the database: five minutes after creation. */
+    expires_at: Generated<Date>;
     redeemed_at: Date | null;
     kc_root_session: string | null;
     kc_client_uuid: string | null;

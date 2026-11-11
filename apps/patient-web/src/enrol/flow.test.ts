@@ -176,4 +176,40 @@ describe('REQ-001 ADR-0021 sections 3 and 4: the enrolment flow in the browser',
       code: null,
     });
   });
+
+  it('continues to Keycloak only at an HTTPS address (or this machine during development)', async () => {
+    const { s, calls } = seams([
+      json(200, { location: 'https://kc.example/realms/endo/auth?endo_handoff=x' }),
+      json(200, { location: 'http://localhost:18080/realms/endo/auth' }),
+      json(200, { location: 'http://evil.test/auth' }),
+      json(200, { location: 'javascript:alert(1)' }),
+      json(200, {}),
+      json(404, {}),
+      json(409, {}),
+      new TypeError('offline'),
+    ]);
+    const flow = new EnrolmentFlow(s);
+    expect(await flow.continue()).toEqual({
+      kind: 'navigate',
+      url: 'https://kc.example/realms/endo/auth?endo_handoff=x',
+    });
+    expect(calls[0]).toMatchObject({ url: '/v1/enrolment/continue', init: { method: 'POST' } });
+    expect(await flow.continue()).toMatchObject({ kind: 'navigate' });
+    expect(await flow.continue()).toEqual({ kind: 'error', message: 'common.try-later' });
+    expect(await flow.continue()).toEqual({ kind: 'error', message: 'common.try-later' });
+    expect(await flow.continue()).toEqual({ kind: 'error', message: 'common.try-later' });
+    expect(await flow.continue()).toEqual({ kind: 'ended', message: 'enrol.expired' });
+    expect(await flow.continue()).toEqual({ kind: 'error', message: 'common.try-later' });
+    expect(await flow.continue()).toEqual({ kind: 'error', message: 'common.try-later' });
+  });
+
+  it('shows her sign-in being finished, then ready', () => {
+    for (const status of ['redeemed', 'credential-committed'])
+      expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'signing-in' });
+    for (const status of ['consent-pending', 'claiming', 'activating', 'active'])
+      expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'signed-in' });
+    expect(fromServer({ status: 'confirmed', expired: false }, null)).toEqual({
+      kind: 'confirmed',
+    });
+  });
 });

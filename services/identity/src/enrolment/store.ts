@@ -232,8 +232,7 @@ export class PostgresEnrolmentStore {
           ? tx.status === 'confirmed'
           : tx.status === 'redeemed' || tx.status === 'credential-committed';
       if (!allowed || isOverdue(tx, now)) return null;
-      const expiresAt = new Date(now.getTime() + HANDOFF_LIFETIME_MS);
-      await trx
+      const inserted = await trx
         .insertInto('enrolment_handoff')
         .values({
           ref_hash: h.refHash,
@@ -245,11 +244,11 @@ export class PostgresEnrolmentStore {
           code_challenge: h.codeChallenge,
           state: h.state,
           nonce: h.nonce,
-          expires_at: expiresAt,
         })
-        .execute();
+        .returning('expires_at')
+        .executeTakeFirstOrThrow();
       await queue(trx, audit(tx));
-      return { expiresAt };
+      return { expiresAt: inserted.expires_at };
     });
   }
 

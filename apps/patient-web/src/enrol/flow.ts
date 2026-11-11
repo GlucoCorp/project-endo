@@ -16,6 +16,18 @@ import type { MessageKey } from '@endo/i18n';
 export const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 export const CODE_KEY = 'endo.enrolment.code';
 export const LOCK_NAME = 'endo-enrolment-start';
+/** Keycloak is reached over HTTPS, or plain HTTP on this machine only (local development). */
+function keycloakUrl(u: string): boolean {
+  try {
+    const url = new URL(u);
+    return (
+      url.protocol === 'https:' ||
+      (url.protocol === 'http:' && (url.hostname === 'localhost' || url.hostname === '127.0.0.1'))
+    );
+  } catch {
+    return false;
+  }
+}
 
 export interface Seams {
   readonly fetch: typeof fetch;
@@ -31,6 +43,12 @@ export type View =
   | { readonly kind: 'busy' }
   | { readonly kind: 'code'; readonly code: string | null; readonly status: string }
   | { readonly kind: 'confirmed' }
+  /** Her passkey is being created or reported back (ADR-0021 states redeemed, credential-committed). */
+  | { readonly kind: 'signing-in' }
+  /** Her passkey exists; consent comes next (slice 7). */
+  | { readonly kind: 'signed-in' }
+  /** Continue: go to this Keycloak address. */
+  | { readonly kind: 'navigate'; readonly url: string }
   | { readonly kind: 'ended'; readonly message: MessageKey }
   | { readonly kind: 'error'; readonly message: MessageKey };
 
@@ -73,7 +91,9 @@ export function fromServer(v: ServerView, code: string | null): View {
   if (v.status === 'awaiting-confirmation') return { kind: 'code', code, status: v.status };
   if (v.status === 'cancelling' || v.status === 'cancelled')
     return { kind: 'ended', message: 'enrol.cancelled' };
-  return { kind: 'confirmed' };
+  if (v.status === 'confirmed') return { kind: 'confirmed' };
+  if (v.status === 'redeemed' || v.status === 'credential-committed') return { kind: 'signing-in' };
+  return { kind: 'signed-in' };
 }
 
 const json = (body: unknown): RequestInit => ({
@@ -143,6 +163,26 @@ export class EnrolmentFlow {
       if (res.status === 404) return this.#settle({ kind: 'ended', message: 'enrol.expired' });
       if (!res.ok) return { kind: 'error', message: 'common.try-later' };
       return this.#settle(fromServer((await res.json()) as ServerView, this.#storedCode()));
+    } catch {
+      return { kind: 'error', message: 'common.try-later' };
+    }
+  }
+
+  /**
+   * Create her sign-in (ADR-0021 section 5): the BFF binds a handoff to its own OIDC request and
+   * answers with Keycloak's address; only an opaque reference is in it.
+   */
+  async continue(): Promise<View> {
+    try {
+      const res = await this.#s.fetch('/v1/enrolment/continue', json({}));
+      if (res.ok) {
+        const b = (await res.json()) as { location?: unknown };
+        if (typeof b.location === 'string' && keycloakUrl(b.location))
+          return { kind: 'navigate', url: b.location };
+        return { kind: 'error', message: 'common.try-later' };
+      }
+      if (res.status === 404) return this.#settle({ kind: 'ended', message: 'enrol.expired' });
+      return { kind: 'error', message: 'common.try-later' };
     } catch {
       return { kind: 'error', message: 'common.try-later' };
     }

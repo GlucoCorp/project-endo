@@ -35,6 +35,8 @@ export const en = {
   'enrol.cancelled': 'Setting up was stopped. Open your link again to start again.',
   'enrol.stop': 'Stop setting up',
   'enrol.stopped': 'Setting up was stopped.',
+  'enrol.signing-in': 'Finishing your sign-in.',
+  'enrol.signed-in': 'Your sign-in is ready. Next, choose what you share.',
 
   'clinic.title': 'Clinic desk',
   'clinic.sign-in': 'Sign in',
