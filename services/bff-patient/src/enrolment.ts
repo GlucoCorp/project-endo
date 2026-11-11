@@ -187,8 +187,9 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
 
   const setCookie = (reply: FastifyReply, txId: string, secret: string, expiresAt: string) => {
     const seconds = Math.max(0, Math.floor((Date.parse(expiresAt) - deps.now().getTime()) / 1000));
-    addCookie(
-      reply,
+    // Set on its own (Start sets no other cookie): the reviewed scan exception names this line.
+    void reply.header(
+      'set-cookie',
       `${ENROLMENT_COOKIE}=${txId}${secret}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(seconds)}`,
     );
   };
