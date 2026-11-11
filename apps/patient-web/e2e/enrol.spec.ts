@@ -20,6 +20,7 @@ const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 type Tx = { id: string; tokenHash: string; status: string };
 const transactions = new Map<string, Tx>(); // by binding hash
 const liveTokens = new Set<string>();
+let lastConsent: Record<string, { status: string; version: number }> | null = null;
 let bff: Awaited<ReturnType<typeof buildBff>>;
 let origin = '';
 let violations: string[] = [];
@@ -47,10 +48,18 @@ function fakeIdentity(url: URL, body: Record<string, string>): Response {
     transactions.set(body['binding_hash'] ?? '', tx);
     return reply(201, { ...view(tx), code: String(100000 + transactions.size) });
   }
-  const m = /\/transactions\/([^/]+)\/(status|cancel)$/.exec(url.pathname);
+  const m = /\/transactions\/([^/]+)\/(status|cancel|consent)$/.exec(url.pathname);
   const tx = transactions.get(body['binding_hash'] ?? '');
   if (!m || !tx || tx.id !== m[1]) return reply(404, {});
   if (m[2] === 'cancel') tx.status = 'cancelling';
+  if (m[2] === 'consent') {
+    if (tx.status !== 'consent-pending') return reply(409, {});
+    lastConsent = body['decisions'] as unknown as Record<
+      string,
+      { status: string; version: number }
+    >;
+    tx.status = lastConsent['self_tracking']?.status === 'declined' ? 'cancelling' : 'claiming';
+  }
   return reply(200, view(tx));
 }
 
@@ -167,5 +176,33 @@ test('she can stop, and a used-up or wrong link says what to do', async ({ page 
 
   await page.goto(`${origin}/enrol`);
   await expect(page.getByText('Open the link your clinic gave you')).toBeVisible();
+  expect(violations).toEqual([]);
+});
+
+test('after her passkey, she makes four separate choices; nothing is chosen for her', async ({
+  page,
+}) => {
+  transactions.clear();
+  await page.goto(`${origin}/enrol#${newLink()}`);
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(codeOf(page)).toBeVisible();
+  // Passkey created and called back (slice 8 drives the real Keycloak for this part).
+  for (const tx of transactions.values()) tx.status = 'consent-pending';
+  await page.reload();
+  await expect(page.getByText('Choice 1 of 4')).toBeVisible();
+  // Two equal buttons, neither pre-selected.
+  await expect(page.getByRole('button', { name: 'Keep my diary' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Do not keep it' })).toBeVisible();
+  await page.getByRole('button', { name: 'Keep my diary' }).click();
+  await page.getByRole('button', { name: 'Share with my care team' }).click();
+  await page.getByRole('button', { name: "Don't include them" }).click();
+  await page.getByRole('button', { name: "Don't count them" }).click();
+  await expect(page.getByText('Your choices are saved.')).toBeVisible();
+  expect(lastConsent).toMatchObject({
+    self_tracking: { status: 'granted', version: 1 },
+    share_with_care_team: { status: 'granted', version: 1 },
+    research_deidentified: { status: 'declined', version: 1 },
+    org_aggregate_reporting: { status: 'declined', version: 1 },
+  });
   expect(violations).toEqual([]);
 });

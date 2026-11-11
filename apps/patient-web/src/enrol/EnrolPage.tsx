@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { t } from '../i18n.ts';
 import { EnrolmentFlow, takeToken, type View } from './flow.ts';
+import { ConsentSteps } from './ConsentSteps.tsx';
+import type { Decisions } from './consent.ts';
 import styles from './enrol.module.css';
 
 const POLL_MS = 4_000;
@@ -82,6 +84,9 @@ export function EnrolPage() {
         onContinue={() => {
           act(() => flow.continue());
         }}
+        onConsent={(d) => {
+          act(() => flow.consent(d));
+        }}
       />
     </main>
   );
@@ -92,11 +97,13 @@ function Body({
   onStart,
   onStop,
   onContinue,
+  onConsent,
 }: {
   view: View;
   onStart: () => void;
   onStop: () => void;
   onContinue: () => void;
+  onConsent: (d: Decisions) => void;
 }) {
   switch (view.kind) {
     case 'busy':
@@ -154,8 +161,17 @@ function Body({
       );
     case 'signed-in':
       return (
+        <>
+          <p role="status" aria-live="polite">
+            {t('enrol.signed-in')}
+          </p>
+          <ConsentSteps onDone={onConsent} />
+        </>
+      );
+    case 'consented':
+      return (
         <p role="status" aria-live="polite">
-          {t('enrol.signed-in')}
+          {t('consent.done')}
         </p>
       );
     case 'navigate':

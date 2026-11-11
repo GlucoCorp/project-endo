@@ -1,7 +1,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { uuidv7 } from '@endo/domain';
+import { CONSENT_PURPOSES, type ConsentPurpose } from '@endo/authz';
 import { ProblemError } from '@endo/service-kit';
+import type { ConsentDecisions } from './state-machine.ts';
 import {
   boundTransaction,
   enrolmentAudit,
@@ -173,6 +175,91 @@ export function registerHandoffRoutes(app: FastifyInstance, deps: HandoffRouteDe
       );
       if (!r.ok) throw new ProblemError(409, 'enrolment.wrong_state', 'Not in that state.');
       return { status: r.tx.status };
+    },
+  );
+
+  /**
+   * Her consent (ADR-0021 sections 10 and 12; spec 13.1): all four decisions, each with the version
+   * of the explanation she saw and when. Declining self-tracking ends enrolment. Otherwise the
+   * transaction moves to `claiming` with the ids the coordinator chooses now (the identity-vault
+   * person and the clinical patient record); nothing permanent exists until the claim succeeds.
+   */
+  app.post(
+    '/internal/v1/enrolment/transactions/:id/consent',
+    {
+      config: { access: access(PATIENT_SCOPE, 'identity.enrolment.consent', txIdParam) },
+      schema: {
+        params: ID_PARAMS,
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['binding_hash', 'decisions'],
+          properties: {
+            binding_hash: { type: 'string', pattern: HEX64 },
+            decisions: {
+              type: 'object',
+              additionalProperties: false,
+              required: [...CONSENT_PURPOSES],
+              properties: Object.fromEntries(
+                CONSENT_PURPOSES.map((p) => [
+                  p,
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['status', 'version', 'decided_at'],
+                    properties: {
+                      status: { type: 'string', enum: ['granted', 'declined'] },
+                      version: { type: 'integer', minimum: 1, maximum: 999_999_999 },
+                      decided_at: { type: 'string', format: 'date-time' },
+                    },
+                  },
+                ]),
+              ),
+            },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { id } = request.params as { id: string };
+      const b = request.body as {
+        binding_hash: string;
+        decisions: Record<
+          ConsentPurpose,
+          { status: 'granted' | 'declined'; version: number; decided_at: string }
+        >;
+      };
+      boundTransaction(await deps.store.get(id), b.binding_hash);
+      const now = deps.now();
+      const given = new Map(Object.entries(b.decisions));
+      const decisions = Object.fromEntries(
+        CONSENT_PURPOSES.flatMap((p) => {
+          const d = given.get(p);
+          // A time from her browser is never later than now (the state machine refuses it).
+          return d
+            ? [[p, { status: d.status, version: d.version, decidedAt: new Date(d.decided_at) }]]
+            : [];
+        }),
+      ) as unknown as ConsentDecisions;
+      const r = await deps.store.apply(
+        id,
+        { type: 'consent', decisions, personId: uuidv7(), patientId: uuidv7() },
+        () => now,
+        (_, after) =>
+          enrolmentAudit(
+            after.status === 'cancelling'
+              ? 'identity.enrolment.declined'
+              : 'identity.enrolment.consented',
+            after,
+            request.id,
+          ),
+      );
+      if (!r.ok) {
+        if (r.reason === 'incomplete-consent')
+          throw new ProblemError(400, 'request.invalid', 'Every choice is needed.');
+        throw new ProblemError(409, 'enrolment.not_ready', 'Not ready yet.');
+      }
+      return enrolmentView(r.tx, now);
     },
   );
 

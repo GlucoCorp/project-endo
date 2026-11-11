@@ -206,10 +206,31 @@ describe('REQ-001 ADR-0021 sections 3 and 4: the enrolment flow in the browser',
   it('shows her sign-in being finished, then ready', () => {
     for (const status of ['redeemed', 'credential-committed'])
       expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'signing-in' });
-    for (const status of ['consent-pending', 'claiming', 'activating', 'active'])
-      expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'signed-in' });
+    expect(fromServer({ status: 'consent-pending', expired: false }, null)).toEqual({
+      kind: 'signed-in',
+    });
+    for (const status of ['claiming', 'activating', 'active'])
+      expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'consented' });
     expect(fromServer({ status: 'confirmed', expired: false }, null)).toEqual({
       kind: 'confirmed',
     });
+  });
+
+  it('sends her decisions and shows the outcome', async () => {
+    const { s, calls } = seams([
+      json(200, view('claiming')),
+      json(200, view('cancelling')),
+      json(404, {}),
+      json(409, {}),
+      new TypeError('offline'),
+    ]);
+    const flow = new EnrolmentFlow(s);
+    const decisions = { self_tracking: { status: 'granted', version: 1, decided_at: 'x' } };
+    expect(await flow.consent(decisions)).toEqual({ kind: 'consented' });
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({ decisions });
+    expect(await flow.consent(decisions)).toEqual({ kind: 'ended', message: 'consent.declined' });
+    expect(await flow.consent(decisions)).toEqual({ kind: 'ended', message: 'enrol.expired' });
+    expect(await flow.consent(decisions)).toEqual({ kind: 'error', message: 'common.try-later' });
+    expect(await flow.consent(decisions)).toEqual({ kind: 'error', message: 'common.try-later' });
   });
 });

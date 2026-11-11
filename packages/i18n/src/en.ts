@@ -38,6 +38,33 @@ export const en = {
   'enrol.signing-in': 'Finishing your sign-in.',
   'enrol.signed-in': 'Your sign-in is ready. Next, choose what you share.',
 
+  // Spec 13.1 consent explanations, version 1. DRAFT: needs review by the data protection
+  // officer before real use (TODO_LEGAL). A wording change means a new version (consent.ts).
+  'consent.step': 'Choice {n} of 4',
+  'consent.self_tracking.title': 'Keep your own diary',
+  'consent.self_tracking.text':
+    'We keep the answers you give each week, so you can see how your treatment is going. Without this, the diary cannot work, and setting up stops here.',
+  'consent.self_tracking.grant': 'Keep my diary',
+  'consent.self_tracking.decline': 'Do not keep it',
+  'consent.share_with_care_team.title': 'Share with your care team',
+  'consent.share_with_care_team.text':
+    'The care team at your clinic can see your weekly answers and how your treatment is going. You can stop sharing at any time in settings.',
+  'consent.share_with_care_team.grant': 'Share with my care team',
+  'consent.share_with_care_team.decline': "Don't share",
+  'consent.research_deidentified.title': 'Help research',
+  'consent.research_deidentified.text':
+    'Your answers, with your name and details removed, can help study which treatments work. Nobody can tell the answers are yours.',
+  'consent.research_deidentified.grant': 'Include my answers',
+  'consent.research_deidentified.decline': "Don't include them",
+  'consent.org_aggregate_reporting.title': 'Help your clinic count',
+  'consent.org_aggregate_reporting.text':
+    'Your clinic sees totals, such as how many people a treatment helped. Your answers are counted, never shown on their own.',
+  'consent.org_aggregate_reporting.grant': 'Count my answers',
+  'consent.org_aggregate_reporting.decline': "Don't count them",
+  'consent.saving': 'Saving your choices.',
+  'consent.done': 'Your choices are saved. Your clinic will finish setting up your diary.',
+  'consent.declined': 'Setting up was stopped, because the diary needs to keep your answers.',
+
   'clinic.title': 'Clinic desk',
   'clinic.sign-in': 'Sign in',
   'clinic.signed-out': 'Sign in with your passkey to continue.',

@@ -45,8 +45,10 @@ export type View =
   | { readonly kind: 'confirmed' }
   /** Her passkey is being created or reported back (ADR-0021 states redeemed, credential-committed). */
   | { readonly kind: 'signing-in' }
-  /** Her passkey exists; consent comes next (slice 7). */
+  /** Her passkey exists; her consent choices come next (spec 13.1). */
   | { readonly kind: 'signed-in' }
+  /** Her choices are saved; the clinic side finishes setting up (activation). */
+  | { readonly kind: 'consented' }
   /** Continue: go to this Keycloak address. */
   | { readonly kind: 'navigate'; readonly url: string }
   | { readonly kind: 'ended'; readonly message: MessageKey }
@@ -85,15 +87,22 @@ async function problem(res: Response): Promise<MessageKey> {
   return new Map(Object.entries(PROBLEMS)).get(code) ?? 'common.try-later';
 }
 
+function codeOrConfirmed(v: ServerView, code: string | null): View {
+  return v.status === 'confirmed'
+    ? { kind: 'confirmed' }
+    : { kind: 'code', code, status: v.status };
+}
+
 /** Maps the server's view of the transaction to what the page shows. */
 export function fromServer(v: ServerView, code: string | null): View {
   if (v.expired) return { kind: 'ended', message: 'enrol.expired' };
-  if (v.status === 'awaiting-confirmation') return { kind: 'code', code, status: v.status };
   if (v.status === 'cancelling' || v.status === 'cancelled')
     return { kind: 'ended', message: 'enrol.cancelled' };
-  if (v.status === 'confirmed') return { kind: 'confirmed' };
+  if (v.status === 'awaiting-confirmation' || v.status === 'confirmed')
+    return codeOrConfirmed(v, code);
   if (v.status === 'redeemed' || v.status === 'credential-committed') return { kind: 'signing-in' };
-  return { kind: 'signed-in' };
+  if (v.status === 'consent-pending') return { kind: 'signed-in' };
+  return { kind: 'consented' };
 }
 
 const json = (body: unknown): RequestInit => ({
@@ -180,6 +189,21 @@ export class EnrolmentFlow {
         if (typeof b.location === 'string' && keycloakUrl(b.location))
           return { kind: 'navigate', url: b.location };
         return { kind: 'error', message: 'common.try-later' };
+      }
+      if (res.status === 404) return this.#settle({ kind: 'ended', message: 'enrol.expired' });
+      return { kind: 'error', message: 'common.try-later' };
+    } catch {
+      return { kind: 'error', message: 'common.try-later' };
+    }
+  }
+
+  /** Her four decisions (spec 13.1). Declining self-tracking ends enrolment. */
+  async consent(decisions: object): Promise<View> {
+    try {
+      const res = await this.#s.fetch('/v1/enrolment/consent', json({ decisions }));
+      if (res.ok) {
+        const v = fromServer((await res.json()) as ServerView, null);
+        return v.kind === 'ended' ? { kind: 'ended', message: 'consent.declined' } : v;
       }
       if (res.status === 404) return this.#settle({ kind: 'ended', message: 'enrol.expired' });
       return { kind: 'error', message: 'common.try-later' };
