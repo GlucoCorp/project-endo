@@ -3,6 +3,7 @@ import { Environment, loadConfig } from '@endo/config';
 import { uuidv7 } from '@endo/domain';
 import { ServiceTokenSigner, WorkloadTokenSigner } from '@endo/service-kit';
 import { buildBff } from './app.ts';
+import { loadAppShell } from './app-shell.ts';
 import { DevSessionStore, SESSION_COOKIE } from './sessions.ts';
 
 const PrivateJwk = z.string().transform((s, ctx) => {
@@ -35,6 +36,8 @@ const Config = z.object({
     }
   }),
   BFF_PATIENT_DEV_SESSIONS_ENABLED: z.enum(['true', 'false']).default('false'),
+  /** Directory of the built patient app (apps/patient-web/dist), served from this origin. */
+  BFF_PATIENT_APP_DIR: z.string().min(1).optional(),
   /** Patient enrolment (ADR-0021): all three, or none. */
   BFF_PATIENT_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
   BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
@@ -79,6 +82,7 @@ async function main(): Promise<void> {
     apiBaseUrl: config.BFF_PATIENT_API_BASE_URL,
     fetch,
     rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
+    ...(config.BFF_PATIENT_APP_DIR ? { appShell: loadAppShell(config.BFF_PATIENT_APP_DIR) } : {}),
     ...(config.BFF_PATIENT_IDENTITY_BASE_URL &&
     config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK &&
     config.BFF_PATIENT_ORIGIN

@@ -48,8 +48,29 @@ export default tseslint.config(
     },
   },
   {
+    // Spec 21.9: no hard-coded text in components; every string comes from @endo/i18n.
+    files: ['apps/**/*.tsx'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "JSXAttribute[name.name='dangerouslySetInnerHTML']",
+          message: 'dangerouslySetInnerHTML is banned (spec 12.2). Render text, never HTML.',
+        },
+        {
+          selector: 'JSXText[value=/[A-Za-z]/]',
+          message: 'No hard-coded text in components (spec 21.9). Use t() from @endo/i18n.',
+        },
+        {
+          selector: "MemberExpression[object.name='Math'][property.name='random']",
+          message: 'Math.random is banned. Use WebCrypto.',
+        },
+      ],
+    },
+  },
+  {
     // Test files may use non-null assertions on fixtures they control.
-    files: ['**/*.test.ts'],
+    files: ['**/*.test.ts', '**/e2e/**/*.ts'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       'security/detect-object-injection': 'off',

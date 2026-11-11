@@ -1,0 +1,89 @@
+/* Spec 21.2 and 21.5: one thing per screen, ruled and quiet, large targets. Tokens only. */
+.page {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: var(--space-32) var(--space-16);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  line-height: var(--line-height-body);
+  color: var(--ink);
+}
+
+.title {
+  font-family: var(--font-reading);
+  font-size: var(--text-2xl);
+  line-height: var(--line-height-title);
+  font-weight: 600;
+  margin: 0 0 var(--space-24);
+  padding-bottom: var(--space-16);
+  border-bottom: 1px solid var(--rule);
+}
+
+.subtitle {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin: var(--space-24) 0 var(--space-8);
+}
+
+.lead {
+  font-size: var(--text-lg);
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.error {
+  color: var(--ink);
+  border-left: 3px solid var(--control-border);
+  padding-left: var(--space-12);
+}
+
+/* Large tabular figures: easy to read out to the clinic. */
+.code {
+  font-size: var(--text-3xl);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.15em;
+  margin: var(--space-8) 0 var(--space-16);
+  padding: var(--space-12) var(--space-16);
+  border-top: 1px solid var(--rule);
+  border-bottom: 1px solid var(--rule);
+}
+
+.primary,
+.quiet {
+  display: block;
+  width: 100%;
+  min-height: var(--target-min);
+  margin-top: var(--space-24);
+  font: inherit;
+  font-weight: 600;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  transition: background-color var(--motion-state);
+}
+
+.primary {
+  color: var(--on-action);
+  background: var(--action);
+  border: 1px solid var(--action);
+}
+
+.primary:disabled {
+  color: var(--ink-muted);
+  background: var(--surface);
+  border-color: var(--control-border);
+  cursor: not-allowed;
+}
+
+.quiet {
+  color: var(--action);
+  background: transparent;
+  border: 1px solid var(--control-border);
+}
+
+.primary:focus-visible,
+.quiet:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

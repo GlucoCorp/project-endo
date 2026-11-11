@@ -14,6 +14,7 @@ import {
 } from '@endo/service-kit';
 import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts';
 import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
+import { registerAppShell, type AppShell } from './app-shell.ts';
 
 /**
  * Every BFF route declares how it is authenticated (spec 2.5). `enrolment`: before she has an
@@ -22,7 +23,7 @@ import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 export type BffAuth =
   | { readonly kind: 'session' }
   | { readonly kind: 'enrolment' }
-  | { readonly kind: 'public'; readonly reason: 'liveness' };
+  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' };
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -44,7 +45,7 @@ export function isBffAuth(value: unknown): value is BffAuth {
   return (
     v.kind === 'session' ||
     v.kind === 'enrolment' ||
-    (v.kind === 'public' && v.reason === 'liveness')
+    (v.kind === 'public' && (v.reason === 'liveness' || v.reason === 'app-shell'))
   );
 }
 
@@ -55,6 +56,8 @@ export interface BffDeps {
   readonly apiBaseUrl: string;
   readonly fetch: typeof fetch;
   readonly upstreamTimeoutMs?: number;
+  /** The built patient app, served from this origin with a per-response CSP nonce. */
+  readonly appShell?: AppShell;
   /** Patient enrolment (ADR-0021). Without it the enrolment routes do not exist (fail closed). */
   readonly enrolment?: EnrolmentDeps;
   readonly logStream?: { write(msg: string): void };
@@ -108,7 +111,12 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
   });
   app.addHook('onRequest', async function (request, reply) {
     const config = request.routeOptions.config;
-    if (config.auth?.kind === 'public' || config.ownRateLimit) return;
+    // Liveness only: the app shell is public but still rate limited.
+    if (
+      (config.auth?.kind === 'public' && config.auth.reason === 'liveness') ||
+      config.ownRateLimit
+    )
+      return;
     await limit.call(this, request, reply);
   });
 
@@ -184,6 +192,7 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   });
 
   if (deps.enrolment) registerEnrolmentRoutes(app, deps.enrolment);
+  if (deps.appShell) registerAppShell(app, deps.appShell);
 
   await app.ready();
   return app;

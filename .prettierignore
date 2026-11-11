@@ -3,3 +3,5 @@ coverage/
 dist/
 .turbo/
 PROJECT_ENDO_BUILD_SPEC.md
+**/test-results/
+**/playwright-report/

@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./app": "./src/app.ts",
+    "./sessions": "./src/sessions.ts",
+    "./app-shell": "./src/app-shell.ts"
+  },
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc -p tsconfig.json",
