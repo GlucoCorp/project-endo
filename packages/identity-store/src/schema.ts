@@ -72,6 +72,11 @@ export interface IdentityDatabase {
     kc_client_uuid: string | null;
     kc_tab_id: string | null;
   };
+  /** Migration 0007 (ADR-0021 sections 6 and 10). The clinical store's reservation, acknowledged. */
+  enrolment_reservation: {
+    transaction_id: string;
+    reserved_at: Generated<Date>;
+  };
   patient_link: {
     person_id: string;
     patient_record_id: string;

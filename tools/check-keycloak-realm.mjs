@@ -195,14 +195,34 @@ function checkRealm(realm) {
   const clinicianFlow = (realm.authenticationFlows ?? []).find(
     (f) => f.id !== undefined && f.id === clinicianOverride.get('browser'),
   );
-  const clinicianSteps = clinicianFlow?.authenticationExecutions ?? [];
+  const clinicianSteps = (clinicianFlow?.authenticationExecutions ?? [])
+    .slice()
+    .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
   expect(
     clinicianOverride.size === 1 &&
-      clinicianSteps.length === 1 &&
+      clinicianSteps.length === 2 &&
       clinicianSteps[0].authenticator === 'webauthn-authenticator-passwordless' &&
-      clinicianSteps[0].requirement === 'REQUIRED',
-    'bff-clinician must use a browser flow of exactly one fresh passkey step (no SSO cookie)',
+      clinicianSteps[0].requirement === 'REQUIRED' &&
+      clinicianSteps[1].authenticator === 'endo-quarantine-guard' &&
+      clinicianSteps[1].requirement === 'REQUIRED',
+    'bff-clinician must use a browser flow of one fresh passkey step, then the enrolment quarantine (no SSO cookie)',
   );
+  // ADR-0021 section 7: every flow that can sign someone in ends with the enrolment quarantine.
+  for (const f of flows.values()) {
+    if (f.topLevel === false) continue;
+    const ordered = (f.authenticationExecutions ?? [])
+      .slice()
+      .sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
+    const signsIn = ordered.some(
+      (e) => e.authenticatorFlow === true || e.authenticator !== 'deny-access-authenticator',
+    );
+    const last = ordered.at(-1);
+    expect(
+      !signsIn ||
+        (last?.authenticator === 'endo-quarantine-guard' && last.requirement === 'REQUIRED'),
+      `flow "${f.alias}" signs people in, so it must end with endo-quarantine-guard (REQUIRED)`,
+    );
+  }
   for (const c of realm.clients ?? []) {
     const id = c.clientId;
     expect(
@@ -320,6 +340,13 @@ const MUTATIONS = [
     (r) =>
       (r.requiredActions.find((a) => a.providerId === 'webauthn-register-passwordless').enabled =
         true),
+  ],
+  [
+    'clinician flow without the quarantine',
+    (r) =>
+      r.authenticationFlows
+        .find((f) => f.alias === 'endo clinician passkey')
+        .authenticationExecutions.pop(),
   ],
   [
     'enrolment guard removed',
