@@ -744,6 +744,62 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       auditEvent: { id: randomUUID(), action: 'consent.updated' },
     });
 
+    it('ADR-0021 records her four enrolment decisions once, with the time she chose', async () => {
+      const store = new PostgresConsentStore(apiDb);
+      const patient = randomUUID();
+      await admin.query(
+        `INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3)`,
+        [patient, ORG_A, randomUUID()],
+      );
+      const chosenAt = new Date(Date.now() - 5 * 60_000);
+      const four = (
+        [
+          'self_tracking',
+          'share_with_care_team',
+          'research_deidentified',
+          'org_aggregate_reporting',
+        ] as const
+      ).map((purpose, i) => ({
+        id: randomUUID(),
+        purpose,
+        status: i < 2 ? ('granted' as const) : ('declined' as const),
+        version: 1,
+        chosenAt,
+        auditEvent: { id: randomUUID(), action: 'consent.enrolled' },
+      }));
+      expect(await store.recordEnrolment(ORG_A, patient, four)).toEqual({ written: 4 });
+      // A retried activation step writes nothing more.
+      expect(
+        await store.recordEnrolment(
+          ORG_A,
+          patient,
+          four.map((d) => ({ ...d, id: randomUUID() })),
+        ),
+      ).toEqual({ written: 0 });
+      const current = await store.current(ORG_A, patient);
+      expect(current.map((c) => [c.purpose, c.status]).sort()).toEqual([
+        ['org_aggregate_reporting', 'declined'],
+        ['research_deidentified', 'declined'],
+        ['self_tracking', 'granted'],
+        ['share_with_care_team', 'granted'],
+      ]);
+      const stored = await admin.query<{ chosen_at: Date }>(
+        `SELECT chosen_at FROM consent WHERE patient_id = $1`,
+        [patient],
+      );
+      expect(stored.rows.every((r) => r.chosen_at.getTime() === chosenAt.getTime())).toBe(true);
+      // The database refuses a choice in the future or long before it is recorded.
+      const other = randomUUID();
+      await admin.query(
+        `INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3)`,
+        [other, ORG_A, randomUUID()],
+      );
+      for (const bad of [new Date(Date.now() + 3_600_000), new Date(Date.now() - 3 * 3_600_000)])
+        await expect(
+          store.recordEnrolment(ORG_A, other, [{ ...four[0]!, id: randomUUID(), chosenAt: bad }]),
+        ).rejects.toThrow(/chosen_at/);
+    });
+
     it('records with its audit event, skips an identical repeat, and a withdrawal wins at once', async () => {
       const store = new PostgresConsentStore(apiDb);
       const first = decision('granted');

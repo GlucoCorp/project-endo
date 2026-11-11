@@ -44,7 +44,7 @@ export type {
   ReservationRequest,
 } from './reservations.ts';
 export { InMemoryConsentStore, PostgresConsentStore } from './consents.ts';
-export type { ConsentDecision, ConsentState, ConsentStore } from './consents.ts';
+export type { ConsentDecision, ConsentState, ConsentStore, EnrolmentConsent } from './consents.ts';
 export type { OutboxHealth, RelayResult } from './outbox.ts';
 
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */

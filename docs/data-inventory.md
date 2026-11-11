@@ -90,6 +90,7 @@ No names, emails, phones or addresses (spec 5.1). Every table has row-level secu
 | `consent.status`                             | `granted`, `declined` (at enrolment) or `revoked` (later withdrawal)                                                               | as above                                                         | as above                                                                    | S2          |
 | `consent.version`                            | Version of the explanation she saw                                                                                                 | as above                                                         | as above                                                                    | S1          |
 | `consent.decided_at`                         | When she decided                                                                                                                   | as above                                                         | as above                                                                    | S1          |
+| `consent.chosen_at`                          | When she chose, at enrolment only (clinical migration 0007); shortly before `decided_at`                                           | as above                                                         | as above                                                                    | S1          |
 
 ### Idempotency and audit outbox — `packages/clinical-store/migrations/0002`
 

@@ -309,4 +309,29 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     expect((await post('claim', body, await asClinic())).statusCode).toBe(403);
     expect((await post('claim', { ...body, identity_ref: 'x' })).statusCode).toBe(400);
   });
+
+  it('writes her four enrolment decisions once (activation step 2)', async () => {
+    const { post, asClinic } = await setup();
+    const at = new Date().toISOString();
+    const four = [
+      'self_tracking',
+      'share_with_care_team',
+      'research_deidentified',
+      'org_aggregate_reporting',
+    ].map((purpose, i) => ({
+      purpose,
+      status: i < 2 ? 'granted' : 'declined',
+      version: 1,
+      chosen_at: at,
+    }));
+    const body = { org_id: ORG, patient_id: PATIENT, decisions: four };
+    expect((await post('../consents', body)).json()).toEqual({ written: 4 });
+    expect((await post('../consents', body)).json()).toEqual({ written: 0 });
+    const twice = { ...body, decisions: [four[0], four[0], four[1], four[2]] };
+    expect((await post('../consents', twice)).statusCode).toBe(400);
+    expect((await post('../consents', { ...body, decisions: four.slice(0, 3) })).statusCode).toBe(
+      400,
+    );
+    expect((await post('../consents', body, await asClinic())).statusCode).toBe(403);
+  });
 });
