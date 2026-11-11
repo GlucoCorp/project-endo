@@ -12,6 +12,7 @@ import {
   type TransactionStore,
 } from '@endo/oidc';
 import { registerSignIn } from './sign-in.ts';
+import { registerEmailSettings } from './email-settings.ts';
 import {
   CONSENT_PENDING_ABSOLUTE_MS,
   PATIENT_ABSOLUTE_MS,
@@ -332,6 +333,7 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
   if (deps.handoff) {
     registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
     registerSignIn(app, deps, deps.handoff);
+    registerEmailSettings(app, deps);
   }
 
   /** Ends whichever session this browser holds (section 12: allowed while consent is pending). */

@@ -39,6 +39,7 @@ async function setup() {
     lastHandoff: null as Record<string, string> | null,
     patient: true,
     identityDown: false,
+    emailCalls: [] as Record<string, string>[],
   };
   const calls: { path: string; body: Record<string, string> }[] = [];
   const view = () => ({
@@ -69,6 +70,14 @@ async function setup() {
     }
     const body = JSON.parse(init?.body as string) as Record<string, string>;
     calls.push({ path: url.pathname, body });
+    if (url.pathname === '/internal/v1/email-codes/confirm') {
+      state.emailCalls.push(body);
+      return json(202, { request_id: EMAIL_REQUEST });
+    }
+    if (url.pathname === '/internal/v1/email-codes/confirm/verify') {
+      state.emailCalls.push(body);
+      return body['code'] === '123456' ? new Response(null, { status: 204 }) : json(403, {});
+    }
     if (url.pathname === '/internal/v1/patients/resolve') {
       if (state.identityDown) throw new TypeError('down');
       return body['idp_subject'] === subject && body['idp_issuer'] === ISSUER && state.patient
@@ -149,6 +158,7 @@ async function setup() {
 }
 
 const PERSON = '01900000-0000-7000-8000-0000000000e1';
+const EMAIL_REQUEST = '01900000-0000-7000-8000-0000000000e9';
 const PATIENT = '01900000-0000-7000-8000-0000000000e2';
 const ORG = '01900000-0000-7000-8000-0000000000e3';
 
@@ -480,5 +490,64 @@ describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () 
     expect(
       await s.sessions.resolve(sessionFrom(again.back.headers['set-cookie']) ?? ''),
     ).toMatchObject({ appLock: false });
+  });
+
+  it('ADR-0026 she adds and confirms her email, for her own session only', async () => {
+    const s = await setup();
+    const own = s.sessions.create({
+      sub: PERSON,
+      role: 'patient',
+      org_id: ORG,
+      patient_id: PATIENT,
+    });
+    const send = (url: string, payload: object, headers: Record<string, string> = {}) =>
+      s.app.inject({
+        method: 'POST',
+        url,
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          cookie: `${SESSION_COOKIE}=${own}`,
+          ...headers,
+        },
+        payload,
+      });
+    const address = 'SYNTHETIC_PHI_MARKER@example.test';
+    const started = await send('/v1/settings/email', { address });
+    expect(started.statusCode).toBe(202);
+    expect(started.json()).toEqual({ request_id: EMAIL_REQUEST });
+    // The person comes from her session, never from the request.
+    expect(s.state.emailCalls[0]).toMatchObject({ person_id: PERSON, address });
+    expect((await send('/v1/settings/email', { address, person_id: 'x' })).statusCode).toBe(400);
+
+    const wrong = await send('/v1/settings/email/confirm', {
+      request_id: EMAIL_REQUEST,
+      code: '000000',
+    });
+    expect(wrong.statusCode).toBe(400);
+    expect(
+      (await send('/v1/settings/email/confirm', { request_id: EMAIL_REQUEST, code: '123456' }))
+        .statusCode,
+    ).toBe(204);
+    expect(s.state.emailCalls.at(-1)).toEqual({
+      person_id: PERSON,
+      request_id: EMAIL_REQUEST,
+      code: '123456',
+    });
+
+    // Not signed in, locked, cross-site, or not JSON: refused before identity is asked.
+    const before = s.state.emailCalls.length;
+    expect((await send('/v1/settings/email', { address }, { cookie: '' })).statusCode).toBe(401);
+    expect(
+      (await send('/v1/settings/email', { address }, { origin: 'https://evil.test' })).statusCode,
+    ).toBe(403);
+    expect(
+      (await send('/v1/settings/email', { address }, { 'content-type': 'text/plain' })).statusCode,
+    ).toBe(415);
+    await s.sessions.setAppLock(own, true);
+    await s.sessions.lock(own);
+    expect((await send('/v1/settings/email', { address })).statusCode).toBe(401);
+    expect(s.state.emailCalls.length).toBe(before);
+    expect(s.logs.join('')).not.toContain('SYNTHETIC_PHI_MARKER');
   });
 });

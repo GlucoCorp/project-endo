@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { t } from '../i18n.ts';
+import { EmailSettings } from './EmailSettings.tsx';
 import styles from '../enrol/enrol.module.css';
 import {
   SIGN_IN_PATH,
@@ -86,6 +87,7 @@ export function HomePage() {
           >
             {t(state.appLock ? 'home.app-lock-disable' : 'home.app-lock-enable')}
           </button>
+          <EmailSettings />
           <button type="button" className={styles['quiet']} onClick={leave}>
             {t('home.sign-out')}
           </button>

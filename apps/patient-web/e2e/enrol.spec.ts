@@ -38,6 +38,11 @@ function fakeIdentity(url: URL, body: Record<string, string>): Response {
   });
   const reply = (status: number, b: unknown) =>
     new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
+  // ADR-0026: confirming her email (the code is always 123456 here).
+  if (url.pathname === '/internal/v1/email-codes/confirm')
+    return reply(202, { request_id: '01900000-0000-7000-8000-0000000000e9' });
+  if (url.pathname === '/internal/v1/email-codes/confirm/verify')
+    return body['code'] === '123456' ? new Response(null, { status: 204 }) : reply(403, {});
   if (url.pathname === '/internal/v1/enrolment/transactions') {
     if (!liveTokens.has(body['token_hash'] ?? '')) return reply(404, {});
     const open = transactions.get(body['binding_hash'] ?? '');
@@ -350,6 +355,17 @@ test('home: signed out she can sign in; signed in she can sign out', async ({ pa
   ]);
   await page.reload();
   await expect(page.getByText('App lock is off')).toBeVisible();
+
+  // ADR-0026: she adds an email for the sign-in fallback, one field at a time.
+  await page.getByLabel('Your email address').fill('someone@example.test');
+  await page.getByRole('button', { name: 'Send a code' }).click();
+  await page.getByLabel('Code from the email').fill('000000');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('That code did not work.')).toBeVisible();
+  await page.getByLabel('Code from the email').fill('123456');
+  await page.getByRole('button', { name: 'Confirm' }).click();
+  await expect(page.getByText('Your email is saved.')).toBeVisible();
+
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible();
   expect(await sessions.resolve(unlocked)).toBeNull();
