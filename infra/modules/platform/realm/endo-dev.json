@@ -111,6 +111,15 @@
       }
     ]
   },
+  "smtpServer": {
+    "host": "${ENDO_SMTP_HOST}",
+    "port": "${ENDO_SMTP_PORT}",
+    "from": "${ENDO_SMTP_FROM}",
+    "fromDisplayName": "Weekly check-in",
+    "starttls": "${ENDO_SMTP_STARTTLS}",
+    "ssl": "false",
+    "auth": "false"
+  },
   "browserFlow": "endo passkey browser",
   "authenticationFlows": [
     {
@@ -162,6 +171,13 @@
           "authenticatorFlow": false,
           "requirement": "ALTERNATIVE",
           "priority": 30,
+          "userSetupAllowed": false
+        },
+        {
+          "authenticator": "endo-email-code",
+          "authenticatorFlow": false,
+          "requirement": "ALTERNATIVE",
+          "priority": 40,
           "userSetupAllowed": false
         }
       ]

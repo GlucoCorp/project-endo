@@ -62,6 +62,11 @@ resource "kubernetes_secret_v1" "keycloak" {
     ENDO_BFF_CLINICIAN_POST_LOGOUT_URI      = "${var.bff_base_urls.clinician}/"
     # ADR-0019: Keycloak notifies the clinic BFF when a clinician session ends.
     ENDO_BFF_CLINICIAN_BACKCHANNEL_LOGOUT_URI = "${var.bff_base_urls.clinician}/auth/backchannel-logout"
+    # ADR-0026: Keycloak's SMTP sender delivers email codes (Mailpit here; Postfix when deployed).
+    ENDO_SMTP_HOST     = "${kubernetes_service_v1.mailpit.metadata[0].name}.${local.ns}.svc"
+    ENDO_SMTP_PORT     = "1025"
+    ENDO_SMTP_FROM     = var.mail_from
+    ENDO_SMTP_STARTTLS = "false"
   }
 }
 

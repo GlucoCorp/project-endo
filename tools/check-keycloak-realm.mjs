@@ -16,6 +16,8 @@ const ALLOWED_AUTHENTICATORS = new Set([
   // ADR-0021, ADR-0025: the enrolment extension.
   'endo-enrolment',
   'endo-quarantine-guard',
+  // ADR-0026: the email code fallback, after the passkey.
+  'endo-email-code',
 ]);
 /** The one approved sub-flow: the patient sign-in alternatives (ADR-0021 section 7). */
 const SIGN_IN_SUBFLOW = 'endo patient sign-in';
@@ -28,6 +30,7 @@ const PATIENT_SIGN_IN = [
   { authenticator: 'endo-enrolment', requirement: 'ALTERNATIVE' },
   { authenticator: 'auth-cookie', requirement: 'ALTERNATIVE' },
   { authenticator: 'webauthn-authenticator-passwordless', requirement: 'ALTERNATIVE' },
+  { authenticator: 'endo-email-code', requirement: 'ALTERNATIVE' },
 ];
 // Only the guarded enrolment registration (ADR-0021 section 8): no self-service passkey adding.
 const ALLOWED_ENABLED_REQUIRED_ACTIONS = new Set(['endo-enrolment-passkey']);
@@ -138,7 +141,23 @@ function checkRealm(realm) {
   );
   expect(
     JSON.stringify(steps(SIGN_IN_SUBFLOW)) === JSON.stringify(PATIENT_SIGN_IN),
-    'patient sign-in must be exactly: endo-enrolment, auth-cookie, passkey (all ALTERNATIVE)',
+    'patient sign-in must be exactly: endo-enrolment, auth-cookie, passkey, email code (all ALTERNATIVE)',
+  );
+  // ADR-0026: Keycloak sends email codes. Settings come from the deployment, never literals, and
+  // no SMTP password lives in the realm file.
+  const smtp = realm.smtpServer ?? {};
+  const placeholders = new Map(Object.entries(smtp));
+  for (const key of ['host', 'port', 'from', 'starttls']) {
+    const value = placeholders.get(key);
+    expect(
+      typeof value === 'string' && /^\$\{ENDO_SMTP_[A-Z]+\}$/.test(value),
+      `smtpServer.${key} must be an ENDO_SMTP_* placeholder`,
+    );
+  }
+  expect(smtp.password === undefined, 'smtpServer must not hold a password');
+  expect(
+    !/endo|health|clinic|diary|treatment/i.test(smtp.fromDisplayName ?? ''),
+    'smtpServer.fromDisplayName must be neutral (spec 13.2)',
   );
   expect(flows.get(SIGN_IN_SUBFLOW)?.topLevel === false, 'patient sign-in must be a sub-flow');
   const unusedFlowBindings = {
@@ -362,6 +381,24 @@ const MUTATIONS = [
         .find((f) => f.alias === 'endo patient sign-in')
         .authenticationExecutions.find((e) => e.authenticator === 'auth-cookie').priority = 1),
   ],
+  [
+    'email code before the passkey',
+    (r) =>
+      (r.authenticationFlows
+        .find((f) => f.alias === 'endo patient sign-in')
+        .authenticationExecutions.find((e) => e.authenticator === 'endo-email-code').priority = 25),
+  ],
+  [
+    'email code required',
+    (r) =>
+      (r.authenticationFlows
+        .find((f) => f.alias === 'endo patient sign-in')
+        .authenticationExecutions.find((e) => e.authenticator === 'endo-email-code').requirement =
+        'REQUIRED'),
+  ],
+  ['literal SMTP host', (r) => (r.smtpServer.host = 'smtp.example.com')],
+  ['SMTP password in the realm', (r) => (r.smtpServer.password = 'x')],
+  ['revealing sender name', (r) => (r.smtpServer.fromDisplayName = 'Endo clinic')],
   [
     'conditional enrolment step',
     (r) =>

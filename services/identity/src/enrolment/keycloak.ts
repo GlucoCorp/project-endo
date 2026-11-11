@@ -1,5 +1,6 @@
 import type { WorkloadTokenSigner } from '@endo/service-kit';
 import type { KeycloakFinaliser } from './activation.ts';
+import type { EmailSender } from '../email/routes.ts';
 
 /** The Keycloak extension's admin scope (ADR-0021 section 13); nothing else carries it. */
 type Answer = { finalised?: unknown; deleted?: unknown };
@@ -12,7 +13,10 @@ export const KEYCLOAK_ADMIN_SCOPE = 'keycloak.enrolment.admin';
  * network failure, is "not yet" and activation retries on the next run. A 409 (the user is not
  * quarantined for this transaction) never becomes done: it needs a person to look.
  */
-export class HttpKeycloakAdmin implements KeycloakFinaliser {
+/** Keycloak's mail sender, through the extension (ADR-0026); its own scope. */
+export const KEYCLOAK_EMAIL_SCOPE = 'keycloak.email.send';
+
+export class HttpKeycloakAdmin implements KeycloakFinaliser, EmailSender {
   readonly #base: string;
   readonly #signer: WorkloadTokenSigner;
   readonly #fetch: typeof fetch;
@@ -25,6 +29,25 @@ export class HttpKeycloakAdmin implements KeycloakFinaliser {
 
   finalise(subject: string, transactionId: string): Promise<boolean> {
     return this.#post('finalise', subject, transactionId, (b) => b?.finalised === true);
+  }
+
+  /** Sends one code email with Keycloak's SMTP sender (ADR-0026). True once handed over. */
+  async send(to: string, code: string, purpose: 'sign-in' | 'confirm'): Promise<boolean> {
+    const token = await this.#signer.sign([KEYCLOAK_EMAIL_SCOPE], 'keycloak');
+    try {
+      const res = await this.#fetch(`${this.#base}/send-email`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ to, code, purpose }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status !== 200) return false;
+      const body = (await res.json().catch(() => null)) as { sent?: unknown } | null;
+      return body?.sent === true;
+    } catch {
+      return false;
+    }
   }
 
   /** Deletes a provisional user quarantined for this transaction (cleanup, section 11). */

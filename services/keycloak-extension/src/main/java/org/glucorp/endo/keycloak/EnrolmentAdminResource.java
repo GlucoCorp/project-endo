@@ -77,6 +77,35 @@ public class EnrolmentAdminResource {
     return Response.ok(Map.of("deleted", true)).build();
   }
 
+  /**
+   * ADR-0026: sends one code email for the identity service (confirming a new address). The
+   * identity service chose the address and drew the code; this only delivers it, with the
+   * realm's own SMTP settings and the same neutral message as sign-in.
+   */
+  @POST
+  @Path("send-email")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
+  public Response sendEmail(@HeaderParam("authorization") String auth, Map<String, Object> body) {
+    WorkloadTokenVerifier v = EndoConfig.identityVerifier();
+    if (v == null || !v.verify(auth, EMAIL_SCOPE)) return status(Response.Status.UNAUTHORIZED);
+    if (body == null
+        || !(body.get("to") instanceof String to)
+        || !(body.get("code") instanceof String code)
+        || !EMAIL.matcher(to).matches()
+        || !code.matches("^[0-9]{6}$")) return status(Response.Status.BAD_REQUEST);
+    RealmModel realm = session.getContext().getRealm();
+    boolean sent =
+        EmailCodeAuthenticator.send(
+            session, realm, new IdentityClient.EmailCode("unused", to, code));
+    return sent
+        ? Response.ok(Map.of("sent", true)).build()
+        : status(Response.Status.SERVICE_UNAVAILABLE);
+  }
+
+  static final String EMAIL_SCOPE = "keycloak.email.send";
+  private static final Pattern EMAIL = Pattern.compile("^[^\\s@]{1,64}@[^\\s@]{1,189}$");
+
   /** Finalise only the user quarantined for this transaction; a repeat after success is DONE. */
   static Outcome decideFinalise(String quarantine, boolean isPatient, String transactionId) {
     if (quarantine == null) return isPatient ? Outcome.DONE : Outcome.REFUSED;

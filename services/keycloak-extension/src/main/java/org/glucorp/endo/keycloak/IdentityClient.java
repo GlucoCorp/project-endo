@@ -36,6 +36,11 @@ public class IdentityClient {
       String clientUuid,
       String tabId) {}
 
+  /** An email code request (ADR-0026): what to deliver, if anything. */
+  public record EmailCode(String requestId, String deliverTo, String code) {}
+
+  static final String EMAIL_SCOPE = "identity.email_code.keycloak";
+
   /** A redeemed handoff: the transaction and the provisional user's id the coordinator chose. */
   public record Redeemed(String transactionId, String provisionalSubject, String kind) {}
 
@@ -127,12 +132,66 @@ public class IdentityClient {
     }
   }
 
+  /**
+   * ADR-0026: asks for a sign-in code for this address. The answer always names a request; it
+   * carries an address and code only when one should be sent. Null on any failure.
+   */
+  public EmailCode emailSignIn(String address, String sourceIp) {
+    try {
+      HttpResponse<String> res =
+          post(
+              "/internal/v1/email-codes/sign-in",
+              Map.of("address", address, "source_ip", sourceIp),
+              EMAIL_SCOPE);
+      if (res.statusCode() != 200) return null;
+      Map<?, ?> out = JsonSerialization.readValue(res.body(), Map.class);
+      if (!(out.get("request_id") instanceof String id) || !UUID_RE.matcher(id).matches())
+        return null;
+      Object deliver = out.get("deliver");
+      if (deliver == null) return new EmailCode(id, null, null);
+      if (deliver instanceof Map<?, ?> d
+          && d.get("to") instanceof String to
+          && d.get("code") instanceof String code
+          && code.matches("^[0-9]{6}$")) return new EmailCode(id, to, code);
+      return null;
+    } catch (IOException | GeneralSecurityException e) {
+      return null;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    }
+  }
+
+  /** ADR-0026: checks a code once. Her Keycloak user id, or null for a refusal or failure. */
+  public String verifyEmail(String requestId, String code) {
+    try {
+      HttpResponse<String> res =
+          post(
+              "/internal/v1/email-codes/sign-in/verify",
+              Map.of("request_id", requestId, "code", code),
+              EMAIL_SCOPE);
+      if (res.statusCode() != 200) return null;
+      Map<?, ?> out = JsonSerialization.readValue(res.body(), Map.class);
+      return out.get("subject") instanceof String s && UUID_RE.matcher(s).matches() ? s : null;
+    } catch (IOException | GeneralSecurityException e) {
+      return null;
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return null;
+    }
+  }
+
   private HttpResponse<String> post(String path, Map<String, Object> body)
+      throws IOException, InterruptedException, GeneralSecurityException {
+    return post(path, body, SCOPE);
+  }
+
+  private HttpResponse<String> post(String path, Map<String, Object> body, String scope)
       throws IOException, InterruptedException, GeneralSecurityException {
     HttpRequest.Builder req =
         HttpRequest.newBuilder(base.resolve(path))
             .timeout(Duration.ofSeconds(5))
-            .header("authorization", "Bearer " + token.sign(List.of(SCOPE)));
+            .header("authorization", "Bearer " + token.sign(List.of(scope)));
     if (body == null) req.POST(HttpRequest.BodyPublishers.noBody());
     else
       req.header("content-type", "application/json")
