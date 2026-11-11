@@ -33,7 +33,10 @@ The identity service coordinates patient enrolment. Built so far:
 - `src/enrolment/clinical.ts`: the API client for invitation lookups (scope `api.enrolment.coordinate`).
 - The identity audit outbox is relayed to the audit store every 5 seconds (`IDENTITY_AUDIT_RELAY_DATABASE_URL`, required with the database).
 
-The clinician confirm route, the handoff into Keycloak and the deadline sweep come in later slices.
+- `src/enrolment/activation.ts`: activation (section 10), from `claiming` to `active` one durable step at a time, run on consent and swept every 30 seconds.
+- `src/enrolment/keycloak.ts`: the client for the extension's admin endpoint (scope `keycloak.enrolment.admin`; `IDENTITY_KEYCLOAK_REALM_URL`). Without it activation waits before the last step and the account stays quarantined.
+
+Cleanup and reconciliation jobs (section 11) come in a later slice.
 
 ## Rules
 
