@@ -105,7 +105,7 @@ export function registerSignIn(
         // RFC 9207: if the provider names itself, it must be ours.
         if (q.error || !q.code || (q.iss !== undefined && q.iss !== oidc.issuer))
           throw new OidcError();
-        const { idToken } = await exchangeCode(oidc, q.code, attempt, deps.fetch);
+        const { idToken, refreshToken } = await exchangeCode(oidc, q.code, attempt, deps.fetch);
         const who = await validateIdToken(oidc, idToken, attempt, h.keys, deps.now);
         const claims = await resolve(request, who.issuer, who.subject);
         // A fresh session, never one the browser brought (fixation); any old one ends. Signing in
@@ -114,7 +114,11 @@ export function registerSignIn(
         const before = old ? await deps.sessionsResolver?.resolve(old) : null;
         if (old) await h.sessions.revoke(old);
         const keepLock = before?.claims.sub === claims.sub && before.appLock;
-        sessionCookie(reply, await h.sessions.createPatient(claims, keepLock), PATIENT_ABSOLUTE_MS);
+        sessionCookie(
+          reply,
+          await h.sessions.createPatient(claims, keepLock, refreshToken),
+          PATIENT_ABSOLUTE_MS,
+        );
         // A same-origin page completes the navigation, so the Strict session cookie is sent on
         // the next request (this callback arrives cross-site).
         return await reply

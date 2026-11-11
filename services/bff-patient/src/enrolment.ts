@@ -6,6 +6,7 @@ import {
   OidcError,
   authorizationUrl,
   codeChallenge,
+  endKeycloakSession,
   exchangeCode,
   validateIdToken,
   type OidcConfig,
@@ -336,14 +337,22 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
     registerEmailSettings(app, deps);
   }
 
-  /** Ends whichever session this browser holds (section 12: allowed while consent is pending). */
+  /**
+   * Ends whichever session this browser holds (section 12: allowed while consent is pending), and
+   * then the Keycloak session behind it, from the server, so a shared phone keeps no signed-in
+   * Keycloak session either (RISK-S02). Her session ends first; if Keycloak cannot be reached,
+   * signing out still succeeds here and the Keycloak session runs out on its own.
+   */
   app.post(
     '/v1/session/sign-out',
     { config: { auth: { kind: 'public', reason: 'sign-out' } }, preValidation: sameOrigin },
     async (request, reply) => {
       const token = sessionToken(request);
-      if (token && deps.handoff) await deps.handoff.sessions.revoke(token);
+      const handoff = deps.handoff;
+      const keycloak = token && handoff ? await handoff.sessions.end(token) : null;
       sessionCookie(reply, null);
+      if (keycloak && handoff && !(await endKeycloakSession(handoff.oidc, keycloak, deps.fetch)))
+        request.log.warn({ event: 'sign_out.keycloak_not_ended' });
       return reply.code(204).send();
     },
   );
@@ -478,7 +487,7 @@ function registerHandoff(
       if (!bound || typeof q.code !== 'string' || typeof q.state !== 'string') return back();
       try {
         const attempt = h.transactions.consume(bound.secret, q.state);
-        const { idToken } = await exchangeCode(h.oidc, q.code, attempt, deps.fetch);
+        const { idToken, refreshToken } = await exchangeCode(h.oidc, q.code, attempt, deps.fetch);
         const who = await validateIdToken(h.oidc, idToken, attempt, h.keys, deps.now);
         const res = await helpers.call(
           request,
@@ -494,7 +503,11 @@ function registerHandoff(
             // A fresh session, never one the browser brought (fixation); any old one ends.
             const old = readCookie(request.headers.cookie, SESSION_COOKIE);
             if (old) await h.sessions.revoke(old);
-            const token = await h.sessions.createConsentPending(bound.txId, who.subject);
+            const token = await h.sessions.createConsentPending(
+              bound.txId,
+              who.subject,
+              refreshToken,
+            );
             sessionCookie(reply, token, CONSENT_PENDING_ABSOLUTE_MS);
           }
         }

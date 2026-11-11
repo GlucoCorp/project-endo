@@ -40,6 +40,8 @@ async function setup() {
     patient: true,
     identityDown: false,
     emailCalls: [] as Record<string, string>[],
+    keycloakDown: false,
+    logouts: [] as { body: string; auth: string }[],
   };
   const calls: { path: string; body: Record<string, string> }[] = [];
   const view = () => ({
@@ -57,6 +59,15 @@ async function setup() {
     init?: Parameters<typeof fetch>[1],
   ) => {
     const url = new URL(input instanceof Request ? input.url : input);
+    if (url.href === OIDC.endSessionEndpoint) {
+      if (state.keycloakDown) throw new TypeError('down');
+      const headers = new Headers(init?.headers);
+      state.logouts.push({
+        body: init?.body as string,
+        auth: headers.get('authorization') ?? '',
+      });
+      return new Response(null, { status: 204 });
+    }
     if (url.href === OIDC.tokenEndpoint) {
       const idToken = await new SignJWT({ nonce: state.nonce, auth_time: nowS() - 2, acr: '1' })
         .setProtectedHeader({ alg: 'RS256', kid: 'k1' })
@@ -343,6 +354,42 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
     expect(out.statusCode).toBe(204);
     expect(String(out.headers['set-cookie'])).toContain('Max-Age=0');
     expect(await sessions.consentPending(token)).toBeNull();
+  });
+
+  it('RISK-S02 sign-out ends her Keycloak session too, from the server, after her own', async () => {
+    const { app, state, signIn, sessions, logs } = await setup();
+    const signOut = (session: string) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/session/sign-out',
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          cookie: `${SESSION_COOKIE}=${session}`,
+        },
+        payload: '{}',
+      });
+    const first = (await signIn()).session ?? '';
+    const out = await signOut(first);
+    expect(out.statusCode).toBe(204);
+    expect(await sessions.consentPending(first)).toBeNull();
+    // Keycloak's logout endpoint, with her refresh token and the BFF's client authentication.
+    expect(state.logouts).toHaveLength(1);
+    expect(state.logouts[0]?.body).toBe('refresh_token=rt');
+    expect(state.logouts[0]?.auth).toMatch(/^Basic /);
+    // Signing out again with the same cookie has nothing left to end.
+    expect((await signOut(first)).statusCode).toBe(204);
+    expect(state.logouts).toHaveLength(1);
+
+    // Keycloak unreachable: she is still signed out here, and the token is never logged.
+    state.keycloakDown = true;
+    state.status = 'confirmed';
+    const second = (await signIn()).session ?? '';
+    const down = await signOut(second);
+    expect(down.statusCode).toBe(204);
+    expect(await sessions.consentPending(second)).toBeNull();
+    expect(logs.join('\n')).toContain('sign_out.keycloak_not_ended');
+    expect(logs.join('\n')).not.toContain('rt"');
   });
 
   it('refuses to rotate when the coordinator names a different user', async () => {

@@ -10,6 +10,7 @@ import {
   TransactionStore,
   authorizationUrl,
   codeChallenge,
+  endKeycloakSession,
   exchangeCode,
   logoutUrl,
   refreshSession,
@@ -192,6 +193,29 @@ describe('ADR-0019, ADR-0021 OIDC client', () => {
     ).toEqual({
       sub: 'u',
     });
+  });
+
+  it('RISK-S02 ends a Keycloak session from the server; any failure is false, never a throw', async () => {
+    const seen: { url: string; init: RequestInit | undefined }[] = [];
+    const reply =
+      (r: Response | Error): typeof fetch =>
+      (input, init) => {
+        seen.push({ url: input instanceof Request ? input.url : input.toString(), init });
+        return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
+      };
+    expect(
+      await endKeycloakSession(CONFIG, 'refresh', reply(new Response(null, { status: 204 }))),
+    ).toBe(true);
+    expect(seen[0]?.url).toBe(CONFIG.endSessionEndpoint);
+    expect(seen[0]?.init?.method).toBe('POST');
+    expect(seen[0]?.init?.body).toBe('refresh_token=refresh');
+    expect((seen[0]?.init?.headers as Record<string, string>)['authorization']).toBe(
+      `Basic ${Buffer.from(`${CONFIG.clientId}:${CONFIG.clientSecret}`).toString('base64')}`,
+    );
+    expect(
+      await endKeycloakSession(CONFIG, 'refresh', reply(new Response(null, { status: 400 }))),
+    ).toBe(false);
+    expect(await endKeycloakSession(CONFIG, 'refresh', reply(new TypeError('down')))).toBe(false);
   });
 
   it('builds the logout URL with the ID token hint', () => {

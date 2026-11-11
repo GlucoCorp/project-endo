@@ -40,6 +40,26 @@ async function setup() {
   };
 }
 
+describe('RISK-S02 the Keycloak refresh token stays beside the session', () => {
+  it('is never part of the session, survives rotation, and is handed back once by end()', async () => {
+    const sessions = new DevSessionStore('test');
+    const claims = { sub: 'p', role: 'patient' as const, org_id: 'o', patient_id: 'x' };
+    const pending = await sessions.createConsentPending(uuidv7(), 's', 'kc-refresh');
+    expect(JSON.stringify(await sessions.consentPending(pending))).not.toContain('kc-refresh');
+    const rotated = (await sessions.rotate(pending, '', 's', claims)) ?? '';
+    expect(rotated).toBe('');
+    const tx = uuidv7();
+    const p2 = await sessions.createConsentPending(tx, 's', 'kc-refresh');
+    const patient = (await sessions.rotate(p2, tx, 's', claims)) ?? '';
+    expect(JSON.stringify(await sessions.resolve(patient))).not.toContain('kc-refresh');
+    expect(await sessions.end(patient)).toBe('kc-refresh');
+    expect(await sessions.end(patient)).toBeNull();
+    expect(await sessions.resolve(patient)).toBeNull();
+    // A session from before this change, or a dev one, has no token to hand back.
+    expect(await sessions.end(sessions.create(claims))).toBeNull();
+  });
+});
+
 describe('spec 10.1, RISK-S02 app lock for shared phones', () => {
   it('locks only when she turned it on; locked, nothing but the lock screen answers', async () => {
     const s = await setup();
