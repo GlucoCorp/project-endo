@@ -334,6 +334,11 @@ export function registerClinicEnrolmentRoutes(app: FastifyInstance, deps: Patien
         );
         return { outcome: 'unavailable' };
       }
+      // The clinical store definitely holds it for this transaction: record that (migration 0007).
+      await deps.store.recordReservation(
+        tx.id,
+        enrolmentAudit('identity.enrolment.reserved', tx, request.id),
+      );
       return { outcome: 'confirmed' };
     },
   );
