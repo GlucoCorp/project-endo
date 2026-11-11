@@ -32,6 +32,8 @@ import { PostgresEnrolmentStore } from './enrolment/store.ts';
 import { Activator } from './enrolment/activation.ts';
 import { HttpKeycloakAdmin } from './enrolment/keycloak.ts';
 import { Cleaner } from './enrolment/cleanup.ts';
+import { EmailCodeStore } from './email/store.ts';
+import type { EmailRouteDeps } from './email/routes.ts';
 import { enrolmentAudit } from './enrolment/routes.ts';
 import { uuidv7 } from '@endo/domain';
 
@@ -108,6 +110,7 @@ async function main(): Promise<void> {
   let persons: PersonStore;
   let enrolment: PatientRouteDeps | undefined;
   let onConsented: ((transactionId: string) => void) | undefined;
+  let email: EmailRouteDeps | undefined;
   let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
@@ -115,6 +118,9 @@ async function main(): Promise<void> {
       createPool(config.IDENTITY_DATABASE_URL, { applicationName: 'endo-identity' }),
     );
     persons = new PostgresPersonStore(db, kms);
+    // Email one-time codes (ADR-0026). Keycloak delivers them; confirming a new address needs
+    // the extension's sender, which arrives with the extension's email endpoint.
+    email = { store: new EmailCodeStore(db, kms), sender: null };
 
     // Enrolment events are queued in the identity outbox; this relays them to the audit store
     // with the relay role, which alone may read and acknowledge them (ADR-0021 section 14).
@@ -233,13 +239,13 @@ async function main(): Promise<void> {
   if (config.IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK) {
     trusted['keycloak'] = {
       publicJwk: config.IDENTITY_TRUSTED_KEYCLOAK_PUBLIC_KEY_JWK,
-      scopes: ['identity.enrolment.keycloak'],
+      scopes: ['identity.enrolment.keycloak', 'identity.email_code.keycloak'],
     };
   }
   if (config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK) {
     trusted['bff-patient'] = {
       publicJwk: config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK,
-      scopes: ['identity.enrolment.patient', 'identity.patient.resolve'],
+      scopes: ['identity.enrolment.patient', 'identity.patient.resolve', 'identity.email.patient'],
     };
   }
   if (config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK) {
@@ -257,6 +263,7 @@ async function main(): Promise<void> {
     idpIssuer: config.IDENTITY_IDP_ISSUER,
     ...(enrolment ? { enrolment } : {}),
     ...(onConsented ? { onConsented } : {}),
+    ...(email ? { email } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

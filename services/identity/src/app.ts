@@ -21,6 +21,7 @@ import {
   type PatientRouteDeps,
 } from './enrolment/routes.ts';
 import { registerHandoffRoutes } from './enrolment/handoff-routes.ts';
+import { registerEmailRoutes, type EmailRouteDeps } from './email/routes.ts';
 
 /**
  * Every route declares its access (ADR-0018). Workload routes name the one scope they require;
@@ -35,7 +36,7 @@ export type IdentityAccess =
       readonly action: string;
       readonly resourceId: (request: FastifyRequest) => string | null;
       /** Audited resource type; `person` unless the route says otherwise. */
-      readonly resourceType?: 'person' | 'enrolment_transaction';
+      readonly resourceType?: 'person' | 'enrolment_transaction' | 'email_code';
     };
 
 declare module 'fastify' {
@@ -57,7 +58,7 @@ export function isIdentityAccess(value: unknown): value is IdentityAccess {
     typeof v.action === 'string' &&
     typeof v.resourceId === 'function' &&
     // Checked at run time: route config is untyped at registration.
-    [undefined, 'person', 'enrolment_transaction'].includes(v.resourceType)
+    [undefined, 'person', 'enrolment_transaction', 'email_code'].includes(v.resourceType)
   );
 }
 
@@ -75,6 +76,8 @@ export interface IdentityDeps {
   readonly enrolment?: PatientRouteDeps;
   /** Starts activation after her consent (ADR-0021 section 10). */
   readonly onConsented?: (transactionId: string) => void;
+  /** Email one-time codes (ADR-0026). Without them the email routes do not exist. */
+  readonly email?: EmailRouteDeps;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -377,6 +380,7 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     });
   });
 
+  if (deps.email) registerEmailRoutes(app, deps.email);
   if (deps.enrolment) {
     registerPatientEnrolmentRoutes(app, deps.enrolment);
     registerClinicEnrolmentRoutes(app, deps.enrolment);
