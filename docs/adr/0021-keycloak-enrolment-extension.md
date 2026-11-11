@@ -145,6 +145,8 @@ The coordinator's transition table (identity database). Each state before `claim
 
 ### 12. Consent-pending session
 
+- **As built so far (2026-11-11):** her consent is recorded through the enrolment cookie (the browser binding), which lasts to the transaction's 60-minute absolute deadline, not yet through a separate consent-pending session. The consent screens (one purpose per screen, two equal buttons, `apps/patient-web`) send all four decisions with their versions and times; declining self-tracking ends enrolment. The ID token's signature, nonce, `acr` and freshness are already checked at the callback; the consent-pending session and its rotation into a patient session come with activation (slice 6). The four explanation texts are version 1 drafts that need data protection review before real use (`TODO_LEGAL`).
+
 - The BFF accepts the callback only if the ID token passes ADR-0019-style validation (signature, issuer, audience, nonce, `acr`, freshness) **and** its subject equals the transaction's provisional subject.
 - It then creates a **consent-pending** session that allows only: reading the explanations, recording each decision (into the transaction), signing out and cancelling.
 - When the transaction reaches `active`, the session rotates into an ordinary patient session.

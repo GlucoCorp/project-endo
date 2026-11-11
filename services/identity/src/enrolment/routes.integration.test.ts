@@ -517,6 +517,81 @@ describe.skipIf(!url)(
         expect((await redeem(lateRef, late)).statusCode).toBe(403);
       });
 
+      /** A transaction at consent-pending: confirmed, redeemed, passkey committed, called back. */
+      async function consentPending() {
+        const { id, binding } = await confirmed();
+        const req = request();
+        const ref = (await handoff(id, binding, req)).json<{ handoff_ref: string }>().handoff_ref;
+        const subject = (await redeem(ref, req)).json<{ provisional_subject: string }>()
+          .provisional_subject;
+        await app.inject({
+          method: 'POST',
+          url: `/internal/v1/enrolment/transactions/${id}/credential-committed`,
+          headers: await asKeycloak(),
+        });
+        await post(`/${id}/callback`, { binding_hash: binding, subject });
+        return { id, binding };
+      }
+      const decisions = (selfTracking: 'granted' | 'declined' = 'granted', at = new Date()) => ({
+        self_tracking: { status: selfTracking, version: 1, decided_at: at.toISOString() },
+        share_with_care_team: { status: 'granted', version: 1, decided_at: at.toISOString() },
+        research_deidentified: { status: 'declined', version: 1, decided_at: at.toISOString() },
+        org_aggregate_reporting: { status: 'declined', version: 1, decided_at: at.toISOString() },
+      });
+
+      it('records all four decisions and moves on to claiming; declining self-tracking ends it', async () => {
+        const a = await consentPending();
+        const res = await post(`/${a.id}/consent`, {
+          binding_hash: a.binding,
+          decisions: decisions(),
+        });
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toMatchObject({ status: 'claiming' });
+        const stored = (await store.get(a.id))?.tx;
+        expect(stored?.decisions?.share_with_care_team).toMatchObject({
+          status: 'granted',
+          version: 1,
+        });
+        expect(stored?.personId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(stored?.patientId).toMatch(/^[0-9a-f-]{36}$/);
+
+        const b = await consentPending();
+        const declined = await post(`/${b.id}/consent`, {
+          binding_hash: b.binding,
+          decisions: decisions('declined'),
+        });
+        expect(declined.json()).toMatchObject({ status: 'cancelling' });
+        expect((await store.get(b.id))?.tx.cancelReason).toBe('declined');
+      });
+
+      it('refuses missing decisions, future times, another browser, or the wrong moment', async () => {
+        const a = await consentPending();
+        const partial: Record<string, unknown> = decisions();
+        delete partial['research_deidentified'];
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: partial }))
+            .statusCode,
+        ).toBe(400);
+        const future = decisions('granted', new Date(Date.now() + 3_600_000));
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: future }))
+            .statusCode,
+        ).toBe(400);
+        expect(
+          (await post(`/${a.id}/consent`, { binding_hash: secret(), decisions: decisions() }))
+            .statusCode,
+        ).toBe(404);
+        const early = await confirmed();
+        expect(
+          (
+            await post(`/${early.id}/consent`, {
+              binding_hash: early.binding,
+              decisions: decisions(),
+            })
+          ).statusCode,
+        ).toBe(409);
+      });
+
       it('refuses a handoff before confirmation, for another browser, or for another issuer', async () => {
         const link = newLink();
         const binding = secret();
