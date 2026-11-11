@@ -29,7 +29,7 @@ There is also a gap: enrolment never asks for an email address. Many patients ha
 
 ### Flow
 
-1. On the sign-in page she chooses "Email me a code". The extension asks the identity service (workload scope `identity.email-code.keycloak`) to issue a code for the address she typed.
+1. On the sign-in page she chooses "Email me a code". The extension asks the identity service (workload scope `identity.email_code.keycloak`) to issue a code for the address she typed.
 2. The identity service answers the same way whether or not the address belongs to a patient, so it can't be used to find out who is a patient. Only when the address belongs to exactly one patient with a confirmed email does it create a code: 6 digits, 10 minutes, single use, MAC only. It returns the code to the extension for delivery and nothing else.
 3. Keycloak emails the code to the address the identity service holds for her, never to the address she typed.
 4. She types the code. The extension asks the identity service to verify it (5 wrong entries lock the code), then signs her in as that user. The BFF's sign-in callback is unchanged.
