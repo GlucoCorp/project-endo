@@ -51,6 +51,8 @@ export interface ConsentSessions {
     claims: ServiceClaims,
   ): Promise<string | null>;
   revoke(token: string): Promise<void>;
+  /** A fresh token for a patient session (a returning patient's sign-in). */
+  createPatient(claims: ServiceClaims): Promise<string>;
 }
 
 type Entry =
@@ -84,6 +86,10 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
       session: { claims, createdAt: t, lastSeenAt: t },
     });
     return token;
+  }
+
+  createPatient(claims: ServiceClaims): Promise<string> {
+    return Promise.resolve(this.create(claims));
   }
 
   createConsentPending(transactionId: string, subject: string): Promise<string> {

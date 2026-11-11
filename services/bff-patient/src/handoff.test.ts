@@ -37,6 +37,8 @@ async function setup() {
     status: 'confirmed',
     nonce: '',
     lastHandoff: null as Record<string, string> | null,
+    patient: true,
+    identityDown: false,
   };
   const calls: { path: string; body: Record<string, string> }[] = [];
   const view = () => ({
@@ -67,6 +69,12 @@ async function setup() {
     }
     const body = JSON.parse(init?.body as string) as Record<string, string>;
     calls.push({ path: url.pathname, body });
+    if (url.pathname === '/internal/v1/patients/resolve') {
+      if (state.identityDown) throw new TypeError('down');
+      return body['idp_subject'] === subject && body['idp_issuer'] === ISSUER && state.patient
+        ? json(200, { person_id: PERSON, patient_id: PATIENT, org_id: ORG })
+        : json(404, {});
+    }
     if (url.pathname.endsWith('/handoff')) {
       if (state.status !== 'confirmed') return json(409, {});
       state.nonce = body['nonce'] ?? '';
@@ -342,5 +350,91 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
     });
     expect(res.statusCode).toBe(502);
     expect(await sessions.consentPending(other)).not.toBeNull();
+  });
+});
+
+describe('REQ-001 spec 10.1: a returning patient signs in with her passkey', () => {
+  /** /auth/sign-in, then Keycloak's return to /auth/callback with this attempt's state. */
+  async function signInFlow(s: Awaited<ReturnType<typeof setup>>, cookieOverride?: string) {
+    const start = await s.app.inject({ url: '/auth/sign-in' });
+    expect(start.statusCode).toBe(302);
+    const location = new URL(start.headers.location ?? '');
+    s.state.nonce = location.searchParams.get('nonce') ?? '';
+    const binding = /^__Host-endo_signin=([^;]+)/.exec(String(start.headers['set-cookie']))?.[1];
+    const back = await s.app.inject({
+      url: `/auth/callback?code=c2&state=${location.searchParams.get('state') ?? ''}`,
+      headers: { cookie: cookieOverride ?? `__Host-endo_signin=${binding ?? ''}` },
+    });
+    return { start, location, back };
+  }
+
+  it('signs her in to a fresh patient session through Keycloak, with PKCE and its own callback', async () => {
+    const s = await setup();
+    const { start, location, back } = await signInFlow(s);
+    expect(location.origin + location.pathname).toBe(OIDC.authorizationEndpoint);
+    expect(location.searchParams.get('redirect_uri')).toBe(`${ORIGIN}/auth/callback`);
+    expect(location.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(location.searchParams.has('endo_handoff')).toBe(false);
+    expect(String(start.headers['set-cookie'])).toMatch(
+      /^__Host-endo_signin=[A-Za-z0-9_-]{43}; Path=\/; Secure; HttpOnly; SameSite=Lax; Max-Age=600$/,
+    );
+    expect(back.statusCode).toBe(200);
+    expect(back.body).toContain('url=/');
+    const token = sessionFrom(back.headers['set-cookie']);
+    expect(String(back.headers['set-cookie'])).toContain('SameSite=Strict');
+    expect((await s.sessions.resolve(token ?? ''))?.claims).toEqual({
+      sub: PERSON,
+      role: 'patient',
+      org_id: ORG,
+      patient_id: PATIENT,
+    });
+    const resolveCall = s.calls.find((c) => c.path === '/internal/v1/patients/resolve');
+    expect(resolveCall?.body).toEqual({
+      idp_issuer: ISSUER,
+      idp_subject: expect.any(String) as string,
+    });
+    // The page learns only that she is signed in.
+    const me = await s.app.inject({
+      url: '/v1/session',
+      headers: { cookie: `${SESSION_COOKIE}=${token ?? ''}` },
+    });
+    expect(me.json()).toEqual({ signed_in: true });
+    expect(me.body).not.toContain(PATIENT);
+    expect((await s.app.inject({ url: '/v1/session' })).statusCode).toBe(401);
+  });
+
+  it('refuses the same way: another browser, a reused attempt, no patient record, identity down', async () => {
+    const stranger = await setup();
+    const a = await signInFlow(stranger, `__Host-endo_signin=${'x'.repeat(43)}`);
+    expect(a.back.statusCode).toBe(401);
+    expect(a.back.headers['set-cookie']).toBeUndefined();
+
+    const notPatient = await setup();
+    notPatient.state.patient = false;
+    expect((await signInFlow(notPatient)).back.statusCode).toBe(401);
+
+    const down = await setup();
+    down.state.identityDown = true;
+    const d = await signInFlow(down);
+    expect(d.back.statusCode).toBe(401);
+    expect(d.back.json<{ type: string }>().type).toBe(a.back.json<{ type: string }>().type);
+    expect(down.logs.join('')).toContain('sign_in.failed');
+
+    const errored = await setup();
+    const start = await errored.app.inject({ url: '/auth/sign-in' });
+    const st = new URL(start.headers.location ?? '').searchParams.get('state') ?? '';
+    const binding = /^__Host-endo_signin=([^;]+)/.exec(String(start.headers['set-cookie']))?.[1];
+    const res = await errored.app.inject({
+      url: `/auth/callback?error=access_denied&state=${st}`,
+      headers: { cookie: `__Host-endo_signin=${binding ?? ''}` },
+    });
+    expect(res.statusCode).toBe(401);
+    // The attempt is used up even by a refusal.
+    const again = await errored.app.inject({
+      url: `/auth/callback?code=c2&state=${st}`,
+      headers: { cookie: `__Host-endo_signin=${binding ?? ''}` },
+    });
+    expect(again.statusCode).toBe(401);
+    expect((await errored.app.inject({ url: '/auth/sign-in?prompt=none' })).statusCode).toBe(400);
   });
 });

@@ -1,6 +1,6 @@
 import { Outlet, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
 import { EnrolPage } from './enrol/EnrolPage.tsx';
-import { t } from './i18n.ts';
+import { HomePage } from './home/HomePage.tsx';
 import { QuickExit } from './QuickExit.tsx';
 
 const root = createRootRoute({
@@ -12,16 +12,7 @@ const root = createRootRoute({
   ),
 });
 
-/** Until sign-in exists (ADR-0021 slice 4), the only way in is an enrolment link. */
-const home = createRoute({
-  getParentRoute: () => root,
-  path: '/',
-  component: () => (
-    <main>
-      <p>{t('enrol.no-link')}</p>
-    </main>
-  ),
-});
+const home = createRoute({ getParentRoute: () => root, path: '/', component: HomePage });
 
 const enrol = createRoute({ getParentRoute: () => root, path: '/enrol', component: EnrolPage });
 

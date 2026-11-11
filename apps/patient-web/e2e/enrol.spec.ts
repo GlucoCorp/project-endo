@@ -287,3 +287,33 @@ test('pressing Escape twice is a quick exit too', async ({ page }) => {
   await page.keyboard.press('Escape');
   await expect(page).toHaveURL('about:blank');
 });
+
+test('home: signed out she can sign in; signed in she can sign out', async ({ page, context }) => {
+  await page.goto(`${origin}/`);
+  const signIn = page.getByRole('link', { name: 'Sign in' });
+  await expect(signIn).toHaveAttribute('href', '/auth/sign-in');
+
+  const token = await sessions.createPatient({
+    sub: PERSON,
+    role: 'patient',
+    org_id: ORG,
+    patient_id: PATIENT,
+  });
+  await context.addCookies([
+    {
+      name: SESSION_COOKIE,
+      value: token,
+      domain: 'localhost',
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await page.reload();
+  await expect(page.getByText('You are signed in.')).toBeVisible();
+  await page.getByRole('button', { name: 'Sign out' }).click();
+  await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible();
+  expect(await sessions.resolve(token)).toBeNull();
+  expect(violations).toEqual([]);
+});

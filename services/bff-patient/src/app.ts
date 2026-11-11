@@ -23,7 +23,10 @@ import { registerAppShell, type AppShell } from './app-shell.ts';
 export type BffAuth =
   | { readonly kind: 'session' }
   | { readonly kind: 'enrolment' }
-  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' | 'sign-out' };
+  | {
+      readonly kind: 'public';
+      readonly reason: 'liveness' | 'app-shell' | 'sign-out' | 'sign-in';
+    };
 
 declare module 'fastify' {
   interface FastifyContextConfig {
@@ -46,7 +49,10 @@ export function isBffAuth(value: unknown): value is BffAuth {
     v.kind === 'session' ||
     v.kind === 'enrolment' ||
     (v.kind === 'public' &&
-      (v.reason === 'liveness' || v.reason === 'app-shell' || v.reason === 'sign-out'))
+      (v.reason === 'liveness' ||
+        v.reason === 'app-shell' ||
+        v.reason === 'sign-out' ||
+        v.reason === 'sign-in'))
   );
 }
 

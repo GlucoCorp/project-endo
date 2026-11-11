@@ -239,7 +239,7 @@ async function main(): Promise<void> {
   if (config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK) {
     trusted['bff-patient'] = {
       publicJwk: config.IDENTITY_TRUSTED_BFF_PATIENT_PUBLIC_KEY_JWK,
-      scopes: ['identity.enrolment.patient'],
+      scopes: ['identity.enrolment.patient', 'identity.patient.resolve'],
     };
   }
   if (config.IDENTITY_TRUSTED_BFF_CLINIC_PUBLIC_KEY_JWK) {

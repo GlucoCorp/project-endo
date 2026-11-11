@@ -11,6 +11,7 @@ import {
   type OidcConfig,
   type TransactionStore,
 } from '@endo/oidc';
+import { registerSignIn } from './sign-in.ts';
 import {
   CONSENT_PENDING_ABSOLUTE_MS,
   PATIENT_ABSOLUTE_MS,
@@ -52,14 +53,14 @@ export interface EnrolmentDeps {
 }
 
 /** Appends a Set-Cookie header, keeping any set earlier in this reply. */
-function addCookie(reply: FastifyReply, value: string): void {
+export function addCookie(reply: FastifyReply, value: string): void {
   const prior = reply.getHeader('set-cookie');
   const list = prior === undefined ? [] : Array.isArray(prior) ? prior : [String(prior)];
   void reply.header('set-cookie', list.length === 0 ? value : [...list, value]);
 }
 
 /** Strict: the page's own requests carry it, no other site's ever do (spec 8.4). */
-function sessionCookie(reply: FastifyReply, token: string | null, maxAgeMs = 0): void {
+export function sessionCookie(reply: FastifyReply, token: string | null, maxAgeMs = 0): void {
   addCookie(
     reply,
     `${SESSION_COOKIE}=${token ?? ''}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${String(
@@ -325,7 +326,10 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
     },
   );
 
-  if (deps.handoff) registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
+  if (deps.handoff) {
+    registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
+    registerSignIn(app, deps, deps.handoff);
+  }
 
   /** Ends whichever session this browser holds (section 12: allowed while consent is pending). */
   app.post(

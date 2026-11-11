@@ -146,6 +146,26 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     expect(row.rows[0]).toEqual({ idp_subject: null, shredded: true });
   });
 
+  it('REQ-001 resolves a returning patient to her patient records, never once erased', async () => {
+    const id = uuidv7();
+    await store.create({ id, email: null, displayName: null });
+    await admin.query(`UPDATE person SET idp_subject = 'kc-patient-1' WHERE id = $1`, [id]);
+    expect(await store.resolvePatient('kc-patient-1')).toEqual({ personId: id, patients: [] });
+    const patientId = uuidv7();
+    const orgId = uuidv7();
+    await admin.query(
+      `INSERT INTO patient_link (person_id, patient_record_id, org_id) VALUES ($1, $2, $3)`,
+      [id, patientId, orgId],
+    );
+    expect(await store.resolvePatient('kc-patient-1')).toEqual({
+      personId: id,
+      patients: [{ patientId, orgId }],
+    });
+    expect(await store.resolvePatient('kc-unknown')).toBeNull();
+    await store.erase(id);
+    expect(await store.resolvePatient('kc-patient-1')).toBeNull();
+  });
+
   it('reports an unknown person, and stores a person with no contact fields', async () => {
     expect(await store.erase(uuidv7())).toBe(false);
     const id = uuidv7();
