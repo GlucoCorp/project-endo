@@ -121,6 +121,7 @@ async function main(): Promise<void> {
           },
           keys: createRemoteJWKSet(new URL(config.BFF_PATIENT_OIDC_JWKS_URI)),
           transactions: new TransactionStore(),
+          sessions,
         }
       : undefined;
 

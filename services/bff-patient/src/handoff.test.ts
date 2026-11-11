@@ -6,7 +6,7 @@ import { TransactionStore, type OidcConfig } from '@endo/oidc';
 import { ServiceTokenSigner, WorkloadTokenSigner, generateServiceKeyPair } from '@endo/service-kit';
 import { buildBff } from './app.ts';
 import { ENROLMENT_COOKIE } from './enrolment.ts';
-import { DevSessionStore } from './sessions.ts';
+import { DevSessionStore, SESSION_COOKIE } from './sessions.ts';
 
 const ORIGIN = 'https://app.endo.test';
 const ISSUER = 'https://kc.test/realms/endo';
@@ -39,6 +39,14 @@ async function setup() {
     lastHandoff: null as Record<string, string> | null,
   };
   const calls: { path: string; body: Record<string, string> }[] = [];
+  const view = () => ({
+    transaction_id: txId,
+    status: state.status,
+    expired: false,
+    state_deadline: null,
+    expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+  });
+  const sessions = new DevSessionStore('test');
   // Stand-ins: the identity service, and Keycloak's token endpoint (which signs an ID token for
   // the provisional user with the nonce of the attempt the handoff was bound to).
   const fetchImpl = (async (
@@ -80,7 +88,15 @@ async function setup() {
     if (url.pathname.endsWith('/callback')) {
       if (body['subject'] !== subject) return json(403, {});
       state.status = 'consent-pending';
-      return json(200, {});
+      return json(200, { ...view(), status: 'consent-pending' });
+    }
+    if (url.pathname.endsWith('/status')) {
+      return json(200, {
+        ...view(),
+        ...(state.status === 'active'
+          ? { account: { person_id: PERSON, patient_id: PATIENT, org_id: ORG, subject } }
+          : {}),
+      });
     }
     return json(404, {});
   }) as typeof fetch;
@@ -89,7 +105,7 @@ async function setup() {
   const logs: string[] = [];
   const app = await buildBff({
     logLevel: 'info',
-    sessions: new DevSessionStore('test'),
+    sessions,
     signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
     apiBaseUrl: 'http://api.internal',
     fetch: fetchImpl,
@@ -100,7 +116,7 @@ async function setup() {
       patientOrigin: ORIGIN,
       fetch: fetchImpl,
       now: () => new Date(),
-      handoff: { oidc: OIDC, keys: jwks, transactions: new TransactionStore() },
+      handoff: { oidc: OIDC, keys: jwks, transactions: new TransactionStore(), sessions },
     },
   });
   const secret = randomBytes(32).toString('base64url');
@@ -112,7 +128,27 @@ async function setup() {
       headers: { origin: ORIGIN, 'content-type': 'application/json', cookie, ...headers },
       payload: '{}',
     });
-  return { app, calls, state, secret, cookie, txId, continueReq, logs };
+  /** Continue, then Keycloak's callback: returns the session cookie the callback set. */
+  const signIn = async () => {
+    const location = new URL((await continueReq()).json<{ location: string }>().location);
+    const res = await app.inject({
+      url: `/auth/enrolment/callback?code=c1&state=${location.searchParams.get('state') ?? ''}`,
+      headers: { cookie },
+    });
+    return { res, session: sessionFrom(res.headers['set-cookie']) };
+  };
+  return { app, calls, state, secret, cookie, txId, continueReq, logs, signIn, sessions };
+}
+
+const PERSON = '01900000-0000-7000-8000-0000000000e1';
+const PATIENT = '01900000-0000-7000-8000-0000000000e2';
+const ORG = '01900000-0000-7000-8000-0000000000e3';
+
+/** The session token from Set-Cookie headers, or null (cleared or absent). */
+function sessionFrom(header: string | string[] | undefined): string | null {
+  const all = header === undefined ? [] : Array.isArray(header) ? header : [header];
+  const m = all.map((c) => /^__Host-endo_session=([^;]*)/.exec(c)).find((x) => x !== null);
+  return m?.[1] ? m[1] : null;
 }
 
 describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', () => {
@@ -155,6 +191,12 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
     expect(res.statusCode).toBe(303);
     expect(res.headers.location).toBe('/enrol');
     expect(state.status).toBe('consent-pending');
+    // ADR-0021 section 12: a fresh consent-pending session, Strict, never readable by script.
+    const set = String(res.headers['set-cookie']);
+    expect(set).toMatch(/^__Host-endo_session=[A-Za-z0-9_-]{43}; /);
+    expect(set).toContain('HttpOnly');
+    expect(set).toContain('SameSite=Strict');
+    expect(stranger.headers['set-cookie']).toBeUndefined();
     // The attempt was used up.
     const again = await app.inject({
       url: `/auth/enrolment/callback?code=c1&state=${s}`,
@@ -173,8 +215,8 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
   });
 
   it('passes her four decisions on, with the browser binding, then shows where she is', async () => {
-    const { app, calls, state, cookie, secret, txId } = await setup();
-    state.status = 'consent-pending';
+    const { app, calls, cookie, secret, txId, signIn } = await setup();
+    const { session } = await signIn();
     const at = new Date().toISOString();
     const decisions = {
       self_tracking: { status: 'granted', version: 1, decided_at: at },
@@ -186,10 +228,21 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
       app.inject({
         method: 'POST',
         url: '/v1/enrolment/consent',
-        headers: { origin: ORIGIN, 'content-type': 'application/json', cookie, ...headers },
+        headers: {
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          cookie: `${cookie}; ${SESSION_COOKIE}=${session ?? ''}`,
+          ...headers,
+        },
         payload,
       });
     expect((await send({ decisions }, { origin: 'https://evil.test' })).statusCode).toBe(403);
+    // Section 12: the enrolment cookie alone, or another session, cannot decide for her.
+    expect((await send({ decisions }, { cookie })).statusCode).toBe(401);
+    expect(
+      (await send({ decisions }, { cookie: `${cookie}; ${SESSION_COOKIE}=${'x'.repeat(43)}` }))
+        .statusCode,
+    ).toBe(401);
     expect((await send({ decisions: { self_tracking: decisions.self_tracking } })).statusCode).toBe(
       400,
     );
@@ -200,5 +253,94 @@ describe('REQ-001 ADR-0021 sections 5 and 7: Continue into Keycloak, and back', 
     expect(sent?.path).toBe(`/internal/v1/enrolment/transactions/${txId}/consent`);
     expect(sent?.body).toEqual({ binding_hash: sha256(secret), decisions });
     expect((await send({ decisions })).statusCode).toBe(409);
+  });
+
+  it('ADR-0021 s12 rotates the consent-pending session into a patient session once active', async () => {
+    const { app, state, cookie, signIn, sessions } = await setup();
+    const { session } = await signIn();
+    expect(session).not.toBeNull();
+    const both = `${cookie}; ${SESSION_COOKIE}=${session ?? ''}`;
+    const status = () => app.inject({ url: '/v1/enrolment/status', headers: { cookie: both } });
+    // A consent-pending session never counts as a patient session.
+    expect(await sessions.resolve(session ?? '')).toBeNull();
+    expect((await app.inject({ url: '/v1/hello', headers: { cookie: both } })).statusCode).toBe(
+      401,
+    );
+    // Not active yet: nothing changes.
+    state.status = 'activating';
+    expect((await status()).headers['set-cookie']).toBeUndefined();
+
+    state.status = 'active';
+    const res = await status();
+    expect(res.statusCode).toBe(200);
+    // The browser learns only where she is, never her ids.
+    expect(res.json()).toEqual({
+      status: 'active',
+      expired: false,
+      state_deadline: null,
+      expires_at: expect.any(String) as string,
+    });
+    const rotated = sessionFrom(res.headers['set-cookie']);
+    expect(rotated).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(rotated).not.toBe(session);
+    // The enrolment cookie has done its job.
+    expect(String(res.headers['set-cookie'])).toContain(`${ENROLMENT_COOKIE}=; `);
+    expect((await sessions.resolve(rotated ?? ''))?.claims).toEqual({
+      sub: PERSON,
+      role: 'patient',
+      org_id: ORG,
+      patient_id: PATIENT,
+    });
+    // The old token is gone; asking again cannot rotate twice.
+    expect(await sessions.consentPending(session ?? '')).toBeNull();
+    expect((await status()).headers['set-cookie']).toBeUndefined();
+  });
+
+  it('ADR-0021 s12 ends the consent-pending session when enrolment ends, and on sign-out', async () => {
+    const { app, state, cookie, signIn, sessions } = await setup();
+    const first = (await signIn()).session ?? '';
+    state.status = 'cancelling';
+    const res = await app.inject({
+      url: '/v1/enrolment/status',
+      headers: { cookie: `${cookie}; ${SESSION_COOKIE}=${first}` },
+    });
+    expect(sessionFrom(res.headers['set-cookie'])).toBeNull();
+    expect(String(res.headers['set-cookie'])).toContain('Max-Age=0');
+    expect(await sessions.consentPending(first)).toBeNull();
+
+    const token = await sessions.createConsentPending('01900000-0000-7000-8000-0000000000f9', 's');
+    const signOut = (headers: Record<string, string>) =>
+      app.inject({
+        method: 'POST',
+        url: '/v1/session/sign-out',
+        headers: { 'content-type': 'application/json', ...headers },
+        payload: '{}',
+      });
+    expect(
+      (await signOut({ origin: 'https://evil.test', cookie: `${SESSION_COOKIE}=${token}` }))
+        .statusCode,
+    ).toBe(403);
+    expect(await sessions.consentPending(token)).not.toBeNull();
+    const out = await signOut({ origin: ORIGIN, cookie: `${SESSION_COOKIE}=${token}` });
+    expect(out.statusCode).toBe(204);
+    expect(String(out.headers['set-cookie'])).toContain('Max-Age=0');
+    expect(await sessions.consentPending(token)).toBeNull();
+  });
+
+  it('refuses to rotate when the coordinator names a different user', async () => {
+    const { app, state, cookie, signIn, sessions } = await setup();
+    const { session } = await signIn();
+    state.status = 'active';
+    // A session for this transaction but another Keycloak user: never promoted.
+    const other = await sessions.createConsentPending(
+      (await sessions.consentPending(session ?? ''))?.transactionId ?? '',
+      'someone-else',
+    );
+    const res = await app.inject({
+      url: '/v1/enrolment/status',
+      headers: { cookie: `${cookie}; ${SESSION_COOKIE}=${other}` },
+    });
+    expect(res.statusCode).toBe(502);
+    expect(await sessions.consentPending(other)).not.toBeNull();
   });
 });

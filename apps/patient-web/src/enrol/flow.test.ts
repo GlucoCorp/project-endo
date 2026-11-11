@@ -209,8 +209,11 @@ describe('REQ-001 ADR-0021 sections 3 and 4: the enrolment flow in the browser',
     expect(fromServer({ status: 'consent-pending', expired: false }, null)).toEqual({
       kind: 'signed-in',
     });
-    for (const status of ['claiming', 'activating', 'active'])
+    for (const status of ['claiming', 'activating'])
       expect(fromServer({ status, expired: false }, null)).toEqual({ kind: 'consented' });
+    expect(fromServer({ status: 'active', expired: false }, null)).toEqual({
+      kind: 'ready-account',
+    });
     expect(fromServer({ status: 'confirmed', expired: false }, null)).toEqual({
       kind: 'confirmed',
     });

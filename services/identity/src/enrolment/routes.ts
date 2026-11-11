@@ -74,6 +74,19 @@ const VIEW_SCHEMA = {
     state_deadline: { type: ['string', 'null'] },
     expires_at: { type: 'string' },
     code: { type: 'string', pattern: '^[0-9]{6}$' },
+    // Only in a status answer for an active transaction: what the patient BFF needs to rotate
+    // her consent-pending session into a patient session (ADR-0021 section 12).
+    account: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['person_id', 'patient_id', 'org_id', 'subject'],
+      properties: {
+        person_id: { type: 'string', pattern: UUID },
+        patient_id: { type: 'string', pattern: UUID },
+        org_id: { type: 'string', pattern: UUID },
+        subject: { type: 'string' },
+      },
+    },
   },
 } as const;
 
@@ -187,7 +200,20 @@ export function registerPatientEnrolmentRoutes(app: FastifyInstance, deps: Patie
       const { id } = request.params as { id: string };
       const { binding_hash } = request.body as { binding_hash: string };
       const stored = boundTransaction(await deps.store.get(id), binding_hash);
-      return enrolmentView(stored.tx, deps.now());
+      const tx = stored.tx;
+      const account =
+        tx.status === 'active' &&
+        tx.personId !== null &&
+        tx.patientId !== null &&
+        tx.provisionalSubject !== null
+          ? {
+              person_id: tx.personId,
+              patient_id: tx.patientId,
+              org_id: tx.orgId,
+              subject: tx.provisionalSubject,
+            }
+          : null;
+      return { ...enrolmentView(tx, deps.now()), ...(account ? { account } : {}) };
     },
   );
 

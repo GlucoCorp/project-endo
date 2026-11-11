@@ -11,7 +11,13 @@ import {
   type OidcConfig,
   type TransactionStore,
 } from '@endo/oidc';
-import { readCookie } from './sessions.ts';
+import {
+  CONSENT_PENDING_ABSOLUTE_MS,
+  PATIENT_ABSOLUTE_MS,
+  SESSION_COOKIE,
+  readCookie,
+  type ConsentSessions,
+} from './sessions.ts';
 
 /**
  * The browser binding cookie (ADR-0021 section 4): `__Host-` (Secure, Path=/, no Domain),
@@ -40,7 +46,26 @@ export interface EnrolmentDeps {
     /** Keycloak's signing keys, from the configured JWKS URL (never from a token). */
     readonly keys: JWTVerifyGetKey;
     readonly transactions: TransactionStore;
+    /** Her consent-pending session and its rotation into a patient session (section 12). */
+    readonly sessions: ConsentSessions;
   };
+}
+
+/** Appends a Set-Cookie header, keeping any set earlier in this reply. */
+function addCookie(reply: FastifyReply, value: string): void {
+  const prior = reply.getHeader('set-cookie');
+  const list = prior === undefined ? [] : Array.isArray(prior) ? prior : [String(prior)];
+  void reply.header('set-cookie', list.length === 0 ? value : [...list, value]);
+}
+
+/** Strict: the page's own requests carry it, no other site's ever do (spec 8.4). */
+function sessionCookie(reply: FastifyReply, token: string | null, maxAgeMs = 0): void {
+  addCookie(
+    reply,
+    `${SESSION_COOKIE}=${token ?? ''}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${String(
+      token ? Math.floor(maxAgeMs / 1000) : 0,
+    )}`,
+  );
 }
 
 const LINK_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -68,6 +93,36 @@ const unavailable = () =>
 /** One answer for no cookie, a damaged cookie and a transaction that is not hers. */
 const noEnrolment = () =>
   new ProblemError(404, 'enrolment.not_found', 'Start again from your link.');
+
+interface Account {
+  readonly person_id: string;
+  readonly patient_id: string;
+  readonly org_id: string;
+  readonly subject: string;
+}
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+/** The coordinator's account ids for an active transaction; never sent to the browser. */
+function parseAccount(body: unknown): Account | null {
+  const a = (body as { account?: Partial<Record<keyof Account, unknown>> } | null)?.account;
+  if (
+    !a ||
+    typeof a.person_id !== 'string' ||
+    !UUID.test(a.person_id) ||
+    typeof a.patient_id !== 'string' ||
+    !UUID.test(a.patient_id) ||
+    typeof a.org_id !== 'string' ||
+    !UUID.test(a.org_id) ||
+    typeof a.subject !== 'string'
+  )
+    return null;
+  return {
+    person_id: a.person_id,
+    patient_id: a.patient_id,
+    org_id: a.org_id,
+    subject: a.subject,
+  };
+}
 
 function parseView(body: unknown, withCode: boolean): View {
   const v = body as Partial<Record<keyof View | 'transaction_id', unknown>> | null;
@@ -132,16 +187,16 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
 
   const setCookie = (reply: FastifyReply, txId: string, secret: string, expiresAt: string) => {
     const seconds = Math.max(0, Math.floor((Date.parse(expiresAt) - deps.now().getTime()) / 1000));
-    void reply.header(
-      'set-cookie',
+    addCookie(
+      reply,
       `${ENROLMENT_COOKIE}=${txId}${secret}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${String(seconds)}`,
     );
   };
-  const clearCookie = (reply: FastifyReply) =>
-    void reply.header(
-      'set-cookie',
-      `${ENROLMENT_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
-    );
+  const clearCookie = (reply: FastifyReply) => {
+    addCookie(reply, `${ENROLMENT_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`);
+  };
+  const sessionToken = (request: FastifyRequest) =>
+    readCookie(request.headers.cookie, SESSION_COOKIE);
 
   const fromCookie = (request: FastifyRequest) => {
     const m = COOKIE_VALUE.exec(readCookie(request.headers.cookie, ENROLMENT_COOKIE) ?? '');
@@ -193,16 +248,59 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
     },
   );
 
-  app.get('/v1/enrolment/status', { config: { auth: { kind: 'enrolment' } } }, async (request) => {
-    const bound = fromCookie(request);
-    if (!bound) throw noEnrolment();
-    const res = await call(request, `/internal/v1/enrolment/transactions/${bound.txId}/status`, {
-      binding_hash: sha256(bound.secret),
+  app.get(
+    '/v1/enrolment/status',
+    { config: { auth: { kind: 'enrolment' } } },
+    async (request, reply) => {
+      const bound = fromCookie(request);
+      if (!bound) throw noEnrolment();
+      const res = await call(request, `/internal/v1/enrolment/transactions/${bound.txId}/status`, {
+        binding_hash: sha256(bound.secret),
+      });
+      if (res.status === 404) throw noEnrolment();
+      if (!res.ok) throw unavailable();
+      const body: unknown = await res.json().catch(() => null);
+      const view = parseView(body, false);
+      const sessions = deps.handoff?.sessions;
+      const token = sessionToken(request);
+      if (sessions && token) await settleSession(sessions, token, bound.txId, view, body, reply);
+      return view;
+    },
+  );
+
+  /**
+   * Section 12: once the transaction is active, her consent-pending session rotates into a patient
+   * session (new token; the enrolment cookie has done its job). Once it can no longer become
+   * active, the consent-pending session ends. Any other session is left alone.
+   */
+  const settleSession = async (
+    sessions: ConsentSessions,
+    token: string,
+    txId: string,
+    view: View,
+    body: unknown,
+    reply: FastifyReply,
+  ): Promise<void> => {
+    const pending = await sessions.consentPending(token);
+    if (!pending || pending.transactionId !== txId) return;
+    if (view.status === 'cancelling' || view.status === 'cancelled') {
+      await sessions.revoke(token);
+      sessionCookie(reply, null);
+      return;
+    }
+    if (view.status !== 'active') return;
+    const account = parseAccount(body);
+    if (!account || account.subject !== pending.subject) throw unavailable();
+    const rotated = await sessions.rotate(token, txId, pending.subject, {
+      sub: account.person_id,
+      role: 'patient',
+      org_id: account.org_id,
+      patient_id: account.patient_id,
     });
-    if (res.status === 404) throw noEnrolment();
-    if (!res.ok) throw unavailable();
-    return parseView(await res.json().catch(() => null), false);
-  });
+    if (!rotated) return;
+    sessionCookie(reply, rotated, PATIENT_ABSOLUTE_MS);
+    clearCookie(reply);
+  };
 
   app.post(
     '/v1/enrolment/cancel',
@@ -227,6 +325,18 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
   );
 
   if (deps.handoff) registerHandoff(app, deps, deps.handoff, { sameOrigin, call, fromCookie });
+
+  /** Ends whichever session this browser holds (section 12: allowed while consent is pending). */
+  app.post(
+    '/v1/session/sign-out',
+    { config: { auth: { kind: 'public', reason: 'sign-out' } }, preValidation: sameOrigin },
+    async (request, reply) => {
+      const token = sessionToken(request);
+      if (token && deps.handoff) await deps.handoff.sessions.revoke(token);
+      sessionCookie(reply, null);
+      return reply.code(204).send();
+    },
+  );
 
   const decision = {
     type: 'object',
@@ -277,6 +387,12 @@ export function registerEnrolmentRoutes(app: FastifyInstance, deps: EnrolmentDep
     async (request) => {
       const bound = fromCookie(request);
       if (!bound) throw noEnrolment();
+      // Section 12: only her consent-pending session for this transaction may decide.
+      const token = sessionToken(request);
+      const pending =
+        token && deps.handoff ? await deps.handoff.sessions.consentPending(token) : null;
+      if (pending?.transactionId !== bound.txId)
+        throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
       const { decisions } = request.body as { decisions: object };
       const res = await call(request, `/internal/v1/enrolment/transactions/${bound.txId}/consent`, {
         binding_hash: sha256(bound.secret),
@@ -359,7 +475,19 @@ function registerHandoff(
           `/internal/v1/enrolment/transactions/${bound.txId}/callback`,
           { binding_hash: sha256(bound.secret), subject: who.subject },
         );
-        if (!res.ok) request.log.warn({ event: 'enrolment.callback_refused', status: res.status });
+        if (!res.ok) {
+          request.log.warn({ event: 'enrolment.callback_refused', status: res.status });
+        } else {
+          const status = ((await res.json().catch(() => null)) as { status?: unknown } | null)
+            ?.status;
+          if (status === 'consent-pending') {
+            // A fresh session, never one the browser brought (fixation); any old one ends.
+            const old = readCookie(request.headers.cookie, SESSION_COOKIE);
+            if (old) await h.sessions.revoke(old);
+            const token = await h.sessions.createConsentPending(bound.txId, who.subject);
+            sessionCookie(reply, token, CONSENT_PENDING_ABSOLUTE_MS);
+          }
+        }
       } catch (error) {
         if (!(error instanceof OidcError) && !(error instanceof ProblemError)) throw error;
         request.log.warn({ event: 'enrolment.callback_failed' });

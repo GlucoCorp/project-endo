@@ -6,7 +6,8 @@ import { expect, test, type Page } from '@playwright/test';
 import { uuidv7 } from '@endo/domain';
 import { ServiceTokenSigner, WorkloadTokenSigner, generateServiceKeyPair } from '@endo/service-kit';
 import { buildBff } from '@endo/bff-patient/app';
-import { DevSessionStore } from '@endo/bff-patient/sessions';
+import { DevSessionStore, SESSION_COOKIE } from '@endo/bff-patient/sessions';
+import { TransactionStore } from '@endo/oidc';
 import { loadAppShell } from '@endo/bff-patient/app-shell';
 
 /**
@@ -22,6 +23,7 @@ const transactions = new Map<string, Tx>(); // by binding hash
 const liveTokens = new Set<string>();
 let lastConsent: Record<string, { status: string; version: number }> | null = null;
 let bff: Awaited<ReturnType<typeof buildBff>>;
+const sessions = new DevSessionStore('test');
 let origin = '';
 let violations: string[] = [];
 
@@ -60,8 +62,16 @@ function fakeIdentity(url: URL, body: Record<string, string>): Response {
     >;
     tx.status = lastConsent['self_tracking']?.status === 'declined' ? 'cancelling' : 'claiming';
   }
-  return reply(200, view(tx));
+  // Once active, the coordinator names her account, for the BFF only (ADR-0021 section 12).
+  const account =
+    tx.status === 'active'
+      ? { person_id: PERSON, patient_id: PATIENT, org_id: ORG, subject: 'provisional-subject' }
+      : null;
+  return reply(200, { ...view(tx), ...(account ? { account } : {}) });
 }
+const PERSON = '01900000-0000-7000-8000-0000000000e1';
+const PATIENT = '01900000-0000-7000-8000-0000000000e2';
+const ORG = '01900000-0000-7000-8000-0000000000e3';
 
 test.beforeAll(async () => {
   const service = await generateServiceKeyPair();
@@ -82,7 +92,7 @@ test.beforeAll(async () => {
   origin = `http://localhost:${String(port)}`;
   bff = await buildBff({
     logLevel: 'silent',
-    sessions: new DevSessionStore('test'),
+    sessions,
     signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
     apiBaseUrl: 'http://api.invalid',
     fetch: () => Promise.reject(new Error('unused')),
@@ -94,6 +104,24 @@ test.beforeAll(async () => {
       patientOrigin: origin,
       fetch: identityFetch,
       now: () => new Date(),
+      // Keycloak itself is not part of this test (slice 8 drives it); the test signs her in by
+      // giving the browser the consent-pending session the callback would have created.
+      handoff: {
+        oidc: {
+          issuer: 'http://keycloak.invalid/realms/endo',
+          authorizationEndpoint: 'http://keycloak.invalid/auth',
+          tokenEndpoint: 'http://keycloak.invalid/token',
+          clientId: 'bff-patient',
+          clientSecret: 'unused',
+          redirectUri: `${origin}/auth/enrolment/callback`,
+          requiredAcr: '1',
+          endSessionEndpoint: 'http://keycloak.invalid/logout',
+          postLogoutRedirectUri: `${origin}/`,
+        },
+        keys: () => Promise.reject(new Error('unused')),
+        transactions: new TransactionStore(),
+        sessions,
+      },
     },
   });
   await bff.listen({ host: 'localhost', port });
@@ -181,13 +209,27 @@ test('she can stop, and a used-up or wrong link says what to do', async ({ page 
 
 test('after her passkey, she makes four separate choices; nothing is chosen for her', async ({
   page,
+  context,
 }) => {
   transactions.clear();
   await page.goto(`${origin}/enrol#${newLink()}`);
   await page.getByRole('button', { name: 'Start' }).click();
   await expect(codeOf(page)).toBeVisible();
   // Passkey created and called back (slice 8 drives the real Keycloak for this part).
-  for (const tx of transactions.values()) tx.status = 'consent-pending';
+  for (const tx of transactions.values()) {
+    tx.status = 'consent-pending';
+    await context.addCookies([
+      {
+        name: SESSION_COOKIE,
+        value: await sessions.createConsentPending(tx.id, 'provisional-subject'),
+        domain: 'localhost',
+        path: '/',
+        secure: true,
+        httpOnly: true,
+        sameSite: 'Strict',
+      },
+    ]);
+  }
   await page.reload();
   await expect(page.getByText('Choice 1 of 4')).toBeVisible();
   // Two equal buttons, neither pre-selected.
@@ -198,6 +240,21 @@ test('after her passkey, she makes four separate choices; nothing is chosen for 
   await page.getByRole('button', { name: "Don't include them" }).click();
   await page.getByRole('button', { name: "Don't count them" }).click();
   await expect(page.getByText('Your choices are saved.')).toBeVisible();
+  const pending = (await context.cookies()).find((c) => c.name === SESSION_COOKIE)?.value ?? '';
+
+  // Activation finishes: her next status check turns her session into a patient session.
+  for (const tx of transactions.values()) tx.status = 'active';
+  await expect(page.getByText('You are all set.')).toBeVisible({ timeout: 10_000 });
+  const rotated = (await context.cookies()).find((c) => c.name === SESSION_COOKIE)?.value ?? '';
+  expect(rotated).not.toBe(pending);
+  expect((await sessions.resolve(rotated))?.claims).toEqual({
+    sub: PERSON,
+    role: 'patient',
+    org_id: ORG,
+    patient_id: PATIENT,
+  });
+  // Her ids never reach the page.
+  expect(await page.content()).not.toContain(PATIENT);
   expect(lastConsent).toMatchObject({
     self_tracking: { status: 'granted', version: 1 },
     share_with_care_team: { status: 'granted', version: 1 },
