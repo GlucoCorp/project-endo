@@ -31,6 +31,7 @@ import type { PatientRouteDeps } from './enrolment/routes.ts';
 import { PostgresEnrolmentStore } from './enrolment/store.ts';
 import { Activator } from './enrolment/activation.ts';
 import { HttpKeycloakAdmin } from './enrolment/keycloak.ts';
+import { Cleaner } from './enrolment/cleanup.ts';
 import { enrolmentAudit } from './enrolment/routes.ts';
 import { uuidv7 } from '@endo/domain';
 
@@ -166,12 +167,13 @@ async function main(): Promise<void> {
       };
       // Activation (ADR-0021 section 10). Without the realm URL activation waits before step 3:
       // the account stays quarantined, never half-active.
+      const keycloak = config.IDENTITY_KEYCLOAK_REALM_URL
+        ? new HttpKeycloakAdmin({ realmUrl: config.IDENTITY_KEYCLOAK_REALM_URL, signer, fetch })
+        : null;
       const activator = new Activator({
         store: enrolment.store,
         clinical: enrolment.clinical,
-        keycloak: config.IDENTITY_KEYCLOAK_REALM_URL
-          ? new HttpKeycloakAdmin({ realmUrl: config.IDENTITY_KEYCLOAK_REALM_URL, signer, fetch })
-          : null,
+        keycloak,
         now: () => new Date(),
         audit: (action, tx) => enrolmentAudit(action, tx, uuidv7()),
       });
@@ -182,6 +184,23 @@ async function main(): Promise<void> {
         activator.sweep().catch(() => process.stderr.write('enrolment activation sweep failed\n'));
       }, 30_000);
       activationTimer.unref();
+      // Deadlines, cancellations and cleanup (sections 10 and 11). Counts only, never ids.
+      const cleaner = new Cleaner({
+        store: enrolment.store,
+        clinical: enrolment.clinical,
+        keycloak,
+        now: () => new Date(),
+        audit: (action, tx) => enrolmentAudit(action, tx, uuidv7()),
+      });
+      const cleanupTimer = setInterval(() => {
+        cleaner
+          .sweep()
+          .then((waiting) => {
+            if (waiting > 0) process.stderr.write(`enrolment cleanup waiting: ${waiting}\n`);
+          })
+          .catch(() => process.stderr.write('enrolment cleanup sweep failed\n'));
+      }, 30_000);
+      cleanupTimer.unref();
     }
     closeVault = async () => {
       clearInterval(relayTimer);

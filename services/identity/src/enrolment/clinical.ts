@@ -28,6 +28,19 @@ export interface ClinicalClient {
   claim(r: ClaimInput): Promise<'done' | 'refused'>;
   /** Writes her four enrolment decisions (activation step 2); resolves once they are stored. */
   consents(r: ConsentsInput): Promise<void>;
+  /**
+   * Ends this transaction's hold for good, fenced (ADR-0021 sections 6 and 11). `released` also
+   * when there was nothing to release; `claimed` when its claim already won, so activation goes on.
+   */
+  release(r: ReservationInput): Promise<'released' | 'claimed'>;
+  /** After she declined: revokes the invitation while this transaction holds it (section 11). */
+  revokeHeld(r: ReservationInput): Promise<'done' | 'refused'>;
+}
+
+export interface ReservationInput {
+  readonly orgId: string;
+  readonly invitationId: string;
+  readonly transactionId: string;
 }
 
 export interface ClaimInput {
@@ -163,6 +176,39 @@ export class HttpClinicalClient implements ClinicalClient {
     const body = (await res.json().catch(() => null)) as { outcome?: unknown } | null;
     if (body?.outcome === 'done' || body?.outcome === 'refused') return body.outcome;
     throw new ClinicalUnavailableError();
+  }
+
+  async release(r: ReservationInput): Promise<'released' | 'claimed'> {
+    const body = await this.#reservation('release', r);
+    if (body.outcome === 'done' || body.status === 'missing') return 'released';
+    if (body.status === 'claimed' && body.reservedBy === r.transactionId) return 'claimed';
+    // Release refuses nothing else; anything more is unexpected, so unknown.
+    throw new ClinicalUnavailableError();
+  }
+
+  async revokeHeld(r: ReservationInput): Promise<'done' | 'refused'> {
+    return (await this.#reservation('revoke', r)).outcome;
+  }
+
+  async #reservation(
+    op: 'release' | 'revoke',
+    r: ReservationInput,
+  ): Promise<{ outcome: 'done' | 'refused'; status: string; reservedBy: unknown }> {
+    const res = await this.#post(`/internal/v1/enrolment/invitations/${op}`, {
+      org_id: r.orgId,
+      invitation_id: r.invitationId,
+      transaction_id: r.transactionId,
+    });
+    if (!res.ok) throw new ClinicalUnavailableError();
+    const body = (await res.json().catch(() => null)) as {
+      outcome?: unknown;
+      state?: { status?: unknown; reserved_by?: unknown };
+    } | null;
+    const outcome = body?.outcome;
+    const status = body?.state?.status;
+    if ((outcome !== 'done' && outcome !== 'refused') || typeof status !== 'string')
+      throw new ClinicalUnavailableError();
+    return { outcome, status, reservedBy: body?.state?.reserved_by };
   }
 
   async consents(r: ConsentsInput): Promise<void> {

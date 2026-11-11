@@ -20,6 +20,7 @@ import {
   type LiveInvitation,
 } from './clinical.ts';
 import { Activator } from './activation.ts';
+import { Cleaner } from './cleanup.ts';
 import { enrolmentAudit } from './routes.ts';
 import { EnrolmentCodes } from './code.ts';
 import { PostgresEnrolmentStore } from './store.ts';
@@ -51,6 +52,9 @@ describe.skipIf(!url)(
     let claimAnswer: 'done' | 'refused' | 'down' = 'done';
     const claimed: ClaimInput[] = [];
     const consentsWritten: ConsentsInput[] = [];
+    const released: string[] = [];
+    const revoked: string[] = [];
+    let releaseAnswer: 'released' | 'claimed' | 'down' = 'released';
     const clinical: ClinicalClient = {
       find: (h) =>
         apiDown
@@ -65,6 +69,16 @@ describe.skipIf(!url)(
       consents: (r) => {
         consentsWritten.push(r);
         return Promise.resolve();
+      },
+      release: (r) => {
+        released.push(r.transactionId);
+        return releaseAnswer === 'down'
+          ? Promise.reject(new ClinicalUnavailableError())
+          : Promise.resolve(releaseAnswer);
+      },
+      revokeHeld: (r) => {
+        revoked.push(r.transactionId);
+        return Promise.resolve('done');
       },
       reserve: (r) => {
         reserved.push(r.transactionId);
@@ -658,6 +672,154 @@ describe.skipIf(!url)(
         }
         // The sweep finds work only in claiming or activating.
         await activator.sweep();
+      });
+
+      describe('ADR-0021 section 11: cancellation and cleanup', () => {
+        const deleted: string[] = [];
+        let keycloakUp = true;
+        const cleaner = (now: () => Date = () => new Date()) =>
+          new Cleaner({
+            store,
+            clinical,
+            keycloak: {
+              deleteProvisional: (subject) => {
+                if (!keycloakUp) return Promise.resolve(false);
+                deleted.push(subject);
+                return Promise.resolve(true);
+              },
+            },
+            now,
+            audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+          });
+
+        it('after a decline: deletes the provisional user, revokes, releases, then cancelled', async () => {
+          const a = await consentPending();
+          await post(`/${a.id}/consent`, {
+            binding_hash: a.binding,
+            decisions: decisions('declined'),
+          });
+          const subject = (await store.get(a.id))?.tx.provisionalSubject;
+          keycloakUp = false;
+          try {
+            // Keycloak unreachable: nothing further happens, and it is retried.
+            expect(await cleaner().run(a.id)).toBe('waiting');
+            expect((await store.get(a.id))?.tx.status).toBe('cancelling');
+            expect(revoked).not.toContain(a.id);
+          } finally {
+            keycloakUp = true;
+          }
+          expect(await cleaner().run(a.id)).toBe('cancelled');
+          expect(deleted).toContain(subject);
+          expect(revoked).toContain(a.id);
+          expect(released).toContain(a.id);
+          expect((await store.get(a.id))?.tx.status).toBe('cancelled');
+          expect(await cleaner().run(a.id)).toBe('cancelled');
+        });
+
+        it('a cancel during claiming: the clinical store decides between cleanup and activation', async () => {
+          const claimingWithCancel = async () => {
+            const a = await consentPending();
+            await post(`/${a.id}/consent`, { binding_hash: a.binding, decisions: decisions() });
+            expect((await post(`/${a.id}/cancel`, { binding_hash: a.binding })).statusCode).toBe(
+              200,
+            );
+            expect((await store.get(a.id))?.tx).toMatchObject({
+              status: 'claiming',
+              cancelRequested: 'patient-cancelled',
+            });
+            return a;
+          };
+          // The release won: no claim can succeed any more, so it is cleaned up.
+          const a = await claimingWithCancel();
+          releaseAnswer = 'down';
+          try {
+            expect(await cleaner().run(a.id)).toBe('waiting');
+            expect((await store.get(a.id))?.tx.status).toBe('claiming');
+          } finally {
+            releaseAnswer = 'released';
+          }
+          expect(await cleaner().run(a.id)).toBe('cancelled');
+          expect((await store.get(a.id))?.tx).toMatchObject({
+            status: 'cancelled',
+            cancelReason: 'patient-cancelled',
+          });
+          // She did not decline: the invitation is released for the clinic, not revoked.
+          expect(revoked).not.toContain(a.id);
+
+          // The claim had already won: activation goes on; she leaves by account deletion.
+          const b = await claimingWithCancel();
+          releaseAnswer = 'claimed';
+          try {
+            expect(await cleaner().run(b.id)).toBe('activating');
+          } finally {
+            releaseAnswer = 'released';
+          }
+          expect((await store.get(b.id))?.tx).toMatchObject({
+            status: 'activating',
+            cancelRequested: null,
+          });
+          // Activation then runs as usual; a failing step is retried, never skipped.
+          const activator = (consentsDown: boolean) =>
+            new Activator({
+              store,
+              clinical: {
+                ...clinical,
+                consents: (r) =>
+                  consentsDown
+                    ? Promise.reject(new ClinicalUnavailableError())
+                    : clinical.consents(r),
+              },
+              keycloak: { finalise: () => Promise.resolve(true) },
+              now: () => new Date(),
+              audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+            });
+          expect(await activator(true).run(b.id)).toBe('waiting');
+          expect((await store.get(b.id))?.tx.activationStep).toBe(1);
+          expect(await activator(false).run(b.id)).toBe('active');
+        });
+
+        it('waits rather than guesses: no Keycloak, a claim reported after cancelling, nothing to do', async () => {
+          const a = await consentPending();
+          await post(`/${a.id}/consent`, {
+            binding_hash: a.binding,
+            decisions: decisions('declined'),
+          });
+          // A provisional user exists but Keycloak is not configured: never marked cancelled.
+          const noKeycloak = new Cleaner({
+            store,
+            clinical,
+            keycloak: null,
+            now: () => new Date(),
+            audit: (action, tx) => enrolmentAudit(action, tx, 'test'),
+          });
+          expect(await noKeycloak.run(a.id)).toBe('waiting');
+          // The clinical store reporting a won claim for a cancelled enrolment: it stops there.
+          releaseAnswer = 'claimed';
+          try {
+            expect(await cleaner().run(a.id)).toBe('waiting');
+          } finally {
+            releaseAnswer = 'released';
+          }
+          expect((await store.get(a.id))?.tx.status).toBe('cancelling');
+          expect(await cleaner().run(a.id)).toBe('cancelled');
+          // Nothing to clean up: unknown, or an enrolment still under way.
+          expect(await cleaner().run(uuidv7())).toBe('nothing');
+          expect(await cleaner().run((await confirmed()).id)).toBe('nothing');
+        });
+
+        it('cancels a transaction past its deadline and cleans it up on the sweep', async () => {
+          const a = await confirmed();
+          const later = () => new Date(Date.now() + 61 * 60_000);
+          for (let i = 0; i < 5 && (await store.get(a.id))?.tx.status !== 'cancelled'; i++)
+            await cleaner(later).sweep();
+          expect((await store.get(a.id))?.tx).toMatchObject({
+            status: 'cancelled',
+            cancelReason: 'deadline',
+          });
+          expect(released).toContain(a.id);
+          // Nothing was redeemed, so there was no Keycloak user to delete.
+          expect(revoked).not.toContain(a.id);
+        });
       });
 
       it('refuses missing decisions, future times, another browser, or the wrong moment', async () => {
