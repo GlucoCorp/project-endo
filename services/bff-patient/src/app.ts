@@ -96,6 +96,8 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     logController: new LogController({ disableRequestLogging: true }),
     return503OnClosing: true,
     routerOptions: { ignoreTrailingSlash: false, caseSensitive: true },
+    // Spec 12.3: unknown request fields are refused, never silently dropped (as in every service).
+    ajv: { customOptions: { removeAdditional: false } },
   });
 
   app.decorateRequest('claims', null);

@@ -110,3 +110,29 @@
   outline: var(--focus-width) solid var(--focus-ring);
   outline-offset: var(--focus-offset);
 }
+
+/* A single text field (ADR-0026 email settings): large target, visible focus. */
+.label {
+  display: block;
+  margin-top: var(--space-16);
+  font-weight: 600;
+}
+
+.input {
+  display: block;
+  width: 100%;
+  min-height: var(--target-min);
+  margin-top: var(--space-8);
+  padding: 0 var(--space-12);
+  font: inherit;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+  box-sizing: border-box;
+}
+
+.input:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}
