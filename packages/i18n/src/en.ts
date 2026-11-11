@@ -4,7 +4,9 @@
  * language provides the same keys; the type makes a missing key a build error.
  */
 export const en = {
-  'app.name': 'Treatment diary',
+  'app.name': 'Weekly check-in',
+  'common.quick-exit': 'Quick exit',
+  'common.quick-exit-help': 'Leaves at once and clears this screen.',
   'common.loading': 'Loading',
   'common.try-later': 'Something went wrong on our side. Try again in a minute.',
   'common.too-many': 'Too many tries. Wait a minute, then try again.',

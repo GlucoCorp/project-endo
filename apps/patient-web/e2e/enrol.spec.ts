@@ -206,3 +206,27 @@ test('after her passkey, she makes four separate choices; nothing is chosen for 
   });
   expect(violations).toEqual([]);
 });
+
+test('quick exit leaves at once, clears the tab, and Back does not return to the diary', async ({
+  page,
+}) => {
+  transactions.clear();
+  await page.goto(`${origin}/`);
+  await page.goto(`${origin}/enrol#${newLink()}`);
+  await page.getByRole('button', { name: 'Start' }).click();
+  await expect(codeOf(page)).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.length)).toBe(1);
+  await page.getByRole('button', { name: 'Quick exit' }).click();
+  await expect(page).toHaveURL('about:blank');
+  await page.goBack();
+  // The diary's history entry was replaced: Back lands on the page before it, not the code.
+  await expect(codeOf(page)).toHaveCount(0);
+});
+
+test('pressing Escape twice is a quick exit too', async ({ page }) => {
+  await page.goto(`${origin}/enrol`);
+  await expect(page.getByRole('button', { name: 'Quick exit' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await expect(page).toHaveURL('about:blank');
+});
