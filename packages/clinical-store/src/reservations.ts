@@ -56,6 +56,12 @@ export interface InvitationReservationStore {
   release(r: ReservationRequest): Promise<ReservationOutcome>;
   /** Makes the invitation final unless it is already claimed. Wins over any reservation. */
   revoke(r: Omit<ReservationRequest, 'transactionId'>): Promise<ReservationOutcome>;
+  /**
+   * Cleanup after she declined (ADR-0021 section 11): makes the invitation final, but only while
+   * this transaction holds it (live or expired, not claimed). Already revoked is done; any other
+   * holder or none is refused, so the coordinator can never revoke an invitation it does not hold.
+   */
+  revokeHeld(r: ReservationRequest): Promise<ReservationOutcome>;
   /** Creates the patient record and claims the invitation reserved by this transaction. */
   claim(r: ClaimRequest): Promise<ReservationOutcome>;
 }
@@ -129,6 +135,20 @@ export class PostgresInvitationReservationStore implements InvitationReservation
       if (state.status === 'revoked') return { outcome: 'done', changed: false, state };
       await update(trx, r.invitationId, { revoked_at: new Date() });
       return changed(trx, r, { status: 'revoked', reservedBy: state.reservedBy });
+    });
+  }
+
+  revokeHeld(r: ReservationRequest): Promise<ReservationOutcome> {
+    return this.#locked(r.orgId, r.invitationId, async (trx, state) => {
+      if (state.status === 'revoked' && state.reservedBy === r.transactionId)
+        return { outcome: 'done', changed: false, state };
+      if (
+        (state.status !== 'live' && state.status !== 'expired') ||
+        state.reservedBy !== r.transactionId
+      )
+        return { outcome: 'refused', state };
+      await update(trx, r.invitationId, { revoked_at: new Date() });
+      return changed(trx, r, { status: 'revoked', reservedBy: r.transactionId });
     });
   }
 

@@ -156,6 +156,7 @@ async function main(): Promise<void> {
       state: (orgId, invitationId) => reservations.state(orgId, invitationId),
       reserve: (r) => reservations.reserve(r),
       release: (r) => reservations.release(r),
+      revokeHeld: (r) => reservations.revokeHeld(r),
       claim: (r) => reservations.claim(r),
     };
     if (!config.API_AUDIT_RELAY_DATABASE_URL) {
