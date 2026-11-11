@@ -2,7 +2,7 @@ import { createRemoteJWKSet } from 'jose';
 import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
-import { WorkloadTokenSigner } from '@endo/service-kit';
+import { ServiceTokenSigner, WorkloadTokenSigner, loadAppShell } from '@endo/service-kit';
 import { buildClinicBff } from './app.ts';
 import { SeenTokenIds, TransactionStore } from './oidc.ts';
 import { HttpResolver } from './resolve.ts';
@@ -40,6 +40,10 @@ const Config = z.object({
   BFF_CLINIC_API_BASE_URL: HttpUrl,
   // Its own workload key (ADR-0018); never shared with the service-token key.
   BFF_CLINIC_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk,
+  // Its service-token key (ADR-0019): calls to the API on behalf of the signed-in clinician.
+  BFF_CLINIC_SERVICE_TOKEN_PRIVATE_KEY_JWK: PrivateJwk.optional(),
+  /** Directory of the built portal (apps/clinic-web/dist), served from this origin. */
+  BFF_CLINIC_APP_DIR: z.string().min(1).optional(),
   // Exact portal origin; state-changing requests must carry it (ADR-0019 section 8).
   BFF_CLINIC_PORTAL_ORIGIN: z.url({ protocol: /^https?$/ }).refine((u) => new URL(u).origin === u),
 });
@@ -84,6 +88,20 @@ async function main(): Promise<void> {
     fetch,
     now: () => new Date(),
     portalOrigin: config.BFF_CLINIC_PORTAL_ORIGIN,
+    ...(config.BFF_CLINIC_APP_DIR ? { appShell: loadAppShell(config.BFF_CLINIC_APP_DIR) } : {}),
+    ...(config.BFF_CLINIC_SERVICE_TOKEN_PRIVATE_KEY_JWK
+      ? {
+          enrolment: {
+            apiBaseUrl: config.BFF_CLINIC_API_BASE_URL,
+            signer: new ServiceTokenSigner(
+              config.BFF_CLINIC_SERVICE_TOKEN_PRIVATE_KEY_JWK,
+              'bff-clinic',
+            ),
+            fetch,
+            now: () => new Date(),
+          },
+        }
+      : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

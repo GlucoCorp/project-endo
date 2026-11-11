@@ -8,6 +8,8 @@ import {
   enforceRouteDeclarations,
   loggerOptions,
   rateLimitedError,
+  registerAppShell,
+  type AppShell,
   registerProblemHandlers,
   requestIdFrom,
 } from '@endo/service-kit';
@@ -36,10 +38,14 @@ import {
   type ClinicSession,
   type InMemoryClinicSessions,
 } from './sessions.ts';
+import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
+
+/** The clinic portal's page paths (its router's routes). */
+export const PORTAL_PATHS = ['/', '/enrolments'] as const;
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
-  | { readonly kind: 'public'; readonly reason: 'liveness' }
+  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
   | { readonly kind: 'backchannel' }
@@ -63,7 +69,7 @@ declare module 'fastify' {
 export function isClinicAuth(value: unknown): value is ClinicAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
-  if (v.kind === 'public') return v.reason === 'liveness';
+  if (v.kind === 'public') return v.reason === 'liveness' || v.reason === 'app-shell';
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
@@ -89,6 +95,10 @@ export interface ClinicBffDeps {
   readonly portalOrigin: string;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
+  /** The built clinic portal (apps/clinic-web), served from this origin. */
+  readonly appShell?: AppShell;
+  /** Clinic enrolment (ADR-0021 slice 3). Without it those routes do not exist. */
+  readonly enrolment?: ClinicEnrolmentDeps;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -188,7 +198,9 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     errorResponseBuilder: () => rateLimitedError(),
   });
   app.addHook('onRequest', async function (request, reply) {
-    if (request.routeOptions.config.auth?.kind === 'public') return;
+    // Liveness only: the app shell is public but still rate limited.
+    const auth = request.routeOptions.config.auth;
+    if (auth?.kind === 'public' && auth.reason === 'liveness') return;
     await limit.call(this, request, reply);
   });
 
@@ -449,6 +461,13 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       durationMs: Math.round(reply.elapsedTime),
     });
   });
+
+  if (deps.enrolment) registerClinicEnrolmentRoutes(app, deps.enrolment);
+  if (deps.appShell)
+    registerAppShell(app, deps.appShell, {
+      paths: PORTAL_PATHS,
+      config: { auth: { kind: 'public', reason: 'app-shell' } },
+    });
 
   await app.ready();
   return app;

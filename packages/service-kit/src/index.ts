@@ -19,3 +19,5 @@ export {
 } from './security-headers.ts';
 export { enforceRouteDeclarations, RouteDeclarationError } from './route-guard.ts';
 export { requestIdFrom } from './request-id.ts';
+export { loadAppShell, registerAppShell } from './app-shell.ts';
+export type { AppShell } from './app-shell.ts';

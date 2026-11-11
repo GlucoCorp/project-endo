@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./app": "./src/app.ts"
+    "./app": "./src/app.ts",
+    "./oidc": "./src/oidc.ts",
+    "./sessions": "./src/sessions.ts"
   },
   "scripts": {
     "start": "node src/main.ts",
