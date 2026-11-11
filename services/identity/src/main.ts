@@ -119,7 +119,7 @@ async function main(): Promise<void> {
     );
     persons = new PostgresPersonStore(db, kms);
     // Email one-time codes (ADR-0026). Keycloak delivers them; confirming a new address needs
-    // the extension's sender, which arrives with the extension's email endpoint.
+    // the extension's send endpoint, configured with the realm URL below.
     email = { store: new EmailCodeStore(db, kms), sender: null };
 
     // Enrolment events are queued in the identity outbox; this relays them to the audit store
@@ -176,6 +176,8 @@ async function main(): Promise<void> {
       const keycloak = config.IDENTITY_KEYCLOAK_REALM_URL
         ? new HttpKeycloakAdmin({ realmUrl: config.IDENTITY_KEYCLOAK_REALM_URL, signer, fetch })
         : null;
+      // ADR-0026: confirmation codes go out through Keycloak's sender too.
+      if (keycloak) email = { store: new EmailCodeStore(db, kms), sender: keycloak };
       const activator = new Activator({
         store: enrolment.store,
         clinical: enrolment.clinical,

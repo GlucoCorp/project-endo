@@ -165,6 +165,50 @@ class ExtensionTest {
   }
 
   @Test
+  void asksForAnEmailCodeWithItsOwnScopeAndReadsTheAnswerStrictly() throws Exception {
+    List<String> seen = new ArrayList<>();
+    IdentityClient c =
+        serve(200, "{\"request_id\":\"" + TX + "\",\"deliver\":{\"to\":\"a@example.test\",\"code\":\"123456\"}}", seen);
+    IdentityClient.EmailCode code = c.emailSignIn("A@example.test", "192.0.2.1");
+    assertEquals(new IdentityClient.EmailCode(TX, "a@example.test", "123456"), code);
+    String sent = seen.get(0);
+    assertTrue(sent.startsWith("/internal/v1/email-codes/sign-in Bearer "));
+    assertTrue(part(sent.split(" ")[2], 1).contains("\"identity.email_code.keycloak\""));
+    assertTrue(sent.contains("\"source_ip\":\"192.0.2.1\""));
+    stop();
+    // No delivery: the same request, nothing to send.
+    assertEquals(
+        new IdentityClient.EmailCode(TX, null, null),
+        serve(200, "{\"request_id\":\"" + TX + "\",\"deliver\":null}", new ArrayList<>())
+            .emailSignIn("a@example.test", "192.0.2.1"));
+    stop();
+    for (String bad :
+        List.of(
+            "{\"request_id\":\"x\",\"deliver\":null}",
+            "{\"request_id\":\"" + TX + "\",\"deliver\":{\"to\":\"a@example.test\",\"code\":\"12\"}}",
+            "not json")) {
+      assertNull(serve(200, bad, new ArrayList<>()).emailSignIn("a@example.test", "192.0.2.1"));
+      stop();
+    }
+    assertEquals(
+        SUBJECT,
+        serve(200, "{\"subject\":\"" + SUBJECT + "\"}", new ArrayList<>()).verifyEmail(TX, "123456"));
+    stop();
+    assertNull(serve(403, "{}", new ArrayList<>()).verifyEmail(TX, "123456"));
+    stop();
+    assertNull(serve(200, "{\"subject\":\"not-a-uuid\"}", new ArrayList<>()).verifyEmail(TX, "123456"));
+  }
+
+  @Test
+  void emailsANeutralMessage() {
+    String body = EmailCodeAuthenticator.body("654321");
+    assertTrue(body.contains("654321"));
+    // A shared inbox must not reveal what the account is for (spec 13.2).
+    for (String word : List.of("endo", "diary", "treatment", "clinic", "health"))
+      assertFalse((EmailCodeAuthenticator.SUBJECT + body).toLowerCase().contains(word), word);
+  }
+
+  @Test
   void reportsTheCommittedPasskey() throws Exception {
     List<String> seen = new ArrayList<>();
     assertTrue(serve(200, "{\"status\":\"credential-committed\"}", seen).credentialCommitted(TX));

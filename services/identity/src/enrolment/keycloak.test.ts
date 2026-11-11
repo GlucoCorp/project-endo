@@ -4,7 +4,7 @@ import {
   WorkloadTokenVerifier,
   generateServiceKeyPair,
 } from '@endo/service-kit';
-import { HttpKeycloakAdmin, KEYCLOAK_ADMIN_SCOPE } from './keycloak.ts';
+import { HttpKeycloakAdmin, KEYCLOAK_ADMIN_SCOPE, KEYCLOAK_EMAIL_SCOPE } from './keycloak.ts';
 
 const SUBJECT = '01900000-0000-7000-8000-0000000000d1';
 const TX = '01900000-0000-7000-8000-0000000000f1';
@@ -23,7 +23,7 @@ async function admin(respond: (req: Request) => Response | Promise<Response>) {
     fetch: fake,
   });
   const verifier = new WorkloadTokenVerifier('keycloak', {
-    identity: { publicJwk: keys.publicJwk, scopes: [KEYCLOAK_ADMIN_SCOPE] },
+    identity: { publicJwk: keys.publicJwk, scopes: [KEYCLOAK_ADMIN_SCOPE, KEYCLOAK_EMAIL_SCOPE] },
   });
   return { a, seen, verifier };
 }
@@ -63,5 +63,23 @@ describe('REQ-001 ADR-0021 section 10 identity -> Keycloak finalise client', () 
     const { a, seen } = await admin(() => json(200, { deleted: true }));
     expect(await a.deleteProvisional(SUBJECT, TX)).toBe(true);
     expect(seen[0]!.url).toBe('http://keycloak.test/realms/endo/endo-enrolment/delete');
+  });
+
+  it('ADR-0026 sends a code email through the extension with its own scope only', async () => {
+    const { a, seen, verifier } = await admin(() => json(200, { sent: true }));
+    expect(await a.send('a@example.test', '123456', 'confirm')).toBe(true);
+    const req = seen[0]!;
+    const caller = await verifier.verifyHeader(req.headers.get('authorization') ?? undefined);
+    expect(caller.scopes).toEqual([KEYCLOAK_EMAIL_SCOPE]);
+    expect(req.url).toBe('http://keycloak.test/realms/endo/endo-enrolment/send-email');
+    expect(await req.json()).toEqual({ to: 'a@example.test', code: '123456', purpose: 'confirm' });
+    for (const r of [
+      () => json(503, {}),
+      () => json(200, {}),
+      () => Promise.reject(new TypeError('down')),
+    ]) {
+      const { a: other } = await admin(r);
+      expect(await other.send('a@example.test', '123456', 'sign-in')).toBe(false);
+    }
   });
 });

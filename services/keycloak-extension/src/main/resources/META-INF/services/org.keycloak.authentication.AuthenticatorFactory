@@ -1,2 +1,3 @@
 org.glucorp.endo.keycloak.Factories$Enrolment
 org.glucorp.endo.keycloak.Factories$Guard
+org.glucorp.endo.keycloak.Factories$EmailCode

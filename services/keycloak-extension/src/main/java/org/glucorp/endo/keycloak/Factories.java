@@ -85,6 +85,35 @@ public final class Factories {
     }
   }
 
+  public static final class EmailCode extends Base {
+    private static final EmailCodeAuthenticator SINGLETON = new EmailCodeAuthenticator();
+
+    @Override
+    public String getId() {
+      return "endo-email-code";
+    }
+
+    @Override
+    public String getDisplayType() {
+      return "Email me a code";
+    }
+
+    @Override
+    public String getHelpText() {
+      return "Sign in with a code sent to your email address.";
+    }
+
+    @Override
+    public AuthenticationExecutionModel.Requirement[] getRequirementChoices() {
+      return ALTERNATIVE.clone();
+    }
+
+    @Override
+    public Authenticator create(KeycloakSession session) {
+      return SINGLETON;
+    }
+  }
+
   public static final class Guard extends Base {
     private static final QuarantineGuard SINGLETON = new QuarantineGuard();
 
