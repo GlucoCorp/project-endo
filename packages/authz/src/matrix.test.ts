@@ -86,6 +86,20 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  'enrolment.read': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'enrolment.confirm': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'org.clinicians.manage': {
     patient: '-',
     clinician: '-',
@@ -366,7 +380,13 @@ describe('properties', () => {
         // Only actions that touch no individual patient's data survive withdrawal. Creating an
         // enrolment invitation is one: the patient does not exist yet (REQ-001).
         if (d.allow)
-          expect(['org.dashboard.read', 'system.hello', 'enrolment.create']).toContain(action);
+          expect([
+            'org.dashboard.read',
+            'system.hello',
+            'enrolment.create',
+            'enrolment.read',
+            'enrolment.confirm',
+          ]).toContain(action);
       }),
     );
   });

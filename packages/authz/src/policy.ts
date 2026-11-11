@@ -34,6 +34,8 @@ export const ACTIONS = [
   'own_data.delete', // Delete own data
   'support.phi_access', // Access PHI for support
   'enrolment.create', // REQ-001: clinician invites a patient to their own organisation
+  'enrolment.read', // REQ-001: clinician lists their organisation's open invitations
+  'enrolment.confirm', // REQ-001, ADR-0021: clinician confirms the patient in front of them by code
   'consent.read_own', // Spec 13.1: she sees her consent decisions
   'consent.update_own', // Spec 13.1: she grants or withdraws a purpose, effective immediately
   'system.hello', // M0 walking skeleton: authenticated, no health data
@@ -187,6 +189,8 @@ export function can(
 
     // REQ-001: no patient exists yet, so no consent applies; organisation membership does.
     case 'enrolment.create':
+    case 'enrolment.read':
+    case 'enrolment.confirm':
       if (subject.role !== 'clinician') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 

@@ -34,9 +34,25 @@ import {
 } from '@endo/clinical-store';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
-import { ServiceTokenVerifier, WorkloadTokenVerifier } from '@endo/service-kit';
+import {
+  ServiceTokenVerifier,
+  WorkloadTokenSigner,
+  WorkloadTokenVerifier,
+} from '@endo/service-kit';
+import { HttpIdentityEnrolment } from './identity-client.ts';
 import { buildApi } from './app.ts';
 import type { EnrolmentCoordination } from './routes/coordinator.ts';
+
+const PrivateJwk = z.string().transform((s, ctx) => {
+  try {
+    return z
+      .object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string(), d: z.string() })
+      .parse(JSON.parse(s));
+  } catch {
+    ctx.addIssue({ code: 'custom', message: 'invalid' });
+    return z.NEVER;
+  }
+});
 
 const PublicJwk = z.string().transform((s, ctx) => {
   try {
@@ -70,6 +86,9 @@ const Config = z.object({
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
   API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
+  API_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
+  API_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -135,6 +154,8 @@ async function main(): Promise<void> {
     coordination = {
       find: (tokenHash) => findLiveInvitation(db, tokenHash),
       state: (orgId, invitationId) => reservations.state(orgId, invitationId),
+      reserve: (r) => reservations.reserve(r),
+      release: (r) => reservations.release(r),
     };
     if (!config.API_AUDIT_RELAY_DATABASE_URL) {
       throw new Error('API_AUDIT_RELAY_DATABASE_URL is required with API_CLINICAL_DATABASE_URL.');
@@ -217,6 +238,15 @@ async function main(): Promise<void> {
     now: () => new Date(),
     consents,
     ...(coordination ? { coordination } : {}),
+    ...(config.API_WORKLOAD_PRIVATE_KEY_JWK && config.API_IDENTITY_BASE_URL
+      ? {
+          identity: new HttpIdentityEnrolment({
+            identityBaseUrl: config.API_IDENTITY_BASE_URL,
+            signer: new WorkloadTokenSigner(config.API_WORKLOAD_PRIVATE_KEY_JWK, 'api'),
+            fetch,
+          }),
+        }
+      : {}),
     rateLimitPerMinute: config.API_RATE_LIMIT_PER_MINUTE,
   });
 

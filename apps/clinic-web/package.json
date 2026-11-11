@@ -1,0 +1,35 @@
+{
+  "name": "@endo/clinic-web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json",
+    "lint": "eslint . --max-warnings 0",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:e2e": "vite build && playwright test"
+  },
+  "dependencies": {
+    "@endo/i18n": "workspace:*",
+    "@endo/ui": "workspace:*",
+    "@tanstack/react-router": "1.170.46",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@endo/bff-clinic": "workspace:*",
+    "@endo/crypto": "workspace:*",
+    "@endo/domain": "workspace:*",
+    "@endo/service-kit": "workspace:*",
+    "@playwright/test": "1.64.1",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.2.1",
+    "jose": "6.2.14",
+    "vite": "8.3.5"
+  }
+}

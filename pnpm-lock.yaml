@@ -200,6 +200,98 @@ importers:
         specifier: 4.1.12
         version: 4.1.12(@types/node@24.19.2)(@vitest/coverage-v8@4.1.12)
 
+  apps/clinic-web:
+    dependencies:
+      '@endo/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
+      '@endo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      '@tanstack/react-router':
+        specifier: 1.170.46
+        version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
+    devDependencies:
+      '@endo/bff-clinic':
+        specifier: workspace:*
+        version: link:../../services/bff-clinic
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../../packages/crypto
+      '@endo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@endo/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: 6.2.1
+        version: 6.2.1(vite@8.3.5(@types/node@24.19.2))
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@24.19.2)
+
+  apps/patient-web:
+    dependencies:
+      '@endo/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
+      '@endo/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
+      '@tanstack/react-router':
+        specifier: 1.170.46
+        version: 1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+      react-dom:
+        specifier: 19.3.1
+        version: 19.3.1(react@19.3.1)
+    devDependencies:
+      '@endo/bff-patient':
+        specifier: workspace:*
+        version: link:../../services/bff-patient
+      '@endo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@endo/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      '@playwright/test':
+        specifier: 1.64.1
+        version: 1.64.1
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: 19.3.0
+        version: 19.3.0(@types/react@19.3.0)
+      '@vitejs/plugin-react':
+        specifier: 6.2.1
+        version: 6.2.1(vite@8.3.5(@types/node@24.19.2))
+      vite:
+        specifier: 8.3.5
+        version: 8.3.5(@types/node@24.19.2)
+
   packages/audit:
     dependencies:
       '@endo/db':
@@ -264,6 +356,8 @@ importers:
 
   packages/domain: {}
 
+  packages/i18n: {}
+
   packages/identity-store:
     dependencies:
       '@endo/crypto':
@@ -282,6 +376,12 @@ importers:
       pg:
         specifier: 8.23.1
         version: 8.23.1
+
+  packages/oidc:
+    dependencies:
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
 
   packages/service-kit:
     dependencies:
@@ -344,6 +444,9 @@ importers:
       '@endo/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@endo/oidc':
+        specifier: workspace:*
+        version: link:../../packages/oidc
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
@@ -375,6 +478,9 @@ importers:
       '@endo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@endo/oidc':
+        specifier: workspace:*
+        version: link:../../packages/oidc
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
@@ -384,6 +490,9 @@ importers:
       fastify:
         specifier: 5.12.7
         version: 5.12.7
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -689,6 +798,30 @@ packages:
   '@standard-schema/spec@1.1.0':
     resolution: {integrity: sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w==}
 
+  '@tanstack/history@1.162.5':
+    resolution: {integrity: sha512-w1+YvwmTkwt5n8yUqEH3IWZ9DsmorCZW/EQ3KYHnqEgIkOZpH54NvW6/Epq3Dzb8H0ifIeYX8PExvrNLIH5FIA==}
+    engines: {node: '>=20.19'}
+
+  '@tanstack/react-router@1.170.46':
+    resolution: {integrity: sha512-ez1iNIhsPjGlaDHg3BXWs67EWVIYzB2tbopEHYDESdkO7owgkGb5de52+5Kv2v1fxdkggcNzo35bdk4arTVGQw==}
+    engines: {node: '>=20.19'}
+    peerDependencies:
+      react: '>=18.0.0 || >=19.0.0'
+      react-dom: '>=18.0.0 || >=19.0.0'
+
+  '@tanstack/react-store@0.11.2':
+    resolution: {integrity: sha512-oj5O5DmiMWE+ih+SioX2ayC1kbK7d3fpLx0B75fPJr9nY3zU+hoW010yr64qXsY/9fyiLVE2bn5mGNV3owm8RQ==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+      react-dom: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
+
+  '@tanstack/router-core@1.171.39':
+    resolution: {integrity: sha512-qUhoJ0meuSUqGYQbHbcJYdASr06YtK+bulbj6vtrhKYFkLgkSsZ6tXmMyym7sFxiSJSPYgasgozrL01LyyR/6A==}
+    engines: {node: '>=20.19'}
+
+  '@tanstack/store@0.11.2':
+    resolution: {integrity: sha512-sJ4mjol8uQsHV0gOJzzjwXfh2Fwm+Sz0+8deqiTm4jGbMdjzNSW+xZCFm0kUa870uhd8yi+DpKnZb5Kc4apa0Q==}
+
   '@turbo/darwin-64@2.11.10':
     resolution: {integrity: sha512-By4idRap5+nLnMuRzLB4qkOPRlvNdyY1ne4VJYDyUoUB11H94k7uif9mbe3JT8JSNXs1D68uMcBj6hJ/jMQRvA==}
     cpu: [x64]
@@ -739,6 +872,14 @@ packages:
 
   '@types/pg@8.23.1':
     resolution: {integrity: sha512-fKVHpikPdg4GKks3JuLEhvwSyvwzF23hnabPy6DD8ljVbC7+6J5dQzdv4arV6jqq57djnMgs1HKBxX4P8aBI3A==}
+
+  '@types/react-dom@19.3.0':
+    resolution: {integrity: sha512-ZI7bU42mZXXKHn/qNLEw2IrbiINU7X5+vfgdixBHkCNpYWXjKgfQ/P+uyGb5CjOLB9UcnTeg3rylQtV2hym44Q==}
+    peerDependencies:
+      '@types/react': ^19.3.0
+
+  '@types/react@19.3.0':
+    resolution: {integrity: sha512-N0rFCuH9YoxG9/m61l9MfpJKfmLOVU0em7ipIz6TRgSSkvReLB9vL85GB+yr8Bs5leqpvg96JSwF4ZS1s4viQg==}
 
   '@typescript-eslint/eslint-plugin@8.72.1':
     resolution: {integrity: sha512-5CokTWXpmbylfFabsbvHC0CAw3XLaGnoa+nFJX5FR592h/LoZsENUE6p/rg5xvkKrFEXz6pYmgI29AgXc2N3BQ==}
@@ -798,6 +939,22 @@ packages:
   '@typescript-eslint/visitor-keys@8.72.1':
     resolution: {integrity: sha512-SB8xqipSzZHUePCCLNeYxqnxq83X61/qzNhjQGbTfjxGZIeOEP7tBgWYX05Tcd6CgE02WdTJnh5b8kMZJ/+bnQ==}
     engines: {node: ^18.18.0 || ^20.9.0 || >=21.1.0}
+
+  '@vitejs/plugin-react@6.2.1':
+    resolution: {integrity: sha512-9KyWCij3r0+qLG3Q62vBmv0VyevmYibAtxaCIVK9o0k6CXgaajZRIe8tpfchQcdZArJ5b/7OrIz4W3b2uxVRDA==}
+    engines: {node: ^20.19.0 || >=22.12.0}
+    peerDependencies:
+      '@rolldown/plugin-babel': ^0.1.7 || ^0.2.0 || ^0.3.0
+      babel-plugin-react-compiler: ^1.0.0
+      oxc-transform-react: '>=0.152.0 <0.157.0'
+      vite: ^8.0.0
+    peerDependenciesMeta:
+      '@rolldown/plugin-babel':
+        optional: true
+      babel-plugin-react-compiler:
+        optional: true
+      oxc-transform-react:
+        optional: true
 
   '@vitest/coverage-v8@4.1.12':
     resolution: {integrity: sha512-6S7/iVknKglLAxMFxQGNppBI0iqJS2NgM6FBxavitj7KaDq/vywOWGf6dGu7F2L1Qy0G6S3uTp7aGshHrzK8JA==}
@@ -891,6 +1048,9 @@ packages:
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
 
+  cookie-es@3.1.1:
+    resolution: {integrity: sha512-UaXxwISYJPTr9hwQxMFYZ7kNhSXboMXP+Z3TRX6f1/NyaGPfuNUZOWP1pUEb75B2HjfklIYLVRfWiFZJyC6Npg==}
+
   cookie@2.0.1:
     resolution: {integrity: sha512-yuToqVvRrj6pfDXREyQAAv8SkAEk/8GS3jQRTiUMm66TVtBYmqQeoEjL2Lmq8Rpo6271vH76InTChTitEAm65w==}
     engines: {node: '>=22'}
@@ -898,6 +1058,9 @@ packages:
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
     engines: {node: '>= 8'}
+
+  csstype@3.2.3:
+    resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
 
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
@@ -1095,6 +1258,10 @@ packages:
   is-glob@4.0.3:
     resolution: {integrity: sha512-xelSayHH36ZgE7ZWhli7pW34hNbNl8Ojv5KVmkJD4hBdD3th8Tfk9vYasLM+mXWOZhFkgZfxhLSnrwRr4elSSg==}
     engines: {node: '>=0.10.0'}
+
+  isbot@5.2.2:
+    resolution: {integrity: sha512-iQcBXcd+Rv/pkubRyGh2utW2j1oPG5hZY6TUhVPpqK4G+o3IbxpJNx04hgksjc/N7GK5pEorUxDeg31cFgEk/w==}
+    engines: {node: '>=18'}
 
   isexe@2.0.0:
     resolution: {integrity: sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==}
@@ -1384,6 +1551,15 @@ packages:
   quick-format-unescaped@4.0.4:
     resolution: {integrity: sha512-tYC1Q1hgyRuHgloV/YXs2w15unPVh8qfu/qCTfhTYamaw7fyhumKa2yGpdSo87vY32rIclj+4fWYQXUMs9EHvg==}
 
+  react-dom@19.3.1:
+    resolution: {integrity: sha512-Y0bARz53lhEC1NMCASs0/j+faB/zqt3R8hpvg1e8+61ZVJ4UL0UdC4cBbXfZMcIuhrfgeILTLe+ZeBCavQPtKQ==}
+    peerDependencies:
+      react: ^19.3.1
+
+  react@19.3.1:
+    resolution: {integrity: sha512-QNhWdt7nrgVWWQG58QuGsAR3jv3Hbe4mb4vz7w2csnHavciZJgda1CPNaldF6eVxv90ud3jUXpKlHL69gO38yw==}
+    engines: {node: '>=0.10.0'}
+
   real-require@1.0.0:
     resolution: {integrity: sha512-P4nbQYQfePJxRSmY+v/KINxVucm4NF3p3s7pJveMTtom52FR4YGltUQLB8idDXwDDWW+eYrWDFbuzUnjoWHF7g==}
 
@@ -1422,6 +1598,9 @@ packages:
     resolution: {integrity: sha512-b3rppTKm9T+PsVCBEOUR46GWI7fdOs00VKZ1+9c1EWDaDMvjQc6tUwuFyIprgGgTcWoVHSKrU8H31ZHA2e0RHA==}
     engines: {node: '>=10'}
 
+  scheduler@0.28.0:
+    resolution: {integrity: sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw==}
+
   secure-json-parse@4.1.1:
     resolution: {integrity: sha512-lnd81MQEZKjhW/Gd2TQqdd4XP6QYNdDW/EP+I7nTrFHP9y2LmaGPIHk9xsnzcOiEr1c39c/e84xFgGviQKBTRw==}
 
@@ -1429,6 +1608,16 @@ packages:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
     hasBin: true
+
+  seroval-plugins@1.7.7:
+    resolution: {integrity: sha512-5PAKQPAfj2MD332QeCdzXKm334ftIb0B1Ek3I9IQa73rPOlBSHko9mODFo8XNjzs6KJQG3nE6dn9dw7hJjrZAQ==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      seroval: ^1.0
+
+  seroval@1.7.7:
+    resolution: {integrity: sha512-9OdYsqMLV5RSUNNtkgr6DT2bS/ncba6AqUJx8H7epNJNa0cKNWhQtF5GLRjkF/KuAdvAuRRitWrq86K/v1S/kg==}
+    engines: {node: '>=20'}
 
   set-cookie-parser@3.2.2:
     resolution: {integrity: sha512-df017qMeYuXo4emL09nlyMpi2i2MtEIKS/6jtXH3vmjFgIRsOi852/5RmhJ4EkvN3ZF8jXadM/EkTPXgc8yPIw==}
@@ -1519,6 +1708,11 @@ packages:
 
   uri-js@4.4.1:
     resolution: {integrity: sha512-7rKUyy33Q1yc98pQ1DAmLtwX109F7TIfWlW1Ydo8Wl1ii1SeHieeh0HHfPeL2fMXK6z0s8ecKs9frCuLJvndBg==}
+
+  use-sync-external-store@1.7.0:
+    resolution: {integrity: sha512-6L+EeigHMQhdaIPNIFUKwfWJSwWFQ8gJbJ2DLOs5sDIegTwR9fRxvnM3uciHKjIZhFz+KAv2emhWMRvDmMcY8A==}
+    peerDependencies:
+      react: ^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   vite@8.3.5:
     resolution: {integrity: sha512-z1YpjieJ9g0ebTmQpLBv/oq9E3F9EIlOe+7LahW8SrE3LTiG3udBRUXQOlYXP9b+IC2q2phHeVxj9xGlw34OEQ==}
@@ -1813,6 +2007,33 @@ snapshots:
 
   '@standard-schema/spec@1.1.0': {}
 
+  '@tanstack/history@1.162.5': {}
+
+  '@tanstack/react-router@1.170.46(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@tanstack/history': 1.162.5
+      '@tanstack/react-store': 0.11.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      '@tanstack/router-core': 1.171.39
+      isbot: 5.2.2
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+
+  '@tanstack/react-store@0.11.2(react-dom@19.3.1(react@19.3.1))(react@19.3.1)':
+    dependencies:
+      '@tanstack/store': 0.11.2
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+      use-sync-external-store: 1.7.0(react@19.3.1)
+
+  '@tanstack/router-core@1.171.39':
+    dependencies:
+      '@tanstack/history': 1.162.5
+      cookie-es: 3.1.1
+      seroval: 1.7.7
+      seroval-plugins: 1.7.7(seroval@1.7.7)
+
+  '@tanstack/store@0.11.2': {}
+
   '@turbo/darwin-64@2.11.10':
     optional: true
 
@@ -1853,6 +2074,14 @@ snapshots:
       '@types/node': 24.19.2
       pg-protocol: 1.16.1
       pg-types: 2.2.0
+
+  '@types/react-dom@19.3.0(@types/react@19.3.0)':
+    dependencies:
+      '@types/react': 19.3.0
+
+  '@types/react@19.3.0':
+    dependencies:
+      csstype: 3.2.3
 
   '@typescript-eslint/eslint-plugin@8.72.1(@typescript-eslint/parser@8.72.1(eslint@10.14.0(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3))(eslint@10.14.0(supports-color@7.2.0))(supports-color@7.2.0)(typescript@6.0.3)':
     dependencies:
@@ -1944,6 +2173,11 @@ snapshots:
     dependencies:
       '@typescript-eslint/types': 8.72.1
       eslint-visitor-keys: 5.0.1
+
+  '@vitejs/plugin-react@6.2.1(vite@8.3.5(@types/node@24.19.2))':
+    dependencies:
+      '@rolldown/pluginutils': 1.0.1
+      vite: 8.3.5(@types/node@24.19.2)
 
   '@vitest/coverage-v8@4.1.12(vitest@4.1.12)':
     dependencies:
@@ -2059,6 +2293,8 @@ snapshots:
 
   convert-source-map@2.0.0: {}
 
+  cookie-es@3.1.1: {}
+
   cookie@2.0.1: {}
 
   cross-spawn@7.0.6:
@@ -2066,6 +2302,8 @@ snapshots:
       path-key: 3.1.1
       shebang-command: 2.0.0
       which: 2.0.2
+
+  csstype@3.2.3: {}
 
   debug@4.4.3(supports-color@7.2.0):
     dependencies:
@@ -2271,6 +2509,8 @@ snapshots:
   is-glob@4.0.3:
     dependencies:
       is-extglob: 2.1.1
+
+  isbot@5.2.2: {}
 
   isexe@2.0.0: {}
 
@@ -2521,6 +2761,13 @@ snapshots:
 
   quick-format-unescaped@4.0.4: {}
 
+  react-dom@19.3.1(react@19.3.1):
+    dependencies:
+      react: 19.3.1
+      scheduler: 0.28.0
+
+  react@19.3.1: {}
+
   real-require@1.0.0: {}
 
   regexp-tree@0.1.27: {}
@@ -2564,9 +2811,17 @@ snapshots:
 
   safe-stable-stringify@2.5.0: {}
 
+  scheduler@0.28.0: {}
+
   secure-json-parse@4.1.1: {}
 
   semver@7.8.5: {}
+
+  seroval-plugins@1.7.7(seroval@1.7.7):
+    dependencies:
+      seroval: 1.7.7
+
+  seroval@1.7.7: {}
 
   set-cookie-parser@3.2.2: {}
 
@@ -2646,6 +2901,10 @@ snapshots:
   uri-js@4.4.1:
     dependencies:
       punycode: 2.3.1
+
+  use-sync-external-store@1.7.0(react@19.3.1):
+    dependencies:
+      react: 19.3.1
 
   vite@8.3.5(@types/node@24.19.2):
     dependencies:

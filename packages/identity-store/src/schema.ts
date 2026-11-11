@@ -53,6 +53,25 @@ export interface IdentityDatabase {
     version: Generated<number>;
     updated_at: Generated<Date>;
   };
+  /** Migration 0006 (ADR-0021 sections 5 and 6). One-time, five-minute grants into Keycloak. */
+  enrolment_handoff: {
+    ref_hash: string;
+    transaction_id: string;
+    kind: string;
+    issuer: string;
+    client_id: string;
+    redirect_uri: string;
+    code_challenge: string;
+    state: string;
+    nonce: string;
+    created_at: Generated<Date>;
+    /** Set by the database: five minutes after creation. */
+    expires_at: Generated<Date>;
+    redeemed_at: Date | null;
+    kc_root_session: string | null;
+    kc_client_uuid: string | null;
+    kc_tab_id: string | null;
+  };
   patient_link: {
     person_id: string;
     patient_record_id: string;

@@ -66,6 +66,39 @@ export type CodeCheckResult =
       readonly cancelled: readonly string[];
     };
 
+/** A handoff lives five minutes (ADR-0021 section 5); the database agrees (migration 0006). */
+export const HANDOFF_LIFETIME_MS = 5 * 60_000;
+
+/** What a handoff is bound to: the real authorisation request must match every value. */
+export interface HandoffBinding {
+  readonly kind: 'enrol' | 'resume';
+  readonly issuer: string;
+  readonly clientId: string;
+  readonly redirectUri: string;
+  readonly codeChallenge: string;
+  readonly state: string;
+  readonly nonce: string;
+}
+
+/** Keycloak's authentication-session identity at redemption (ADR-0021 section 6). */
+export interface KeycloakSession {
+  readonly rootSessionId: string;
+  readonly clientUuid: string;
+  readonly tabId: string;
+}
+
+export type RedeemResult =
+  | {
+      readonly ok: true;
+      readonly transactionId: string;
+      readonly provisionalSubject: string;
+      readonly kind: 'enrol' | 'resume';
+    }
+  | {
+      readonly ok: false;
+      readonly reason: 'unknown' | 'mismatch' | 'used' | 'expired' | 'wrong-state';
+    };
+
 /** A pending code of the same invitation, which a new code must differ from. */
 export interface PendingCode {
   readonly binding: CodeBinding;
@@ -172,6 +205,132 @@ export class PostgresEnrolmentStore {
     invitationId: string,
   ): Promise<StoredTransaction | null> {
     return openByBinding(this.#db, bindingHash, invitationId);
+  }
+
+  /**
+   * Stores a handoff (ADR-0021 section 5) for an open transaction: `enrol` only once the clinic
+   * has confirmed; `resume` only after redemption, for the same provisional user. Returns null
+   * when the transaction is in no state for it (or past its deadline).
+   */
+  createHandoff(
+    h: HandoffBinding & { readonly refHash: string; readonly transactionId: string },
+    clock: () => Date,
+    audit: (tx: EnrolmentTransaction) => OutboxEvent,
+  ): Promise<{ readonly expiresAt: Date } | null> {
+    return this.#db.transaction().execute(async (trx) => {
+      const row = await trx
+        .selectFrom('enrolment_transaction')
+        .selectAll()
+        .where('id', '=', h.transactionId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!row) return null;
+      const tx = toStored(row).tx;
+      const now = clock();
+      const allowed =
+        h.kind === 'enrol'
+          ? tx.status === 'confirmed'
+          : tx.status === 'redeemed' || tx.status === 'credential-committed';
+      if (!allowed || isOverdue(tx, now)) return null;
+      const inserted = await trx
+        .insertInto('enrolment_handoff')
+        .values({
+          ref_hash: h.refHash,
+          transaction_id: h.transactionId,
+          kind: h.kind,
+          issuer: h.issuer,
+          client_id: h.clientId,
+          redirect_uri: h.redirectUri,
+          code_challenge: h.codeChallenge,
+          state: h.state,
+          nonce: h.nonce,
+        })
+        .returning('expires_at')
+        .executeTakeFirstOrThrow();
+      await queue(trx, audit(tx));
+      return { expiresAt: inserted.expires_at };
+    });
+  }
+
+  /**
+   * Keycloak redeems a handoff (ADR-0021 sections 5 and 6), atomically: the reference must exist,
+   * be unexpired, and match the real authorisation request in every bound value. `enrol` moves
+   * the transaction `confirmed -> redeemed` with a provisional subject the coordinator chooses
+   * (Keycloak creates the user with that id). A retry from the same Keycloak authentication
+   * session gets the same answer; any other session, or a changed request, is refused.
+   */
+  redeemHandoff(
+    r: HandoffBinding & { readonly refHash: string; readonly session: KeycloakSession },
+    newSubject: () => string,
+    clock: () => Date,
+    audit: (tx: EnrolmentTransaction, action: string) => OutboxEvent,
+  ): Promise<RedeemResult> {
+    return this.#db.transaction().execute(async (trx): Promise<RedeemResult> => {
+      const h = await trx
+        .selectFrom('enrolment_handoff')
+        .selectAll()
+        .where('ref_hash', '=', r.refHash)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!h) return { ok: false, reason: 'unknown' };
+      const sameRequest =
+        h.kind === r.kind &&
+        h.issuer === r.issuer &&
+        h.client_id === r.clientId &&
+        h.redirect_uri === r.redirectUri &&
+        h.code_challenge === r.codeChallenge &&
+        h.state === r.state &&
+        h.nonce === r.nonce;
+      if (!sameRequest) return { ok: false, reason: 'mismatch' };
+      const row = await trx
+        .selectFrom('enrolment_transaction')
+        .selectAll()
+        .where('id', '=', h.transaction_id)
+        .forUpdate()
+        .executeTakeFirstOrThrow();
+      const tx = toStored(row).tx;
+      if (h.redeemed_at !== null) {
+        const sameSession =
+          h.kc_root_session === r.session.rootSessionId &&
+          h.kc_client_uuid === r.session.clientUuid &&
+          h.kc_tab_id === r.session.tabId;
+        return sameSession && tx.provisionalSubject !== null
+          ? {
+              ok: true,
+              transactionId: tx.id,
+              provisionalSubject: tx.provisionalSubject,
+              kind: r.kind,
+            }
+          : { ok: false, reason: 'used' };
+      }
+      const now = clock();
+      if (now.getTime() >= h.expires_at.getTime()) return { ok: false, reason: 'expired' };
+
+      let subject = tx.provisionalSubject;
+      if (r.kind === 'enrol') {
+        const moved = transition(tx, { type: 'redeem', provisionalSubject: newSubject() }, now);
+        if (!moved.ok) return { ok: false, reason: 'wrong-state' };
+        await write(trx, moved.tx, audit(moved.tx, 'identity.enrolment.redeemed'));
+        subject = moved.tx.provisionalSubject;
+      } else {
+        if (tx.status !== 'redeemed' && tx.status !== 'credential-committed')
+          return { ok: false, reason: 'wrong-state' };
+        if (isOverdue(tx, now)) return { ok: false, reason: 'wrong-state' };
+        await queue(trx, audit(tx, 'identity.enrolment.resumed'));
+      }
+      await trx
+        .updateTable('enrolment_handoff')
+        .set({
+          redeemed_at: now,
+          kc_root_session: r.session.rootSessionId,
+          kc_client_uuid: r.session.clientUuid,
+          kc_tab_id: r.session.tabId,
+        })
+        .where('ref_hash', '=', r.refHash)
+        .execute();
+      if (subject === null) throw new Error('a redeemed transaction has a provisional subject');
+      return { ok: true, transactionId: tx.id, provisionalSubject: subject, kind: r.kind };
+    });
   }
 
   async get(id: string): Promise<StoredTransaction | null> {

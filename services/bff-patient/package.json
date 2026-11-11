@@ -3,6 +3,11 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "exports": {
+    "./app": "./src/app.ts",
+    "./sessions": "./src/sessions.ts",
+    "./app-shell": "./src/app-shell.ts"
+  },
   "scripts": {
     "start": "node src/main.ts",
     "typecheck": "tsc -p tsconfig.json",
@@ -14,9 +19,11 @@
     "@endo/authz": "workspace:*",
     "@endo/config": "workspace:*",
     "@endo/domain": "workspace:*",
+    "@endo/oidc": "workspace:*",
     "@endo/service-kit": "workspace:*",
     "@fastify/rate-limit": "11.2.1",
     "fastify": "5.12.7",
+    "jose": "6.2.14",
     "zod": "4.6.7"
   },
   "devDependencies": {

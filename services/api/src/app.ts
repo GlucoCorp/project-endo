@@ -34,6 +34,7 @@ import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerMembershipRoutes } from './routes/memberships.ts';
 import { registerCoordinatorRoutes, type EnrolmentCoordination } from './routes/coordinator.ts';
+import type { IdentityEnrolment } from './identity-client.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
 /**
@@ -115,6 +116,8 @@ export interface ApiDeps {
    * clinical database; without it the coordinator routes do not exist (fail closed).
    */
   readonly coordination?: EnrolmentCoordination;
+  /** The identity service's clinic-side enrolment route (ADR-0021). Without it, no confirm. */
+  readonly identity?: IdentityEnrolment;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
@@ -140,18 +143,24 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   registerHealthRoutes(app);
   registerHelloRoutes(app);
   registerMembershipRoutes(app, { memberships: deps.memberships, audit: deps.audit });
+  // Best effort: the periodic relay in main.ts picks up anything this misses.
+  const onCommitted = () => {
+    deps.relayOutbox?.().catch(() => {
+      app.log.warn({ event: 'audit.outbox_relay_failed' });
+    });
+  };
   if (deps.coordination)
-    registerCoordinatorRoutes(app, { coordination: deps.coordination, audit: deps.audit });
+    registerCoordinatorRoutes(app, {
+      coordination: deps.coordination,
+      audit: deps.audit,
+      onCommitted,
+    });
   registerConsentRoutes(app, { consents: deps.consents });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,
-    // Best effort: the periodic relay in main.ts picks up anything this misses.
-    onCommitted: () => {
-      deps.relayOutbox?.().catch(() => {
-        app.log.warn({ event: 'audit.outbox_relay_failed' });
-      });
-    },
+    onCommitted,
+    ...(deps.identity ? { identity: deps.identity } : {}),
   });
   await app.ready();
   return app;

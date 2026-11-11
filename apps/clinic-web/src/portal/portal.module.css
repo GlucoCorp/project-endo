@@ -1,0 +1,120 @@
+/* Spec 21.2 and 21.5: density for clinicians, ruled lines, tokens only. */
+.page {
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: var(--space-24) var(--space-16);
+  font-family: var(--font-body);
+  font-size: var(--text-md);
+  line-height: var(--line-height-body);
+  color: var(--ink);
+}
+
+.title {
+  font-family: var(--font-reading);
+  font-size: var(--text-xl);
+  line-height: var(--line-height-title);
+  margin: 0 0 var(--space-16);
+  padding-bottom: var(--space-12);
+  border-bottom: 1px solid var(--rule);
+}
+
+.subtitle {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  margin: var(--space-16) 0 var(--space-8);
+}
+
+.muted {
+  color: var(--ink-muted);
+}
+
+.result {
+  padding: var(--space-8) var(--space-12);
+  border-left: 3px solid var(--control-border);
+}
+
+.list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.invitation {
+  padding: var(--space-8) 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+.fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0 0 var(--space-16);
+}
+
+.field {
+  display: block;
+  margin: var(--space-16) 0 var(--space-8);
+  font-weight: 600;
+}
+
+.code {
+  display: block;
+  margin-top: var(--space-4);
+  width: 10ch;
+  min-height: var(--target-min);
+  font: inherit;
+  font-size: var(--text-xl);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.1em;
+  padding: var(--space-4) var(--space-8);
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--control-border);
+  border-radius: var(--radius-control);
+}
+
+.check {
+  display: block;
+  margin: var(--space-8) 0;
+}
+
+.row,
+.primary {
+  display: inline-block;
+  min-height: var(--target-min);
+  padding: var(--space-8) var(--space-16);
+  font: inherit;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.row {
+  width: 100%;
+  text-align: left;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--control-border);
+  margin-bottom: var(--space-8);
+}
+
+.primary {
+  margin-top: var(--space-16);
+  font-weight: 600;
+  color: var(--on-action);
+  background: var(--action);
+  border: 1px solid var(--action);
+}
+
+.primary:disabled {
+  color: var(--ink-muted);
+  background: var(--surface);
+  border-color: var(--control-border);
+  cursor: not-allowed;
+}
+
+.row:focus-visible,
+.primary:focus-visible,
+.code:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: var(--focus-offset);
+}

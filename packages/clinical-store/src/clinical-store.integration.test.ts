@@ -508,6 +508,29 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       sealResponse: () => Promise.resolve({ wrappedKey: 'wk', envelope: randomUUID() }),
     });
 
+    it('REQ-001 lists only open invitations of the organisation asked for, never their tokens', async () => {
+      const store = new PostgresIdempotentInvitationStore(apiDb);
+      const open = request(randomUUID());
+      const revoked = request(randomUUID());
+      await store.createOnce(open);
+      await store.createOnce(revoked);
+      await admin.query(`UPDATE enrolment_invitation SET revoked_at = now() WHERE id = $1`, [
+        revoked.invitation.id,
+      ]);
+      const listed = await store.listOpen(ORG_A);
+      const ids = listed.map((i) => i.id);
+      expect(ids).toContain(open.invitation.id);
+      expect(ids).not.toContain(revoked.invitation.id);
+      const mine = listed.find((i) => i.id === open.invitation.id);
+      expect(mine?.reserved).toBe(false);
+      expect(mine?.createdAt).toBeInstanceOf(Date);
+      expect(mine?.expiresAt.getTime()).toBeGreaterThan(Date.now());
+      expect(Object.keys(mine ?? {}).sort()).toEqual(['createdAt', 'expiresAt', 'id', 'reserved']);
+      expect(JSON.stringify(listed)).not.toContain(open.invitation.tokenHash);
+      // Another organisation sees none of them.
+      expect((await store.listOpen(ORG_B)).map((i) => i.id)).not.toContain(open.invitation.id);
+    });
+
     it('creates once; a retry replays the same sealed response and creates nothing', async () => {
       const store = new PostgresIdempotentInvitationStore(apiDb);
       const key = randomUUID();

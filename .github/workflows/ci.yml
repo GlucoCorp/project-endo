@@ -63,6 +63,8 @@ jobs:
         run: |
           pnpm --filter @endo/bff-clinic exec playwright install --only-shell chromium
           pnpm --filter @endo/bff-clinic test:e2e
+          pnpm --filter @endo/patient-web test:e2e
+          pnpm --filter @endo/clinic-web test:e2e
       # One database per store, as deployed (spec 5.2): stores never share tables or migration history.
       - name: Create one database per store
         run: |

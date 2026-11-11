@@ -37,9 +37,23 @@ export interface CreateInvitationOnce {
 
 const OPERATION = 'enrolment.create';
 
+/** An open invitation as the clinic portal lists it: ids and times only, never the token. */
+export interface OpenInvitation {
+  readonly id: string;
+  readonly createdAt: Date;
+  readonly expiresAt: Date;
+  /** An enrolment transaction holds it (ADR-0021 section 6). */
+  readonly reserved: boolean;
+}
+
 /** Invitation creation that happens at most once per Idempotency-Key (spec 9.1, REQ-001). */
 export interface IdempotentInvitationStore {
   createOnce(request: CreateInvitationOnce): Promise<IdempotentOutcome>;
+  /**
+   * The organisation's invitations that can still be used (not claimed, revoked or expired),
+   * newest first, at most 100. Read inside the organisation's row-level-security scope.
+   */
+  listOpen(orgId: string): Promise<OpenInvitation[]>;
 }
 
 export class PostgresIdempotentInvitationStore implements IdempotentInvitationStore {
@@ -47,6 +61,27 @@ export class PostgresIdempotentInvitationStore implements IdempotentInvitationSt
 
   constructor(db: Kysely<ClinicalDatabase>) {
     this.#db = db;
+  }
+
+  listOpen(orgId: string): Promise<OpenInvitation[]> {
+    return withOrg(this.#db, orgId, async (trx) => {
+      const rows = await trx
+        .selectFrom('enrolment_invitation')
+        .select(['id', 'created_at', 'expires_at', 'reserved_by'])
+        .where('org_id', '=', orgId)
+        .where('claimed_at', 'is', null)
+        .where('revoked_at', 'is', null)
+        .where('expires_at', '>', sql<Date>`now()`)
+        .orderBy('created_at', 'desc')
+        .limit(100)
+        .execute();
+      return rows.map((r) => ({
+        id: r.id,
+        createdAt: r.created_at,
+        expiresAt: r.expires_at,
+        reserved: r.reserved_by !== null,
+      }));
+    });
   }
 
   async createOnce(r: CreateInvitationOnce): Promise<IdempotentOutcome> {
@@ -138,6 +173,21 @@ export class InMemoryIdempotentInvitationStore implements IdempotentInvitationSt
 
   constructor(now: () => Date = () => new Date()) {
     this.#now = now;
+  }
+
+  listOpen(orgId: string): Promise<OpenInvitation[]> {
+    const now = this.#now().getTime();
+    return Promise.resolve(
+      this.invitations
+        .filter((i) => i.orgId === orgId && i.expiresAt.getTime() > now)
+        .map((i) => ({
+          id: i.id,
+          createdAt: new Date(i.expiresAt.getTime() - 7 * 24 * 60 * 60 * 1000),
+          expiresAt: i.expiresAt,
+          reserved: false,
+        }))
+        .reverse(),
+    );
   }
 
   async createOnce(r: CreateInvitationOnce): Promise<IdempotentOutcome> {
