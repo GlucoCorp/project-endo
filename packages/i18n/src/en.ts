@@ -39,6 +39,7 @@ export const en = {
   'enrol.stopped': 'Setting up was stopped.',
   'enrol.signing-in': 'Finishing your sign-in.',
   'enrol.signed-in': 'Your sign-in is ready. Next, choose what you share.',
+  'enrol.ready': 'You are all set. Your diary is ready.',
 
   // Spec 13.1 consent explanations, version 1. DRAFT: needs review by the data protection
   // officer before real use (TODO_LEGAL). A wording change means a new version (consent.ts).

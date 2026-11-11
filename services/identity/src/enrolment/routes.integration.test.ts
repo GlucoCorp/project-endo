@@ -236,6 +236,7 @@ describe.skipIf(!url)(
       expect(status.statusCode).toBe(200);
       expect(status.json()).toMatchObject({ transaction_id: id, status: 'awaiting-confirmation' });
       expect(status.json()).not.toHaveProperty('code');
+      expect(status.json()).not.toHaveProperty('account');
 
       // A wrong binding and an unknown transaction look the same.
       const wrong = await post(`/${id}/status`, { binding_hash: secret() });
@@ -648,6 +649,17 @@ describe.skipIf(!url)(
         expect((await store.get(a.id))?.tx).toMatchObject({ status: 'active', activationStep: 3 });
         // Running again changes nothing.
         expect(await activator.run(a.id)).toBe('active');
+        // Once active, her own browser's status carries what her patient session needs.
+        const status = await post(`/${a.id}/status`, { binding_hash: a.binding });
+        expect(status.json()).toMatchObject({
+          status: 'active',
+          account: {
+            person_id: mid?.personId,
+            patient_id: mid?.patientId,
+            org_id: mid?.orgId,
+            subject: mid?.provisionalSubject,
+          },
+        });
       });
 
       it('cancels on a definite claim refusal, and waits on an unknown outcome', async () => {

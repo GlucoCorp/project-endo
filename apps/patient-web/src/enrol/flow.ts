@@ -49,6 +49,8 @@ export type View =
   | { readonly kind: 'signed-in' }
   /** Her choices are saved; the clinic side finishes setting up (activation). */
   | { readonly kind: 'consented' }
+  /** Activation finished: her session is now an ordinary patient session (ADR-0021 s12). */
+  | { readonly kind: 'ready-account' }
   /** Continue: go to this Keycloak address. */
   | { readonly kind: 'navigate'; readonly url: string }
   | { readonly kind: 'ended'; readonly message: MessageKey }
@@ -102,6 +104,7 @@ export function fromServer(v: ServerView, code: string | null): View {
     return codeOrConfirmed(v, code);
   if (v.status === 'redeemed' || v.status === 'credential-committed') return { kind: 'signing-in' };
   if (v.status === 'consent-pending') return { kind: 'signed-in' };
+  if (v.status === 'active') return { kind: 'ready-account' };
   return { kind: 'consented' };
 }
 

@@ -52,7 +52,9 @@ export function EnrolPage() {
 
   // While the clinic has not confirmed, ask again every few seconds.
   useEffect(() => {
-    if (view.kind !== 'code' && view.kind !== 'signing-in') return undefined;
+    // After her choices too: the status check is what turns her session into a patient session.
+    if (view.kind !== 'code' && view.kind !== 'signing-in' && view.kind !== 'consented')
+      return undefined;
     const id = window.setInterval(() => {
       void flow.status().then(show);
     }, POLL_MS);
@@ -172,6 +174,12 @@ function Body({
       return (
         <p role="status" aria-live="polite">
           {t('consent.done')}
+        </p>
+      );
+    case 'ready-account':
+      return (
+        <p role="status" aria-live="polite">
+          {t('enrol.ready')}
         </p>
       );
     case 'navigate':

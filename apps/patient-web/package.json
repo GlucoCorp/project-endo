@@ -23,6 +23,7 @@
   "devDependencies": {
     "@endo/bff-patient": "workspace:*",
     "@endo/domain": "workspace:*",
+    "@endo/oidc": "workspace:*",
     "@endo/service-kit": "workspace:*",
     "@playwright/test": "1.64.1",
     "@types/react": "19.3.0",

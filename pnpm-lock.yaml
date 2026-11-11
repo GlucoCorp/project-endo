@@ -273,6 +273,9 @@ importers:
       '@endo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@endo/oidc':
+        specifier: workspace:*
+        version: link:../../packages/oidc
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
