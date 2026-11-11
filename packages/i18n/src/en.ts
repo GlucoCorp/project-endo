@@ -21,6 +21,13 @@ export const en = {
   'home.sign-in': 'Sign in',
   'home.signed-in': 'You are signed in. Your weekly check-in arrives here soon.',
   'home.sign-out': 'Sign out',
+  'home.locked': 'The app is locked.',
+  'home.unlock': 'Unlock with your passkey',
+  'home.app-lock-on':
+    'App lock is on: the app locks when you leave it, and after 5 minutes unused.',
+  'home.app-lock-off': 'App lock is off. Turn it on if others use this phone.',
+  'home.app-lock-enable': 'Turn on app lock',
+  'home.app-lock-disable': 'Turn off app lock',
   'enrol.no-link': 'Open the link your clinic gave you to set up your diary.',
   'enrol.link-invalid': 'This link cannot be used. Ask your clinic for a new one.',
   'enrol.locked':

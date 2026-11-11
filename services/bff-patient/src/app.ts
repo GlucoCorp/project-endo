@@ -15,13 +15,14 @@ import {
 import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts';
 import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 import { registerAppShell, type AppShell } from './app-shell.ts';
+import { registerSessionRoutes } from './session-routes.ts';
 
 /**
  * Every BFF route declares how it is authenticated (spec 2.5). `enrolment`: before she has an
  * account, bound to the browser by the enrolment cookie, checked by the route (ADR-0021 section 4).
  */
 export type BffAuth =
-  | { readonly kind: 'session' }
+  | { readonly kind: 'session'; readonly allowLocked?: true }
   | { readonly kind: 'enrolment' }
   | {
       readonly kind: 'public';
@@ -133,6 +134,9 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     const token = readCookie(request.headers.cookie, SESSION_COOKIE);
     const session = token ? await deps.sessions.resolve(token) : null;
     if (!session) throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+    // Spec 10.1 app lock: a locked session reaches only the lock screen until she signs in again.
+    if (session.locked && !auth.allowLocked)
+      throw new ProblemError(401, 'authn.locked', 'Unlock to continue.');
     request.claims = session.claims;
   });
 
@@ -198,7 +202,9 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
     return reply.send(parsed.data);
   });
 
-  if (deps.enrolment) registerEnrolmentRoutes(app, deps.enrolment);
+  registerSessionRoutes(app, deps.sessions);
+  if (deps.enrolment)
+    registerEnrolmentRoutes(app, { ...deps.enrolment, sessionsResolver: deps.sessions });
   if (deps.appShell) registerAppShell(app, deps.appShell);
 
   await app.ready();

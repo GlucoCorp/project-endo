@@ -179,6 +179,8 @@ describe('RISK-D01 rate limiting (spec 12.3)', () => {
         return Promise.resolve(null);
       },
       revoke: () => Promise.resolve(),
+      setAppLock: () => Promise.resolve(false),
+      lock: () => Promise.resolve(),
     };
     const d = {
       ...(await deps(() => Promise.resolve(json(200, {})))),

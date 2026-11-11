@@ -312,8 +312,46 @@ test('home: signed out she can sign in; signed in she can sign out', async ({ pa
   ]);
   await page.reload();
   await expect(page.getByText('You are signed in.')).toBeVisible();
+
+  // Spec 10.1 app lock: on, then she leaves the app; back, only "Unlock" is offered.
+  await page.getByRole('button', { name: 'Turn on app lock' }).click();
+  await expect(page.getByText('App lock is on')).toBeVisible();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(async () => (await sessions.resolve(token))?.locked).toBe(true);
+  await page.reload();
+  await expect(page.getByRole('link', { name: 'Unlock with your passkey' })).toHaveAttribute(
+    'href',
+    '/auth/sign-in',
+  );
+  await expect(page.getByText('You are signed in.')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Quick exit' }).isVisible();
+
+  // Signed in again (as unlocking does), she can sign out. Reloading counts as leaving the app,
+  // so this session has app lock off.
+  const unlocked = await sessions.createPatient({
+    sub: PERSON,
+    role: 'patient',
+    org_id: ORG,
+    patient_id: PATIENT,
+  });
+  await context.addCookies([
+    {
+      name: SESSION_COOKIE,
+      value: unlocked,
+      domain: 'localhost',
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+  await page.reload();
+  await expect(page.getByText('App lock is off')).toBeVisible();
   await page.getByRole('button', { name: 'Sign out' }).click();
   await expect(page.getByRole('link', { name: 'Sign in' })).toBeVisible();
-  expect(await sessions.resolve(token)).toBeNull();
+  expect(await sessions.resolve(unlocked)).toBeNull();
   expect(violations).toEqual([]);
 });
