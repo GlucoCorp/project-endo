@@ -155,4 +155,50 @@ describe('REQ-001 ADR-0021 identity -> API invitation lookup client', () => {
       (await client(() => Promise.reject(new TypeError('down')))).c.consents(consents),
     ).rejects.toBeInstanceOf(ClinicalUnavailableError);
   });
+
+  it('ADR-0021 s11 releases and revokes for cleanup, telling a won claim apart', async () => {
+    const TX = '01900000-0000-7000-8000-0000000000f1';
+    const r = { orgId: ORG, invitationId: INVITATION, transactionId: TX };
+    const released = await client(() =>
+      json(200, { outcome: 'done', changed: true, state: { status: 'live', reserved_by: null } }),
+    );
+    expect(await released.c.release(r)).toBe('released');
+    expect(released.seen[0]?.url).toBe('http://api.test/internal/v1/enrolment/invitations/release');
+    expect(await released.seen[0]?.json()).toEqual({
+      org_id: ORG,
+      invitation_id: INVITATION,
+      transaction_id: TX,
+    });
+    const missing = await client(() =>
+      json(200, { outcome: 'refused', state: { status: 'missing' } }),
+    );
+    expect(await missing.c.release(r)).toBe('released');
+    const won = await client(() =>
+      json(200, {
+        outcome: 'refused',
+        state: { status: 'claimed', reserved_by: TX, patient_id: INVITATION },
+      }),
+    );
+    expect(await won.c.release(r)).toBe('claimed');
+    for (const odd of [
+      () => json(200, { outcome: 'refused', state: { status: 'claimed', reserved_by: 'other' } }),
+      () => json(200, { outcome: 'maybe', state: { status: 'live' } }),
+      () => json(200, { outcome: 'done' }),
+      () => json(503, {}),
+      () => Promise.reject(new TypeError('down')),
+    ]) {
+      await expect((await client(odd)).c.release(r)).rejects.toBeInstanceOf(
+        ClinicalUnavailableError,
+      );
+    }
+    const revoked = await client(() =>
+      json(200, { outcome: 'done', changed: true, state: { status: 'revoked', reserved_by: TX } }),
+    );
+    expect(await revoked.c.revokeHeld(r)).toBe('done');
+    expect(revoked.seen[0]?.url).toBe('http://api.test/internal/v1/enrolment/invitations/revoke');
+    const notHeld = await client(() =>
+      json(200, { outcome: 'refused', state: { status: 'live', reserved_by: null } }),
+    );
+    expect(await notHeld.c.revokeHeld(r)).toBe('refused');
+  });
 });

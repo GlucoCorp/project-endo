@@ -6,14 +6,14 @@
 
 ## Public API
 
-| Export                               | What it does                                                                                                                                                                   |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ClinicalDatabase`                   | Kysely table types matching the migrations                                                                                                                                     |
-| `withOrg(db, orgId, fn)`             | Runs `fn` in a transaction with `app.org_id` set, which row-level security uses to isolate organisations. The setting ends with the transaction                                |
-| `findLiveInvitation(db, tokenHash)`  | The only cross-organisation lookup: finds an unclaimed, unexpired, unrevoked invitation by its token hash; also says whether it is reserved                                    |
-| `PostgresInvitationReservationStore` | Reserve, release, revoke and claim an invitation for one enrolment transaction (ADR-0021 section 6); each locks the row, is idempotent per transaction and audits only changes |
-| `CONSENT_PURPOSES`, `ConsentPurpose` | Spec 13.1 purposes (kept identical to the database constraint by a test)                                                                                                       |
-| `CLINICAL_MIGRATIONS_DIR`            | SQL migrations; apply with `pnpm --filter @endo/clinical-store migrate` (`ENDO_CLINICAL_MIGRATION_DATABASE_URL`)                                                               |
+| Export                               | What it does                                                                                                                                                                                                                                                 |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ClinicalDatabase`                   | Kysely table types matching the migrations                                                                                                                                                                                                                   |
+| `withOrg(db, orgId, fn)`             | Runs `fn` in a transaction with `app.org_id` set, which row-level security uses to isolate organisations. The setting ends with the transaction                                                                                                              |
+| `findLiveInvitation(db, tokenHash)`  | The only cross-organisation lookup: finds an unclaimed, unexpired, unrevoked invitation by its token hash; also says whether it is reserved                                                                                                                  |
+| `PostgresInvitationReservationStore` | Reserve, release, revoke (`revokeHeld`: only while this transaction holds it, after a decline) and claim an invitation for one enrolment transaction (ADR-0021 sections 6 and 11); each locks the row, is idempotent per transaction and audits only changes |
+| `CONSENT_PURPOSES`, `ConsentPurpose` | Spec 13.1 purposes (kept identical to the database constraint by a test)                                                                                                                                                                                     |
+| `CLINICAL_MIGRATIONS_DIR`            | SQL migrations; apply with `pnpm --filter @endo/clinical-store migrate` (`ENDO_CLINICAL_MIGRATION_DATABASE_URL`)                                                                                                                                             |
 
 ## Rules
 

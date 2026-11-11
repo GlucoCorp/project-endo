@@ -24,6 +24,8 @@ export interface EnrolmentCoordination {
   reserve(r: ReservationRequest): Promise<ReservationOutcome>;
   /** Section 6: ends this transaction's hold for good (idempotent; fenced). */
   release(r: ReservationRequest): Promise<ReservationOutcome>;
+  /** Section 11: after she declined, makes the invitation final, only while this transaction holds it. */
+  revokeHeld(r: ReservationRequest): Promise<ReservationOutcome>;
   /**
    * Section 10: creates the patient record and claims the invitation this transaction reserved,
    * in one clinical transaction (idempotent; a retry must name the same patient and person).
@@ -164,7 +166,22 @@ export function registerCoordinatorRoutes(app: FastifyInstance, deps: Coordinato
         ? { status: 'claimed', reserved_by: state.reservedBy, patient_id: state.patientId }
         : { status: state.status, reserved_by: state.reservedBy };
 
-  for (const op of ['reserve', 'release'] as const) {
+  const ops = (op: 'reserve' | 'release' | 'revoke') =>
+    op === 'reserve'
+      ? {
+          action: 'api.enrolment.invitation.reserved',
+          run: (r: ReservationRequest) => deps.coordination.reserve(r),
+        }
+      : op === 'release'
+        ? {
+            action: 'api.enrolment.invitation.released',
+            run: (r: ReservationRequest) => deps.coordination.release(r),
+          }
+        : {
+            action: 'api.enrolment.invitation.revoked',
+            run: (r: ReservationRequest) => deps.coordination.revokeHeld(r),
+          };
+  for (const op of ['reserve', 'release', 'revoke'] as const) {
     app.post(
       `/internal/v1/enrolment/invitations/${op}`,
       {
@@ -181,10 +198,7 @@ export function registerCoordinatorRoutes(app: FastifyInstance, deps: Coordinato
           auditEvent: {
             id: uuidv7(),
             actor: { id: null, role: 'system' },
-            action:
-              op === 'reserve'
-                ? 'api.enrolment.invitation.reserved'
-                : 'api.enrolment.invitation.released',
+            action: ops(op).action,
             resource: { type: 'enrolment_invitation', id: b.invitation_id },
             org_id: b.org_id,
             purpose_of_use: 'operations',
@@ -193,9 +207,7 @@ export function registerCoordinatorRoutes(app: FastifyInstance, deps: Coordinato
             request_id: request.id,
           },
         };
-        const out = await (op === 'reserve'
-          ? deps.coordination.reserve(r)
-          : deps.coordination.release(r));
+        const out = await ops(op).run(r);
         deps.onCommitted?.();
         return out.outcome === 'done'
           ? { outcome: 'done', changed: out.changed, state: stateBody(out.state) }

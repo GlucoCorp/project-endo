@@ -916,6 +916,34 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'done' });
     });
 
+    it('ADR-0021 s11 revokes after a decline only while this transaction holds it', async () => {
+      const inv = await newInvitation();
+      const tx = randomUUID();
+      // Not held by anyone: refused.
+      expect(await store.revokeHeld(req(inv, tx, 'revoke'))).toMatchObject({ outcome: 'refused' });
+      await store.reserve(req(inv, tx));
+      // Another transaction cannot revoke this hold.
+      expect(await store.revokeHeld(req(inv, randomUUID(), 'revoke'))).toMatchObject({
+        outcome: 'refused',
+        state: { status: 'live', reservedBy: tx },
+      });
+      const first = req(inv, tx, 'revoke');
+      expect(await store.revokeHeld(first)).toEqual({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'revoked', reservedBy: tx },
+      });
+      expect(await audited(first.auditEvent.id)).toBe(1);
+      expect(await store.revokeHeld(req(inv, tx, 'revoke'))).toMatchObject({
+        outcome: 'done',
+        changed: false,
+      });
+      // Final: the following release only fences, and no one can reserve it again.
+      expect(await store.release(req(inv, tx, 'release'))).toMatchObject({ outcome: 'done' });
+      expect(await store.reserve(req(inv, randomUUID()))).toMatchObject({ outcome: 'refused' });
+      expect(await store.state(ORG_A, inv)).toMatchObject({ status: 'revoked' });
+    });
+
     it('claims only for the holding transaction, creating the patient record, idempotently', async () => {
       const inv = await newInvitation();
       const tx = randomUUID();

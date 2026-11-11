@@ -114,6 +114,14 @@ function fake(
         state: { status: 'live', reservedBy: null },
       });
     },
+    revokeHeld: (r) => {
+      reservations.push({ op: 'revoke', ...r });
+      return Promise.resolve({
+        outcome: 'done',
+        changed: true,
+        state: { status: 'revoked', reservedBy: r.transactionId },
+      });
+    },
   };
 }
 
@@ -220,6 +228,7 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
       state: () => Promise.reject(new Error('store failed SYNTHETIC_PHI_MARKER')),
       reserve: () => Promise.reject(new Error('unused')),
       release: () => Promise.reject(new Error('unused')),
+      revokeHeld: () => Promise.reject(new Error('unused')),
       claim: () => Promise.reject(new Error('unused')),
     };
     const { post, audit, logs } = await setup(failing);
@@ -262,6 +271,17 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     });
     expect((await post('release', body)).json()).toMatchObject({ outcome: 'done', changed: false });
     expect(reservations.map((r) => r.op)).toEqual(['reserve', 'reserve', 'release']);
+    // ADR-0021 s11: after a decline the coordinator revokes the invitation it holds.
+    expect((await post('revoke', body)).json()).toEqual({
+      outcome: 'done',
+      changed: true,
+      state: { status: 'revoked', reserved_by: TX },
+    });
+    expect(reservations[3]).toMatchObject({
+      op: 'revoke',
+      transactionId: TX,
+      auditEvent: { action: 'api.enrolment.invitation.revoked', org_id: ORG },
+    });
     expect(reservations[0]).toMatchObject({
       orgId: ORG,
       invitationId: INVITATION,
@@ -279,6 +299,7 @@ describe('REQ-001 ADR-0021 section 13: API coordinator routes (identity service 
     const body = { org_id: ORG, invitation_id: INVITATION, transaction_id: TX };
     expect((await post('reserve', body, {})).statusCode).toBe(401);
     expect((await post('release', body, await asClinic())).statusCode).toBe(403);
+    expect((await post('revoke', body, await asClinic())).statusCode).toBe(403);
     expect((await post('reserve', { ...body, transaction_id: 'x' })).statusCode).toBe(400);
   });
 

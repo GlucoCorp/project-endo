@@ -36,7 +36,9 @@ The identity service coordinates patient enrolment. Built so far:
 - `src/enrolment/activation.ts`: activation (section 10), from `claiming` to `active` one durable step at a time, run on consent and swept every 30 seconds.
 - `src/enrolment/keycloak.ts`: the client for the extension's admin endpoint (scope `keycloak.enrolment.admin`; `IDENTITY_KEYCLOAK_REALM_URL`). Without it activation waits before the last step and the account stays quarantined.
 
-Cleanup and reconciliation jobs (section 11) come in a later slice.
+- `src/enrolment/cleanup.ts`: deadlines, cancellations and cleanup (sections 10 and 11), swept every 30 seconds. An overdue pre-claim transaction is cancelled. A cancel during `claiming` is settled by releasing the reservation: either the claim already won and activation goes on, or the transaction is cancelled. In `cancelling` it deletes the provisional Keycloak user, revokes the invitation if she declined, and releases it (fenced), then marks it `cancelled`. Each step is idempotent and retried; the sweep reports only how many are still waiting.
+
+Not yet: an alert when a transaction stays in `activating` or `cancelling` too long, and a second delete for a provisional user that Keycloak creates after cleanup has run (the quarantine guard already refuses such a user).
 
 ## Rules
 

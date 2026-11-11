@@ -429,6 +429,23 @@ export class PostgresEnrolmentStore {
     return rows.map((r) => r.id);
   }
 
+  /** Cleanup work (section 11): cancelling, or claiming with a cancellation requested. */
+  async listCleanup(limit = 50): Promise<string[]> {
+    const rows = await this.#db
+      .selectFrom('enrolment_transaction')
+      .select('id')
+      .where((eb) =>
+        eb.or([
+          eb('status', '=', 'cancelling'),
+          eb.and([eb('status', '=', 'claiming'), eb('cancel_requested', 'is not', null)]),
+        ]),
+      )
+      .orderBy('updated_at')
+      .limit(limit)
+      .execute();
+    return rows.map((r) => r.id);
+  }
+
   async get(id: string): Promise<StoredTransaction | null> {
     const row = await this.#db
       .selectFrom('enrolment_transaction')
