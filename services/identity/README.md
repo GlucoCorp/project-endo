@@ -6,11 +6,13 @@
 
 ## Public API (HTTP, internal)
 
-| Route                                    | Access                                        | Purpose                                                     |
-| ---------------------------------------- | --------------------------------------------- | ----------------------------------------------------------- |
-| `GET /healthz`                           | public (liveness)                             | Liveness                                                    |
-| `POST /internal/v1/persons`              | workload scope `identity.person.create` (API) | Create a person; email and name encrypted under her own key |
-| `POST /internal/v1/persons/{id}/erasure` | workload scope `identity.person.erase` (jobs) | REQ-009: mark erasure and crypto-shred her key; idempotent  |
+| Route                                    | Access                                                  | Purpose                                                                                                                                                         |
+| ---------------------------------------- | ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /healthz`                           | public (liveness)                                       | Liveness                                                                                                                                                        |
+| `POST /internal/v1/persons`              | workload scope `identity.person.create` (API)           | Create a person; email and name encrypted under her own key                                                                                                     |
+| `POST /internal/v1/persons/{id}/erasure` | workload scope `identity.person.erase` (jobs)           | REQ-009: mark erasure and crypto-shred her key; idempotent                                                                                                      |
+| `POST /internal/v1/subjects/resolve`     | workload scope `identity.subject.resolve` (bff-clinic)  | ADR-0019: the person for a clinician's sign-in subject                                                                                                          |
+| `POST /internal/v1/patients/resolve`     | workload scope `identity.patient.resolve` (bff-patient) | REQ-001: a returning patient's person, patient record and organisation for her sign-in subject; exactly one record, otherwise refused (spec Section 24 item 22) |
 
 ## Enrolment coordinator (ADR-0021, in progress)
 

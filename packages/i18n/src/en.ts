@@ -17,6 +17,10 @@ export const en = {
   'enrol.before-start':
     'Do this at the clinic, on your own phone. Someone at the clinic will check a code with you.',
   'enrol.start': 'Start',
+  'home.title': 'Weekly check-in',
+  'home.sign-in': 'Sign in',
+  'home.signed-in': 'You are signed in. Your weekly check-in arrives here soon.',
+  'home.sign-out': 'Sign out',
   'enrol.no-link': 'Open the link your clinic gave you to set up your diary.',
   'enrol.link-invalid': 'This link cannot be used. Ask your clinic for a new one.',
   'enrol.locked':

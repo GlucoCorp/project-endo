@@ -52,12 +52,14 @@ resource "kubernetes_secret_v1" "keycloak" {
     KC_DB_PASSWORD              = random_password.db_owner["keycloak"].result
     KC_BOOTSTRAP_ADMIN_PASSWORD = random_password.keycloak_admin.result
     # Placeholders resolved by Keycloak when importing realm/endo-dev.json.
-    ENDO_BFF_PATIENT_CLIENT_SECRET     = random_password.oidc_client["patient"].result
-    ENDO_BFF_CLINICIAN_CLIENT_SECRET   = random_password.oidc_client["clinician"].result
-    ENDO_BFF_PATIENT_REDIRECT_URI      = "${var.bff_base_urls.patient}/auth/callback"
-    ENDO_BFF_CLINICIAN_REDIRECT_URI    = "${var.bff_base_urls.clinician}/auth/callback"
-    ENDO_BFF_PATIENT_POST_LOGOUT_URI   = "${var.bff_base_urls.patient}/"
-    ENDO_BFF_CLINICIAN_POST_LOGOUT_URI = "${var.bff_base_urls.clinician}/"
+    ENDO_BFF_PATIENT_CLIENT_SECRET   = random_password.oidc_client["patient"].result
+    ENDO_BFF_CLINICIAN_CLIENT_SECRET = random_password.oidc_client["clinician"].result
+    ENDO_BFF_PATIENT_REDIRECT_URI    = "${var.bff_base_urls.patient}/auth/callback"
+    # ADR-0021: the enrolment handoff returns to its own callback.
+    ENDO_BFF_PATIENT_ENROLMENT_REDIRECT_URI = "${var.bff_base_urls.patient}/auth/enrolment/callback"
+    ENDO_BFF_CLINICIAN_REDIRECT_URI         = "${var.bff_base_urls.clinician}/auth/callback"
+    ENDO_BFF_PATIENT_POST_LOGOUT_URI        = "${var.bff_base_urls.patient}/"
+    ENDO_BFF_CLINICIAN_POST_LOGOUT_URI      = "${var.bff_base_urls.clinician}/"
     # ADR-0019: Keycloak notifies the clinic BFF when a clinician session ends.
     ENDO_BFF_CLINICIAN_BACKCHANNEL_LOGOUT_URI = "${var.bff_base_urls.clinician}/auth/backchannel-logout"
   }

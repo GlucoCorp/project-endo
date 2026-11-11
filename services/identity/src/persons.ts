@@ -26,6 +26,16 @@ export interface PersonStore {
    * never resolve (erasure clears the subject in the same transaction).
    */
   resolveSubject(idpSubject: string): Promise<string | null>;
+  /**
+   * A returning patient's sign-in: the person for this subject and her patient records (each with
+   * its organisation), or null when the subject is unknown or erased.
+   */
+  resolvePatient(idpSubject: string): Promise<PatientResolution | null>;
+}
+
+export interface PatientResolution {
+  readonly personId: string;
+  readonly patients: readonly { readonly patientId: string; readonly orgId: string }[];
 }
 
 /** Field contexts bind each ciphertext to its person, field and row (AES-GCM associated data). */
@@ -94,6 +104,21 @@ export class PostgresPersonStore implements PersonStore {
       .executeTakeFirst();
     return row?.id ?? null;
   }
+
+  async resolvePatient(idpSubject: string): Promise<PatientResolution | null> {
+    const personId = await this.resolveSubject(idpSubject);
+    if (!personId) return null;
+    const links = await this.#db
+      .selectFrom('patient_link')
+      .select(['patient_record_id', 'org_id'])
+      .where('person_id', '=', personId)
+      .orderBy('created_at')
+      .execute();
+    return {
+      personId,
+      patients: links.map((l) => ({ patientId: l.patient_record_id, orgId: l.org_id })),
+    };
+  }
 }
 
 /** Dev and test stand-in: keeps only ciphertexts produced by the given cipher. */
@@ -132,5 +157,13 @@ export class InMemoryPersonStore implements PersonStore {
   resolveSubject(idpSubject: string): Promise<string | null> {
     const id = this.subjects.get(idpSubject);
     return Promise.resolve(id && !this.rows.get(id)?.erased ? id : null);
+  }
+
+  /** Dev and test: person id -> patient records. */
+  readonly links = new Map<string, { patientId: string; orgId: string }[]>();
+
+  async resolvePatient(idpSubject: string): Promise<PatientResolution | null> {
+    const personId = await this.resolveSubject(idpSubject);
+    return personId ? { personId, patients: this.links.get(personId) ?? [] } : null;
   }
 }

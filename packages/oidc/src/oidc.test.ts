@@ -81,6 +81,20 @@ describe('ADR-0019, ADR-0021 OIDC client', () => {
     expect(store.size).toBe(0);
   });
 
+  it('RISK-D01 drops expired attempts oldest first, keeping live ones', () => {
+    let t = NOW.getTime();
+    const store = new TransactionStore(() => t);
+    store.create('old-1');
+    store.create('old-2');
+    t += TRANSACTION_TTL_MS / 2;
+    const live = store.create('live');
+    t += TRANSACTION_TTL_MS / 2 + 1;
+    // The two oldest have expired; the newer one has not.
+    store.create('new');
+    expect(store.size).toBe(2);
+    expect(store.consume('live', live.state)).toBe(live);
+  });
+
   it('refuses new transactions beyond the cap', () => {
     const store = new TransactionStore(() => NOW.getTime());
     for (let i = 0; i < MAX_PENDING_TRANSACTIONS; i++) store.create('b');

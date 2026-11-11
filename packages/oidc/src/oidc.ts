@@ -64,10 +64,17 @@ export class TransactionStore {
     this.#now = now;
   }
 
+  /**
+   * Drops expired attempts, oldest first. The map keeps insertion order, so it stops at the first
+   * live one: each attempt is visited once over its life, never once per new attempt (a flood
+   * of sign-ins must not cost quadratic time). If the clock ever steps back, an expired attempt
+   * may stay a little longer, but `consume` checks its age again.
+   */
   #prune(): void {
     const t = this.#now();
     for (const [state, tx] of this.#tx) {
-      if (t - tx.createdAt > TRANSACTION_TTL_MS) this.#tx.delete(state);
+      if (t - tx.createdAt <= TRANSACTION_TTL_MS) break;
+      this.#tx.delete(state);
     }
   }
 

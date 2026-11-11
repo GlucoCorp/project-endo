@@ -292,6 +292,59 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     },
   );
 
+  // A returning patient's sign-in (REQ-001): her person and patient record for this subject.
+  // bff-patient only. Exactly one patient record signs in; more is not supported yet (spec
+  // Section 24), and none means she is not a patient (yet): both are refused.
+  app.post(
+    '/internal/v1/patients/resolve',
+    {
+      config: {
+        access: {
+          kind: 'workload',
+          scope: 'identity.patient.resolve',
+          action: 'identity.patient.resolve',
+          resourceId: () => null,
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['idp_issuer', 'idp_subject'],
+          properties: {
+            idp_issuer: { type: 'string', minLength: 1, maxLength: 512 },
+            idp_subject: { type: 'string', minLength: 1, maxLength: 255 },
+          },
+        },
+        response: {
+          200: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['person_id', 'patient_id', 'org_id'],
+            properties: {
+              person_id: { type: 'string' },
+              patient_id: { type: 'string' },
+              org_id: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const { idp_issuer, idp_subject } = request.body as {
+        idp_issuer: string;
+        idp_subject: string;
+      };
+      const unknown = () => new ProblemError(404, 'identity.subject_unknown', 'Not found.');
+      if (idp_issuer !== deps.idpIssuer) throw unknown();
+      const found = await deps.persons.resolvePatient(idp_subject);
+      const only = found?.patients.length === 1 ? found.patients[0] : undefined;
+      if (!found || !only) throw unknown();
+      await auditResult(request, 'identity.patient.resolved', found.personId);
+      return { person_id: found.personId, patient_id: only.patientId, org_id: only.orgId };
+    },
+  );
+
   // An authorised request that then failed (validation, not found, storage) is audited as an
   // error. The response is already sent, so a failure here is logged, never swallowed silently.
   app.addHook('onResponse', async (request, reply) => {

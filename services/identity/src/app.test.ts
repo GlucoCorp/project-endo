@@ -20,6 +20,7 @@ async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: bool
   const api = await generateServiceKeyPair();
   const jobs = await generateServiceKeyPair();
   const clinic = await generateServiceKeyPair();
+  const patient = await generateServiceKeyPair();
   const cipher = new FieldCipher(
     new DevKeyManager('test'),
     new InMemoryPatientKeyStore(),
@@ -47,6 +48,7 @@ async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: bool
       api: { publicJwk: api.publicJwk, scopes: ['identity.person.create'] },
       jobs: { publicJwk: jobs.publicJwk, scopes: ['identity.person.erase'] },
       'bff-clinic': { publicJwk: clinic.publicJwk, scopes: ['identity.subject.resolve'] },
+      'bff-patient': { publicJwk: patient.publicJwk, scopes: ['identity.patient.resolve'] },
     }),
     audit: new AuditWriter(store),
     persons,
@@ -57,10 +59,22 @@ async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: bool
   const apiSigner = new WorkloadTokenSigner(api.privateJwk, 'api');
   const jobsSigner = new WorkloadTokenSigner(jobs.privateJwk, 'jobs');
   const clinicSigner = new WorkloadTokenSigner(clinic.privateJwk, 'bff-clinic');
+  const patientSigner = new WorkloadTokenSigner(patient.privateJwk, 'bff-patient');
   const auth = async (signer: WorkloadTokenSigner, scope: string) => ({
     authorization: `Bearer ${await signer.sign([scope], 'identity')}`,
   });
-  return { app, persons, cipher, audit, logs, apiSigner, jobsSigner, clinicSigner, auth };
+  return {
+    app,
+    persons,
+    cipher,
+    audit,
+    logs,
+    apiSigner,
+    jobsSigner,
+    clinicSigner,
+    patientSigner,
+    auth,
+  };
 }
 
 describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => {
@@ -237,6 +251,48 @@ describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => 
       url: `/internal/v1/persons/${id}/erasure`,
       headers: await auth(jobsSigner, 'identity.person.erase'),
     });
+    expect((await resolve()).statusCode).toBe(404);
+  });
+
+  it('REQ-001 resolves a returning patient for the patient BFF only, with exactly one record', async () => {
+    const { app, persons, auth, patientSigner, clinicSigner, apiSigner } = await setup();
+    const created = await app.inject({
+      method: 'POST',
+      url: '/internal/v1/persons',
+      headers: await auth(apiSigner, 'identity.person.create'),
+      payload: {},
+    });
+    const id = created.json<{ person_id: string }>().person_id;
+    persons.subjects.set('kc-patient', id);
+    const resolve = async (signer = patientSigner, issuer = 'https://kc.test/realms/endo-dev') =>
+      app.inject({
+        method: 'POST',
+        url: '/internal/v1/patients/resolve',
+        headers: await auth(signer, 'identity.patient.resolve'),
+        payload: { idp_issuer: issuer, idp_subject: 'kc-patient' },
+      });
+    // A person with no patient record is not a patient.
+    expect((await resolve()).statusCode).toBe(404);
+    const record = {
+      patientId: '01900000-0000-7000-8000-0000000000e2',
+      orgId: '01900000-0000-7000-8000-0000000000e3',
+    };
+    persons.links.set(id, [record]);
+    const ok = await resolve();
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({
+      person_id: id,
+      patient_id: record.patientId,
+      org_id: record.orgId,
+    });
+    // Only the patient BFF holds this scope; another issuer never resolves.
+    expect((await resolve(clinicSigner)).statusCode).toBe(401);
+    expect((await resolve(patientSigner, 'https://evil.test/realms/x')).statusCode).toBe(404);
+    // Two records: not supported yet, refused rather than guessed.
+    persons.links.set(id, [
+      record,
+      { ...record, patientId: '01900000-0000-7000-8000-0000000000e4' },
+    ]);
     expect((await resolve()).statusCode).toBe(404);
   });
 

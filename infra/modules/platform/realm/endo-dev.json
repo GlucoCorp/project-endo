@@ -264,7 +264,10 @@
       "frontchannelLogout": false,
       "fullScopeAllowed": false,
       "consentRequired": false,
-      "redirectUris": ["${ENDO_BFF_PATIENT_REDIRECT_URI}"],
+      "redirectUris": [
+        "${ENDO_BFF_PATIENT_REDIRECT_URI}",
+        "${ENDO_BFF_PATIENT_ENROLMENT_REDIRECT_URI}"
+      ],
       "webOrigins": [],
       "attributes": {
         "pkce.code.challenge.method": "S256",
