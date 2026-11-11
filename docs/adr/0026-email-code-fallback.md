@@ -1,6 +1,6 @@
 # ADR-0026: Email one-time code fallback, and how email is sent
 
-- Status: **proposed**. It needs the product owner's approval: it adds a runtime component (a mail server) and a dev tool image (spec 0 rule 3).
+- Status: accepted (product owner, 2026-11-11), including the Postfix (IPL-1.0) and Mailpit images
 - Date: 2026-11-11
 - Requirements/Risks: spec 2.1, 10.1, 12.4, 18.2, Section 24 item 17; ADR-0015, ADR-0017 section 4, ADR-0021, ADR-0023; REQ-001, RISK-S04
 
