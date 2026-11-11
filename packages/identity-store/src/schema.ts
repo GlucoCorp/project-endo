@@ -11,6 +11,9 @@ export interface IdentityDatabase {
     display_name_encrypted: string | null;
     created_at: Generated<Date>;
     deleted_at: Date | null;
+    /** Migration 0008 (ADR-0026): blind index of her confirmed email address. */
+    email_index: string | null;
+    email_confirmed_at: Date | null;
   };
   person_key: {
     person_id: string;
@@ -76,6 +79,27 @@ export interface IdentityDatabase {
   enrolment_reservation: {
     transaction_id: string;
     reserved_at: Generated<Date>;
+  };
+  /** Migration 0008 (ADR-0026): the wrapped blind-index key, written once. */
+  identity_index_key: {
+    purpose: 'email';
+    wrapped_key: string;
+    created_at: Generated<Date>;
+  };
+  /** Migration 0008 (ADR-0026): email one-time code requests. */
+  email_code: {
+    id: string;
+    purpose: 'sign-in' | 'confirm';
+    person_id: string | null;
+    address_index: string;
+    source_index: string;
+    code_wrapped_key: string | null;
+    code_mac: string | null;
+    pending_email: string | null;
+    created_at: Generated<Date>;
+    expires_at: Generated<Date>;
+    attempts: Generated<number>;
+    used_at: Date | null;
   };
   patient_link: {
     person_id: string;

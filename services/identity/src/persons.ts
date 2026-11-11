@@ -86,6 +86,9 @@ export class PostgresPersonStore implements PersonStore {
         .set((eb) => ({
           deleted_at: eb.fn.coalesce('deleted_at', eb.fn<Date>('now', [])),
           idp_subject: null,
+          // Her address can no longer find her (ADR-0026); its ciphertext dies with her key.
+          email_index: null,
+          email_confirmed_at: null,
         }))
         .where('id', '=', personId)
         .execute();
