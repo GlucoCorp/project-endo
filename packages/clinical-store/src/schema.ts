@@ -86,4 +86,67 @@ export interface ClinicalDatabase {
     /** Migration 0007: when she chose, at enrolment only; shortly before `decided_at`. */
     chosen_at: Date | null;
   };
+  /** Migration 0008: per-patient wrapped data keys (spec 11.2) and their shredding tombstones. */
+  patient_key: { patient_id: string; org_id: string; wrapped: Buffer; created_at: Generated<Date> };
+  patient_key_shredded: { patient_id: string; org_id: string; shredded_at: Generated<Date> };
+  treatment_episode: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    prescriber_id: string;
+    line_id: string;
+    previous_episode_id: string | null;
+    treatment_system: string;
+    treatment_code: string;
+    adherence_mode: AdherenceMode;
+    dose_text: string;
+    start_date: string;
+    review_interval_weeks: number;
+    review_date: Generated<string>;
+    time_zone: string | null;
+    instrument_version: string;
+    status: Generated<EpisodeStatus>;
+    created_at: Generated<Date>;
+    confirmed_at: Generated<Date | null>;
+    closed_at: Generated<Date | null>;
+  };
+  goal: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    goal_template_code: string | null;
+    text_encrypted: string | null;
+    created_at: Generated<Date>;
+  };
+  check_in: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    week_index: number;
+    idempotency_key: string;
+    request_hash: string;
+    answers: unknown;
+    instrument_version: string;
+    client_created_at: Date;
+    submitted_at: Generated<Date>;
+    is_late: Generated<boolean>;
+  };
+  red_flag_event: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    idempotency_key: string;
+    flags: string[];
+    instrument_version: string;
+    shown_at: Date;
+    acknowledged_at: Date | null;
+    recorded_at: Generated<Date>;
+    team_notified_at: Generated<Date | null>;
+  };
 }
+
+export type EpisodeStatus = 'draft' | 'active' | 'in_review' | 'closed';
+export type AdherenceMode = 'daily' | 'device_or_injection';

@@ -318,6 +318,9 @@ importers:
 
   packages/clinical-store:
     dependencies:
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@endo/db':
         specifier: workspace:*
         version: link:../db

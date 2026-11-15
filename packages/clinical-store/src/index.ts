@@ -49,3 +49,19 @@ export type { OutboxHealth, RelayResult } from './outbox.ts';
 
 /** Directory of this package's SQL migrations, for runMigrations() from @endo/db. */
 export const CLINICAL_MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+export { PostgresEpisodeStore, PostgresPatientKeyStore } from './episodes.ts';
+export type {
+  CheckInOutcome,
+  CheckInSubmission,
+  ConfirmOutcome,
+  Episode,
+  EpisodeConfirmation,
+  EpisodeStore,
+  NewEpisode,
+  RedFlagOutcome,
+  RedFlagReport,
+  SavedCheckIn,
+  StoredCheckIn,
+  StoredRedFlag,
+} from './episodes.ts';
+export type { AdherenceMode, EpisodeStatus } from './schema.ts';
