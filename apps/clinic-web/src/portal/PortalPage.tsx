@@ -59,6 +59,11 @@ export function PortalPage() {
           <p>
             <a href="/reviews">{t('desk.queue-title')}</a>
           </p>
+          {session.role === 'org_admin' && (
+            <p>
+              <a href="/admin">{t('admin.title')}</a>
+            </p>
+          )}
           <Enrolments portal={portal} />
           <DraftEpisode portal={portal} />
         </>

@@ -128,4 +128,26 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
       (request, reply) =>
         pass(request, reply, 'POST', `/v1/patients/${patient(request)}/surgery-checks${suffix}`),
     );
+
+  // M5 organisation admin (REQ-010): settings and members. The API allows org_admin only.
+  app.get('/v1/org/settings', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/org/settings'),
+  );
+  app.post(
+    '/v1/org/settings',
+    { config: session, bodyLimit: 2048, schema: { body: { type: 'object' } } },
+    (request, reply) => pass(request, reply, 'POST', '/v1/org/settings'),
+  );
+  app.get('/v1/org/clinicians', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/org/clinicians'),
+  );
+  app.post(
+    '/v1/org/clinicians/:id',
+    { config: session, bodyLimit: 256, schema: { body: { type: 'object' } } },
+    (request, reply) => {
+      const id = (request.params as { id?: string }).id ?? '';
+      if (!UUID.test(id)) throw new ProblemError(404, 'clinician.not_found', 'Not found.');
+      return pass(request, reply, 'POST', `/v1/org/clinicians/${id}`);
+    },
+  );
 }

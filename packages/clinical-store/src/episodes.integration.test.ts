@@ -12,6 +12,7 @@ import {
   PostgresPatientKeyStore,
   PostgresVerdictStore,
   PostgresDeletionStore,
+  PostgresOrgAdminStore,
   PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
@@ -1068,8 +1069,19 @@ describe.skipIf(!url)(
             })
           ).id,
         ).toBe(req.id);
+        expect(await deletions.identityRefOf(ORG_A, randomUUID())).toBeNull();
         // Concurrent first requests (after a cancel) return one request, never an error.
         expect(await deletions.cancel(ORG_A, pat, audit('x'))).toBe(true);
+        // A database error other than the one-open-request race is passed on.
+        await expect(
+          deletions.request({
+            id: 'not-a-uuid',
+            orgId: ORG_A,
+            patientId: pat,
+            identityRef: ref,
+            auditEvent: audit('x'),
+          }),
+        ).rejects.toThrow();
         const both = await Promise.all(
           [0, 1, 2].map(() =>
             deletions.request({
@@ -1159,6 +1171,96 @@ describe.skipIf(!url)(
         // The request itself is kept, and cannot be undone or removed.
         await expect(
           asApi((cl) => cl.query('DELETE FROM deletion_request WHERE patient_id = $1', [pat])),
+        ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('REQ-010 organisation admin (migration 0015)', () => {
+      it('keeps settings per organisation and never leaves one without an active admin', async () => {
+        const orgAdmin = new PostgresOrgAdminStore(apiDb);
+        const adminId = randomUUID();
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+          [adminId, ORG_A, randomUUID()],
+        );
+        expect(await orgAdmin.settings(ORG_A)).toMatchObject({
+          languages: ['en'],
+          updatedAt: null,
+        });
+        const saved = await orgAdmin.saveSettings({
+          orgId: ORG_A,
+          clinicianId: adminId,
+          defaultReviewIntervalWeeks: 8,
+          languages: ['en', 'sw'],
+          emergencyNumber: '112',
+          auditEvent: audit('org.settings.updated'),
+        });
+        expect(saved).toMatchObject({
+          defaultReviewIntervalWeeks: 8,
+          languages: ['en', 'sw'],
+          emergencyNumber: '112',
+        });
+        expect(saved.updatedAt).toBeInstanceOf(Date);
+        // Another organisation sees its own (defaults), never these.
+        expect((await orgAdmin.settings(ORG_B)).emergencyNumber).toBeNull();
+        await expect(
+          orgAdmin.saveSettings({
+            orgId: ORG_A,
+            clinicianId: adminId,
+            defaultReviewIntervalWeeks: 2,
+            languages: ['en'],
+            emergencyNumber: '112',
+            auditEvent: audit('x'),
+          }),
+        ).rejects.toThrow(/check/);
+        await expect(
+          orgAdmin.saveSettings({
+            orgId: ORG_A,
+            clinicianId: adminId,
+            defaultReviewIntervalWeeks: null,
+            languages: ['EN; DROP'],
+            emergencyNumber: null,
+            auditEvent: audit('x'),
+          }),
+        ).rejects.toThrow(/check/);
+
+        const members = await orgAdmin.members(ORG_A);
+        expect(members.map((m) => m.clinicianId)).toEqual(
+          expect.arrayContaining([CLIN_A, adminId]),
+        );
+        expect(await orgAdmin.members(ORG_B)).not.toContainEqual(
+          expect.objectContaining({ clinicianId: CLIN_A }),
+        );
+        // Deactivate and reactivate a clinician.
+        const change = (clinicianId: string, role: 'clinician' | 'org_admin', active: boolean) =>
+          orgAdmin.changeMember({
+            orgId: ORG_A,
+            clinicianId,
+            role,
+            active,
+            auditEvent: audit('x'),
+          });
+        expect(await change(CLIN_A, 'clinician', false)).toBe('changed');
+        expect(await change(CLIN_A, 'clinician', false)).toBe('unchanged');
+        expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
+        expect(await change(randomUUID(), 'clinician', true)).toBe('not_found');
+        // The last active admin cannot be removed or demoted...
+        expect(await change(adminId, 'org_admin', false)).toBe('last_admin');
+        expect(await change(adminId, 'clinician', true)).toBe('last_admin');
+        // ...but can once there is another.
+        expect(await change(CLIN_A, 'org_admin', true)).toBe('changed');
+        expect(await change(adminId, 'clinician', true)).toBe('changed');
+        expect(await change(CLIN_A, 'clinician', true)).toBe('last_admin');
+        // Any other database error is passed on, never mistaken for a refusal.
+        await expect(change('not-a-uuid', 'clinician', true)).rejects.toThrow();
+        // Leave CLIN_A as it was for other tests.
+        expect(await change(adminId, 'org_admin', true)).toBe('changed');
+        expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
+        // The API role cannot change anything else about a member.
+        await expect(
+          asApi((c) =>
+            c.query('UPDATE clinician SET identity_ref = $1 WHERE id = $2', [randomUUID(), CLIN_A]),
+          ),
         ).rejects.toThrow(/permission denied/);
       });
     });

@@ -43,6 +43,7 @@ import {
   type ReviewStore,
   type ShareLinkStore,
   PostgresDeletionStore,
+  PostgresOrgAdminStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -224,6 +225,7 @@ async function main(): Promise<void> {
   let verdicts: VerdictService | undefined;
   let links: ShareLinkStore | undefined;
   let deletions: PostgresDeletionStore | undefined;
+  let orgAdmin: PostgresOrgAdminStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -253,6 +255,7 @@ async function main(): Promise<void> {
     verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
     links = new PostgresShareLinkStore(db);
     deletions = new PostgresDeletionStore(db);
+    orgAdmin = new PostgresOrgAdminStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -374,6 +377,12 @@ async function main(): Promise<void> {
             content,
             cipherFor: episodes.cipherFor,
             deployed: isDeployedEnvironment(config.ENDO_ENV),
+            ...(orgAdmin
+              ? {
+                  defaultIntervalWeeks: async (orgId: string) =>
+                    (await orgAdmin.settings(orgId)).defaultReviewIntervalWeeks,
+                }
+              : {}),
           },
         }
       : {}),
@@ -389,6 +398,7 @@ async function main(): Promise<void> {
           },
         }
       : {}),
+    ...(orgAdmin ? { orgAdmin: { orgAdmin } } : {}),
     ...(reviews && links && deletions
       ? {
           dataRights: {

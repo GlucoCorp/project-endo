@@ -205,6 +205,15 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0015: organisation settings (REQ-010). */
+  org_settings: {
+    org_id: string;
+    default_review_interval_weeks: number | null;
+    languages: Generated<string[]>;
+    emergency_number: string | null;
+    updated_at: Generated<Date>;
+    updated_by: string;
+  };
   /** Migration 0014: account deletion requests (REQ-009). */
   deletion_request: {
     id: string;

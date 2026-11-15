@@ -287,6 +287,19 @@ Row-level security. After 14 days `patient_erase` destroys her key first, then e
 | `deletion_request.erased_at`          | When her clinical data and key were destroyed                                    | as above                                                             | as above                                                                                                         | S1          |
 | `deletion_request.identity_erased_at` | When the identity service confirmed her identity key was shredded                | as above                                                             | as above                                                                                                         | S1          |
 
+### Organisation settings — `packages/clinical-store/migrations/0015` (M5)
+
+Row-level security; changed by the organisation admin only, each change audited. No patient data.
+
+| Column                                       | Purpose                                           | Legal basis                                                             | Retention                               | Sensitivity |
+| -------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------- | ----------- |
+| `org_settings.org_id`                        | Organisation (row-level security)                 | Legitimate interest: running the service for the organisation (REQ-010) | While the organisation uses the service | S0          |
+| `org_settings.default_review_interval_weeks` | Review interval used when a draft names none      | as above                                                                | as above                                | S0          |
+| `org_settings.languages`                     | Languages the apps offer                          | as above                                                                | as above                                | S0          |
+| `org_settings.emergency_number`              | Local emergency number for her urgent-care screen | as above                                                                | as above                                | S0          |
+| `org_settings.updated_at`                    | When last changed (database clock)                | as above                                                                | as above                                | S0          |
+| `org_settings.updated_by`                    | Which admin changed them (opaque clinician id)    | as above                                                                | as above                                | S1          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

@@ -299,3 +299,39 @@ describe('REQ-005, REQ-006 the clinic desk passes the review calls to the API', 
     ).toBe(404);
   });
 });
+
+describe('REQ-010 the clinic desk passes organisation admin calls to the API', () => {
+  it('reads and saves settings and members with CSRF; a bad member id never reaches the API', async () => {
+    const { app, seen, active, activeCsrf } = await setup(() => json(200, { ok: true }));
+    for (const url of ['/v1/org/settings', '/v1/org/clinicians'])
+      expect((await app.inject({ url, headers: { cookie: active } })).statusCode).toBe(200);
+    const post = (url: string, payload: object) =>
+      app.inject({
+        method: 'POST',
+        url,
+        headers: {
+          cookie: active,
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          'x-csrf-token': activeCsrf,
+          'idempotency-key': '0190a000-0000-4000-8000-000000000003',
+        },
+        payload,
+      });
+    expect(
+      (await post('/v1/org/settings', { languages: ['en'], emergency_number: null })).statusCode,
+    ).toBe(200);
+    const member = '01900000-0000-7000-8000-0000000001c1';
+    expect(
+      (await post(`/v1/org/clinicians/${member}`, { role: 'clinician', active: false })).statusCode,
+    ).toBe(200);
+    expect(new URL(seen[seen.length - 1]?.url ?? 'http://x').pathname).toBe(
+      `/v1/org/clinicians/${member}`,
+    );
+    const before = seen.length;
+    expect(
+      (await post('/v1/org/clinicians/nope', { role: 'clinician', active: false })).statusCode,
+    ).toBe(404);
+    expect(seen).toHaveLength(before);
+  });
+});

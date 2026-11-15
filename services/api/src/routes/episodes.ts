@@ -21,6 +21,8 @@ export interface EpisodeRouteDeps {
   readonly now: () => Date;
   /** Synthetic placeholder treatments are refused in staging and production. */
   readonly deployed: boolean;
+  /** REQ-010: the organisation's review interval default, used when a draft names none. */
+  readonly defaultIntervalWeeks?: (orgId: string) => Promise<number | null>;
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
@@ -289,7 +291,8 @@ export function registerEpisodeRoutes(app: FastifyInstance, deps: EpisodeRouteDe
         adherenceMode: t.adherenceMode,
         doseText: b.dose_text,
         startDate: b.start_date,
-        reviewIntervalWeeks: b.review_interval_weeks ?? 12,
+        reviewIntervalWeeks:
+          b.review_interval_weeks ?? (await deps.defaultIntervalWeeks?.(orgId)) ?? 12,
         instrumentVersion: instrument.version,
         auditEvent: audit(request, 'episode.drafted', 'treatment_episode', id, orgId, 'treatment'),
       });
