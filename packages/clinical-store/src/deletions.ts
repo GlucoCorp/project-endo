@@ -61,7 +61,18 @@ export class PostgresDeletionStore implements DeletionStore {
     this.#db = db;
   }
 
-  request(r: Parameters<DeletionStore['request']>[0]): Promise<DeletionStatus> {
+  async request(r: Parameters<DeletionStore['request']>[0]): Promise<DeletionStatus> {
+    try {
+      return await this.#request(r);
+    } catch (error) {
+      // Two first requests at once: the loser hits the one-open-request index; it returns the
+      // winner's request, as a repeated request does.
+      if ((error as { code?: unknown } | null)?.code === '23505') return this.#request(r);
+      throw error;
+    }
+  }
+
+  #request(r: Parameters<DeletionStore['request']>[0]): Promise<DeletionStatus> {
     return withOrg(this.#db, r.orgId, async (trx) => {
       const open = await trx
         .selectFrom('deletion_request')

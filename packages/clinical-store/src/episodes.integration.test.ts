@@ -1068,6 +1068,20 @@ describe.skipIf(!url)(
             })
           ).id,
         ).toBe(req.id);
+        // Concurrent first requests (after a cancel) return one request, never an error.
+        expect(await deletions.cancel(ORG_A, pat, audit('x'))).toBe(true);
+        const both = await Promise.all(
+          [0, 1, 2].map(() =>
+            deletions.request({
+              id: randomUUID(),
+              orgId: ORG_A,
+              patientId: pat,
+              identityRef: ref,
+              auditEvent: audit('x'),
+            }),
+          ),
+        );
+        expect(new Set(both.map((b) => b.id)).size).toBe(1);
         // Not due yet: nothing happens.
         expect(await deletions.erase(ORG_A, pat, audit('x'))).toBe(false);
         expect((await deletions.due()).map((d) => d.patientId)).not.toContain(pat);
