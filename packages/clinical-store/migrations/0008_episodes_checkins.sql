@@ -32,7 +32,10 @@ CREATE TABLE treatment_episode (
   treatment_system       text        NOT NULL CHECK (treatment_system IN (
                            'http://www.whocc.no/atc', 'http://snomed.info/sct',
                            'http://www.nlm.nih.gov/research/umls/rxnorm',
-                           'https://dmd.nhs.uk')),
+                           'https://dmd.nhs.uk',
+                           -- Synthetic placeholders for development only; the API refuses them in
+                           -- staging and production (packages/config/src/synthetic.ts).
+                           'urn:endo:synthetic')),
   treatment_code         text        NOT NULL CHECK (treatment_code ~ '^[A-Za-z0-9.-]{1,32}$'),
   -- Which adherence question applies (spec 6.1 Q7): daily count, or still in place / given.
   adherence_mode         text        NOT NULL CHECK (adherence_mode IN ('daily', 'device_or_injection')),
