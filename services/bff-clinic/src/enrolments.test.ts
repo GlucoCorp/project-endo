@@ -243,3 +243,59 @@ describe('REQ-002 the clinic portal drafts treatment episodes through the API', 
     ).toBe(502);
   });
 });
+
+describe('REQ-005, REQ-006 the clinic desk passes the review calls to the API', () => {
+  const PATIENT = '01900000-0000-7000-8000-0000000000a1';
+  const EPISODE = '01900000-0000-7000-8000-0000000000e5';
+  it('reads the queue and review, and posts the decision and pre-surgery check with CSRF', async () => {
+    const { app, seen, active, activeCsrf } = await setup(() => json(200, { ok: true }));
+    expect(
+      (await app.inject({ url: '/v1/reviews/queue', headers: { cookie: active } })).statusCode,
+    ).toBe(200);
+    const review = `/v1/patients/${PATIENT}/episodes/${EPISODE}/review`;
+    expect((await app.inject({ url: review, headers: { cookie: active } })).statusCode).toBe(200);
+    expect(new URL(seen[seen.length - 1]?.url ?? 'http://x').pathname).toBe(review);
+    const post = (url: string, headers: Record<string, string> = {}) =>
+      app.inject({
+        method: 'POST',
+        url,
+        headers: {
+          cookie: active,
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          'x-csrf-token': activeCsrf,
+          'idempotency-key': '0190a000-0000-4000-8000-000000000002',
+          ...headers,
+        },
+        payload: { decision: 'stop' },
+      });
+    expect((await post(`/v1/patients/${PATIENT}/episodes/${EPISODE}/decision`)).statusCode).toBe(
+      200,
+    );
+    expect((await post(`/v1/patients/${PATIENT}/surgery-checks/preview`)).statusCode).toBe(200);
+    expect((await post(`/v1/patients/${PATIENT}/surgery-checks`)).statusCode).toBe(200);
+    expect(
+      (
+        await app.inject({
+          url: `/v1/patients/${PATIENT}/surgery-checks`,
+          headers: { cookie: active },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await post(`/v1/patients/${PATIENT}/episodes/${EPISODE}/decision`, {
+          'x-csrf-token': 'wrong',
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await app.inject({
+          url: `/v1/patients/${PATIENT}/episodes/nope/review`,
+          headers: { cookie: active },
+        })
+      ).statusCode,
+    ).toBe(404);
+  });
+});

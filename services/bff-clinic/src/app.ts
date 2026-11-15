@@ -42,7 +42,7 @@ import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
-export const PORTAL_PATHS = ['/', '/enrolments'] as const;
+export const PORTAL_PATHS = ['/', '/enrolments', '/reviews'] as const;
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =

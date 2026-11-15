@@ -56,6 +56,9 @@ export function PortalPage() {
         </>
       ) : (
         <>
+          <p>
+            <a href="/reviews">{t('desk.queue-title')}</a>
+          </p>
           <Enrolments portal={portal} />
           <DraftEpisode portal={portal} />
         </>

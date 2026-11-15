@@ -1,4 +1,5 @@
 import { Outlet, createRootRoute, createRoute, createRouter } from '@tanstack/react-router';
+import { DeskPage } from './desk/DeskPage.tsx';
 import { PortalPage } from './portal/PortalPage.tsx';
 
 const root = createRootRoute({ component: () => <Outlet /> });
@@ -9,7 +10,9 @@ const enrolments = createRoute({
   component: PortalPage,
 });
 
-export const router = createRouter({ routeTree: root.addChildren([home, enrolments]) });
+const reviews = createRoute({ getParentRoute: () => root, path: '/reviews', component: DeskPage });
+
+export const router = createRouter({ routeTree: root.addChildren([home, enrolments, reviews]) });
 
 declare module '@tanstack/react-router' {
   interface Register {

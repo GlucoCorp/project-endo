@@ -88,4 +88,44 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
     { config: session, bodyLimit: 4096, schema: { body: { type: 'object' } } },
     (request, reply) => pass(request, reply, 'POST', `/v1/patients/${patient(request)}/episodes`),
   );
+
+  // M4 clinician desk (REQ-005, REQ-006): the queue, the review, the decision, the pre-surgery
+  // check. Same checks: session, organisation, Origin and CSRF (hook); ids checked as UUIDs.
+  const episode = (request: FastifyRequest) => {
+    const id = (request.params as { id?: string }).id ?? '';
+    if (!UUID.test(id)) throw new ProblemError(404, 'episode.not_found', 'Not found.');
+    return id;
+  };
+  app.get('/v1/reviews/queue', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/reviews/queue'),
+  );
+  app.get('/v1/patients/:patientId/episodes/:id/review', { config: session }, (request, reply) =>
+    pass(
+      request,
+      reply,
+      'GET',
+      `/v1/patients/${patient(request)}/episodes/${episode(request)}/review`,
+    ),
+  );
+  app.post(
+    '/v1/patients/:patientId/episodes/:id/decision',
+    { config: session, bodyLimit: 8192, schema: { body: { type: 'object' } } },
+    (request, reply) =>
+      pass(
+        request,
+        reply,
+        'POST',
+        `/v1/patients/${patient(request)}/episodes/${episode(request)}/decision`,
+      ),
+  );
+  app.get('/v1/patients/:patientId/surgery-checks', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', `/v1/patients/${patient(request)}/surgery-checks`),
+  );
+  for (const suffix of ['', '/preview'] as const)
+    app.post(
+      `/v1/patients/:patientId/surgery-checks${suffix}`,
+      { config: session, bodyLimit: 2048, schema: { body: { type: 'object' } } },
+      (request, reply) =>
+        pass(request, reply, 'POST', `/v1/patients/${patient(request)}/surgery-checks${suffix}`),
+    );
 }
