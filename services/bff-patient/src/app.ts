@@ -31,7 +31,7 @@ export type BffAuth =
       /**
        * Spec 10.1: export, deletion, share links and consent changes need a recent sign-in. Every
        * sign-in asks for her passkey again (`prompt=login`, `max_age=0`) and makes a new session,
-       * so a session younger than RECENT_SIGN_IN_MS is a recent sign-in.
+       * so a session whose passkey use (`authenticatedAt`) is within RECENT_SIGN_IN_MS is a recent sign-in.
        */
       readonly recentSignIn?: true;
     }
@@ -161,7 +161,7 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     // Spec 10.1 app lock: a locked session reaches only the lock screen until she signs in again.
     if (session.locked && !auth.allowLocked)
       throw new ProblemError(401, 'authn.locked', 'Unlock to continue.');
-    if (auth.recentSignIn && (deps.now ?? Date.now)() - session.createdAt > RECENT_SIGN_IN_MS)
+    if (auth.recentSignIn && (deps.now ?? Date.now)() - session.authenticatedAt > RECENT_SIGN_IN_MS)
       throw new ProblemError(401, 'authn.reauth_required', 'Sign in again to continue.');
     request.claims = session.claims;
   });

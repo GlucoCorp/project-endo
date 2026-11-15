@@ -228,3 +228,46 @@ describe('REQ-009 export and deletion through the BFF; spec 10.1 recent sign-in'
     ).toBe(400);
   });
 });
+
+describe('spec 10.1 recent sign-in survives activation honestly', () => {
+  it('counts from her first passkey, not from the session rotation at activation', async () => {
+    let clock = Date.now();
+    const store = new DevSessionStore('test', () => clock);
+    const tx = randomUUID();
+    const pending = await store.createConsentPending(tx, 'kc-subject');
+    clock += 11 * 60_000; // she reads the consent screens for 11 minutes
+    const token = await store.rotate(pending, tx, 'kc-subject', CLAIMS);
+    expect(token).not.toBeNull();
+    const session = await store.resolve(token ?? '');
+    expect(session?.authenticatedAt).toBe(clock - 11 * 60_000);
+    const service = await generateServiceKeyPair();
+    const app = await createBffInstance({
+      logLevel: 'silent',
+      sessions: store,
+      signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
+      apiBaseUrl: 'http://api.internal',
+      fetch: () => Promise.resolve(json(200, {})),
+      now: () => clock,
+    });
+    registerHistoryProxy(app, {
+      signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
+      workload: new WorkloadTokenSigner(service.privateJwk, 'bff-patient'),
+      apiBaseUrl: 'http://api.internal',
+      patientOrigin: ORIGIN,
+      fetch: () => Promise.resolve(json(200, {})),
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/me/export',
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        cookie: `${SESSION_COOKIE}=${token ?? ''}`,
+      },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json<{ type: string }>().type).toContain('authn.reauth_required');
+  });
+});
