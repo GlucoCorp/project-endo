@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { t } from '../i18n.ts';
+import { DraftEpisode } from './DraftEpisode.tsx';
 import { Portal, type ConfirmResult, type Invitation, type SessionView } from './portal.ts';
 import styles from './portal.module.css';
 
@@ -54,7 +55,10 @@ export function PortalPage() {
           </ul>
         </>
       ) : (
-        <Enrolments portal={portal} />
+        <>
+          <Enrolments portal={portal} />
+          <DraftEpisode portal={portal} />
+        </>
       )}
     </main>
   );

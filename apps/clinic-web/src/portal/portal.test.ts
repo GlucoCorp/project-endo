@@ -134,3 +134,12 @@ describe('ADR-0019, ADR-0021 slice 3: clinic portal logic', () => {
     expect(await go()).toEqual({ kind: 'error', message: 'common.try-later' });
   });
 });
+
+describe('REQ-002 the session CSRF token is shared with drafting', () => {
+  it('exposes the token read from the session', async () => {
+    const { p } = portal([json(200, session('active'))]);
+    expect(p.csrfToken()).toBe('');
+    await p.session();
+    expect(p.csrfToken()).toBe('csrf-1');
+  });
+});

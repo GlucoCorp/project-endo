@@ -94,7 +94,7 @@ async function setup(api: (req: Request) => Response | Promise<Response>, confir
       headers: { cookie: active, 'x-csrf-token': activeCsrf, origin: ORIGIN, ...headers },
       payload,
     });
-  return { app, seen, active, confirm, verifier };
+  return { app, seen, active, activeCsrf, confirm, verifier };
 }
 
 const good = { code: '123456', identified: true, own_phone: true };
@@ -182,5 +182,64 @@ describe('REQ-001 ADR-0021 slice 3: the clinic portal lists invitations and conf
   it('refuses without a session', async () => {
     const { app } = await setup(() => json(200, {}));
     expect((await app.inject({ url: '/v1/enrolments' })).statusCode).toBe(401);
+  });
+});
+
+describe('REQ-002 the clinic portal drafts treatment episodes through the API', () => {
+  const PATIENT = '01900000-0000-7000-8000-0000000000a1';
+  it('lists the catalogue and sharing patients, and drafts with CSRF and an Idempotency-Key', async () => {
+    const { app, seen, active, activeCsrf } = await setup((req) => {
+      const path = new URL(req.url).pathname;
+      if (path === '/v1/catalogue') return json(200, { treatments: [] });
+      if (path === '/v1/patients') return json(200, { patients: [{ id: PATIENT }] });
+      return json(201, { id: 'e', status: 'draft' });
+    });
+    expect(
+      (await app.inject({ url: '/v1/catalogue', headers: { cookie: active } })).statusCode,
+    ).toBe(200);
+    const pts = await app.inject({ url: '/v1/patients', headers: { cookie: active } });
+    expect(pts.json()).toEqual({ patients: [{ id: PATIENT }] });
+    const key = '0190a000-0000-4000-8000-000000000001';
+    const post = (headers: Record<string, string>) =>
+      app.inject({
+        method: 'POST',
+        url: `/v1/patients/${PATIENT}/episodes`,
+        headers: { cookie: active, origin: ORIGIN, 'content-type': 'application/json', ...headers },
+        payload: { dose_text: 'x' },
+      });
+    const ok = await post({ 'x-csrf-token': activeCsrf, 'idempotency-key': key });
+    expect(ok.statusCode).toBe(201);
+    const last = seen[seen.length - 1];
+    expect(last?.headers.get('idempotency-key')).toBe(key);
+    expect(new URL(last?.url ?? 'http://x').pathname).toBe(`/v1/patients/${PATIENT}/episodes`);
+    expect((await post({ 'idempotency-key': key })).statusCode).toBe(403); // no CSRF
+    expect((await post({ 'x-csrf-token': activeCsrf })).statusCode).toBe(400); // no key
+    const bad = await app.inject({
+      url: '/v1/patients/nope/episodes',
+      headers: { cookie: active },
+    });
+    expect(bad.statusCode).toBe(404);
+  });
+
+  it('passes on only the API code when it refuses (for example, no consent)', async () => {
+    const { app, active } = await setup(() =>
+      json(422, { type: 'https://e/episode.unknown_treatment', detail: 'secret' }),
+    );
+    const res = await app.inject({
+      url: `/v1/patients/${PATIENT}/episodes`,
+      headers: { cookie: active },
+    });
+    expect(res.statusCode).toBe(422);
+    expect(res.body).not.toContain('secret');
+    const denied = await setup(() => json(403, {}));
+    expect(
+      (await denied.app.inject({ url: '/v1/patients', headers: { cookie: denied.active } }))
+        .statusCode,
+    ).toBe(403);
+    const down = await setup(() => Promise.reject(new TypeError('down')));
+    expect(
+      (await down.app.inject({ url: '/v1/catalogue', headers: { cookie: down.active } }))
+        .statusCode,
+    ).toBe(502);
   });
 });

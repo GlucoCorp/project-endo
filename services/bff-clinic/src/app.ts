@@ -38,6 +38,7 @@ import {
   type ClinicSession,
   type InMemoryClinicSessions,
 } from './sessions.ts';
+import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
@@ -463,6 +464,8 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   });
 
   if (deps.enrolment) registerClinicEnrolmentRoutes(app, deps.enrolment);
+  // REQ-002: drafting treatment episodes (same API and signer as enrolment).
+  if (deps.enrolment) registerClinicEpisodeRoutes(app, deps.enrolment);
   if (deps.appShell)
     registerAppShell(app, deps.appShell, {
       paths: PORTAL_PATHS,
