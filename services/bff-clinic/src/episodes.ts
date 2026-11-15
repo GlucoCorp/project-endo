@@ -1,6 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ProblemError, type ServiceTokenSigner } from '@endo/service-kit';
-import type { ClinicSession } from './sessions.ts';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -23,7 +22,7 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
     method: 'GET' | 'POST',
     path: string,
   ) => {
-    const session = request.session as ClinicSession | null;
+    const session = request.session;
     const active = session?.active;
     if (!session || !active)
       throw new ProblemError(403, 'authz.organisation_required', 'Choose an organisation first.');
