@@ -26,6 +26,8 @@ export interface Episode {
   readonly createdAt: Date;
   readonly confirmedAt: Date | null;
   readonly closedAt: Date | null;
+  /** Her Idempotency-Key for the confirmation (migration 0009). */
+  readonly confirmKey: string | null;
   /** Her goal, if set: a template code, or her own words still encrypted. */
   readonly goal: {
     readonly id: string;
@@ -57,6 +59,8 @@ export interface EpisodeConfirmation {
   readonly orgId: string;
   readonly patientId: string;
   readonly episodeId: string;
+  /** Her Idempotency-Key: kept with the confirmation (spec 9.1). */
+  readonly confirmKey: string;
   readonly goalId: string;
   readonly goal: { readonly templateCode: string } | { readonly textEncrypted: string };
   readonly timeZone: string;
@@ -182,6 +186,7 @@ const EPISODE_COLUMNS = [
   'e.created_at',
   'e.confirmed_at',
   'e.closed_at',
+  'e.confirm_key',
   'g.id as goal_id',
   'g.goal_template_code',
   'g.text_encrypted',
@@ -222,6 +227,7 @@ function toEpisode(r: EpisodeRow): Episode {
     createdAt: r.created_at,
     confirmedAt: r.confirmed_at,
     closedAt: r.closed_at,
+    confirmKey: r.confirm_key,
     goal: r.goal_id
       ? { id: r.goal_id, templateCode: r.goal_template_code, textEncrypted: r.text_encrypted }
       : null,
@@ -398,7 +404,7 @@ export class PostgresEpisodeStore implements EpisodeStore {
           .execute();
         await trx
           .updateTable('treatment_episode')
-          .set({ status: 'active', time_zone: c.timeZone })
+          .set({ status: 'active', time_zone: c.timeZone, confirm_key: c.confirmKey })
           .where('id', '=', c.episodeId)
           .execute();
         await queueAudit(trx, c.auditEvent);

@@ -259,8 +259,9 @@ export function validateAnswers(
 ): AnswerCheck {
   const a = new Map(Object.entries(obj(input)));
   const fail = (reason: string): AnswerCheck => ({ ok: false, reason });
+  // Q4 (bleeding) is not accepted until its approved scale and applicability rule are built:
+  // an answer that cannot be validated is never stored (review 2026-11-15).
   const allowed = new Set(['Q1', 'Q2', 'Q3', 'Q5', 'Q6', 'Q7', 'Q8', 'GIC', 'red_flags']);
-  if (instrument.bleedingScaleApproved) allowed.add('Q4');
   for (const k of a.keys()) if (!allowed.has(k)) return fail(`unexpected ${k}`);
   const out = new Map<string, number | string | readonly string[]>();
 

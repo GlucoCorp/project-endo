@@ -72,6 +72,7 @@ describe.skipIf(!url)(
         orgId: e.orgId,
         patientId: e.patientId,
         episodeId: e.id,
+        confirmKey: randomUUID(),
         goalId: randomUUID(),
         goal: { templateCode: 'walk_to_work' },
         timeZone: 'UTC',
@@ -194,6 +195,7 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           patientId: PAT_A,
           episodeId: d.id,
+          confirmKey: randomUUID(),
           goalId: randomUUID(),
           goal: { textEncrypted: 'v1.ciphertext-placeholder' },
           timeZone: 'Africa/Nairobi',
@@ -211,6 +213,7 @@ describe.skipIf(!url)(
               orgId: ORG_A,
               patientId: PAT_A,
               episodeId: d.id,
+              confirmKey: randomUUID(),
               goalId: randomUUID(),
               goal: { templateCode: 'x' },
               timeZone: 'UTC',
@@ -225,6 +228,7 @@ describe.skipIf(!url)(
               orgId: ORG_A,
               patientId: PAT_A,
               episodeId: other.id,
+              confirmKey: randomUUID(),
               goalId: randomUUID(),
               goal: { templateCode: 'x' },
               timeZone: 'UTC',
@@ -248,6 +252,7 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           patientId: PAT_A,
           episodeId: sw.id,
+          confirmKey: randomUUID(),
           goalId: randomUUID(),
           goal: { templateCode: 'x' },
           timeZone: 'UTC',
@@ -271,7 +276,7 @@ describe.skipIf(!url)(
             `UPDATE treatment_episode SET status = 'active', time_zone = 'UTC' WHERE id = $1`,
             [e.id],
           ),
-        ).rejects.toThrow(/needs her goal/);
+        ).rejects.toThrow(/needs her goal|idempotency key/);
         await expect(
           sqlAsApi(`UPDATE treatment_episode SET dose_text = 'more' WHERE id = $1`, [e.id]),
         ).rejects.toThrow(/permission denied/);
@@ -284,6 +289,13 @@ describe.skipIf(!url)(
             [randomUUID(), ORG_A, PAT_A, CLIN_A, randomUUID()],
           ),
         ).rejects.toThrow(/check/);
+        // Confirming with a goal but no key is refused; the key is set once.
+        await expect(
+          sqlAsApi(`UPDATE treatment_episode SET confirm_key = $2 WHERE id = $1`, [
+            e.id,
+            randomUUID(),
+          ]),
+        ).rejects.toThrow(/set once/);
         await expect(
           sqlAsApi(`DELETE FROM treatment_episode WHERE id = $1`, [e.id]),
         ).rejects.toThrow(/permission denied/);

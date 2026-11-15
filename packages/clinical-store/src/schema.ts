@@ -107,6 +107,8 @@ export interface ClinicalDatabase {
     instrument_version: string;
     /** Migration 0009: the clinician's Idempotency-Key for the draft. */
     creation_key: string;
+    /** Migration 0009: her Idempotency-Key for the confirmation, set once. */
+    confirm_key: string | null;
     status: Generated<EpisodeStatus>;
     created_at: Generated<Date>;
     confirmed_at: Generated<Date | null>;

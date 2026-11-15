@@ -57,14 +57,15 @@ describe('roles', () => {
 });
 
 describe('REQ-007 red-flag report key', () => {
-  it('is the same for the same check-in, different for another, and shaped as a UUID', async () => {
+  it('is the same for the same check-in and flags, different otherwise, and shaped as a UUID', async () => {
     const { redFlagKeyFor } = await import('./index.ts');
     const a = '0190a000-0000-4000-8000-000000000001';
-    const k = await redFlagKeyFor(a);
+    const k = await redFlagKeyFor(a, ['RF3', 'RF1']);
     expect(k).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
-    expect(await redFlagKeyFor(a)).toBe(k);
-    expect(await redFlagKeyFor('0190a000-0000-4000-8000-000000000002')).not.toBe(k);
-    expect(k).not.toBe(a);
-    await expect(redFlagKeyFor('not-a-uuid')).rejects.toThrow(TypeError);
+    expect(await redFlagKeyFor(a, ['RF1', 'RF3', 'RF1'])).toBe(k);
+    expect(await redFlagKeyFor(a, ['RF1', 'RF3', 'RF6'])).not.toBe(k);
+    expect(await redFlagKeyFor('0190a000-0000-4000-8000-000000000002', ['RF1', 'RF3'])).not.toBe(k);
+    await expect(redFlagKeyFor('not-a-uuid', ['RF1'])).rejects.toThrow(TypeError);
+    await expect(redFlagKeyFor(a, ['x'])).rejects.toThrow(TypeError);
   });
 });

@@ -470,10 +470,12 @@ export function registerEpisodeRoutes(app: FastifyInstance, deps: EpisodeRouteDe
             .encrypt(text, { patientId, field: 'goal.text', recordId: goalId }),
         };
       }
+      const confirmKey = request.headers['idempotency-key'] as string;
       const r = await deps.episodes.confirm({
         orgId,
         patientId,
         episodeId: id,
+        confirmKey,
         goalId,
         goal,
         timeZone: b.time_zone,
@@ -493,11 +495,37 @@ export function registerEpisodeRoutes(app: FastifyInstance, deps: EpisodeRouteDe
           'Another treatment in this line is still running.',
         );
       if (r.outcome === 'not_found') {
-        // Confirming again (a retry) answers with the episode as it is now.
+        // Already confirmed: a retry with the same key and the same request replays; anything
+        // else is refused, never answered with values she did not send (spec 9.1).
         const existing = await deps.episodes.get(orgId, id, patientId);
-        if (existing && existing.status !== 'draft' && existing.goal)
-          return view(existing, await deps.episodes.listCheckIns(orgId, id));
-        throw notFound();
+        if (!existing || existing.status === 'draft' || !existing.goal) throw notFound();
+        if (existing.confirmKey !== confirmKey)
+          throw new ProblemError(
+            409,
+            'episode.already_confirmed',
+            'This treatment has already started.',
+          );
+        let sameGoal = false;
+        if (b.goal.template_code !== undefined) {
+          sameGoal = existing.goal.templateCode === b.goal.template_code;
+        } else if (existing.goal.textEncrypted) {
+          const stored = await deps
+            .cipherFor(orgId)
+            .decrypt(existing.goal.textEncrypted, {
+              patientId,
+              field: 'goal.text',
+              recordId: existing.goal.id,
+            })
+            .catch(() => null);
+          sameGoal = stored === (b.goal.text ?? '').trim();
+        }
+        if (!sameGoal || existing.timeZone !== b.time_zone)
+          throw new ProblemError(
+            422,
+            'idempotency.key_reused',
+            'This Idempotency-Key was already used for a different request.',
+          );
+        return view(existing, await deps.episodes.listCheckIns(orgId, id));
       }
       deps.onCommitted();
       return view(r.episode, []);
@@ -653,10 +681,8 @@ export function registerEpisodeRoutes(app: FastifyInstance, deps: EpisodeRouteDe
       };
       const episode = await deps.episodes.get(orgId, id, patientId);
       if (!episode) throw notFound();
-      if (episode.instrumentVersion !== instrument.version)
-        throw new ProblemError(409, 'checkin.instrument_changed', 'Please reload the app.');
-      const checked = validateAnswers(instrument, episode.adherenceMode, b.week_index, b.answers);
-      // Red flags first and whatever else happens: they are recorded even if the rest is refused.
+      // Red flags first and whatever else happens: they are recorded even if the rest is refused,
+      // including when the episode follows an older instrument (review 2026-11-15).
       const flags = Array.isArray((b.answers as { red_flags?: unknown } | null)?.red_flags)
         ? (b.answers as { red_flags: unknown[] }).red_flags.filter(
             (f): f is string => typeof f === 'string' && knownFlags.has(f),
@@ -666,15 +692,24 @@ export function registerEpisodeRoutes(app: FastifyInstance, deps: EpisodeRouteDe
         const shownAt = b.red_flags_shown_at
           ? new Date(b.red_flags_shown_at)
           : new Date(b.client_created_at);
-        await recordRedFlags(
+        const set = [...new Set(flags)].sort();
+        // The key covers the flag set: a set that differs from her early report is a new event.
+        const rf = await recordRedFlags(
           request,
           id,
-          await redFlagKeyFor(key),
-          [...new Set(flags)].sort(),
+          await redFlagKeyFor(key, set),
+          set,
           shownAt,
           null,
         );
+        if (rf.outcome === 'conflict' || rf.outcome === 'not_found')
+          request.log.error({ event: 'red_flag.not_recorded', outcome: rf.outcome });
       }
+      // Validated against the instrument the episode follows. Only one version is served today,
+      // so an episode on another version cannot check in until its instrument is served too.
+      if (episode.instrumentVersion !== instrument.version)
+        throw new ProblemError(409, 'checkin.instrument_changed', 'Please reload the app.');
+      const checked = validateAnswers(instrument, episode.adherenceMode, b.week_index, b.answers);
       if (!checked.ok)
         // Never echoes her answers, nor which one failed (spec 9.1).
         throw new ProblemError(422, 'checkin.invalid_answers', 'Some answers could not be saved.');

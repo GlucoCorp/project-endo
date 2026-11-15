@@ -80,6 +80,7 @@ class FakeEpisodes implements EpisodeStore {
       createdAt: new Date(),
       confirmedAt: null,
       closedAt: null,
+      confirmKey: null,
       goal: null,
     };
     this.episodes.set(e.id, ep);
@@ -104,6 +105,7 @@ class FakeEpisodes implements EpisodeStore {
       status: 'active' as const,
       timeZone: c.timeZone,
       confirmedAt: new Date(),
+      confirmKey: c.confirmKey,
       goal: {
         id: c.goalId,
         templateCode: 'templateCode' in c.goal ? c.goal.templateCode : null,
@@ -232,8 +234,11 @@ async function setup(opts: { deployed?: boolean } = {}) {
       },
       key,
     );
-  const confirm = (id: string, goal: object = { template_code: 'synthetic_goal_a' }) =>
-    call('POST', `/v1/episodes/${id}/confirm`, 'patient', { goal, time_zone: 'UTC' });
+  const confirm = (
+    id: string,
+    goal: object = { template_code: 'synthetic_goal_a' },
+    key: string = randomUUID(),
+  ) => call('POST', `/v1/episodes/${id}/confirm`, 'patient', { goal, time_zone: 'UTC' }, key);
   return { app, call, draft, confirm, episodes, keys, audit, logs };
 }
 
@@ -315,7 +320,8 @@ describe('REQ-002 the clinician drafts, she confirms with her goal', () => {
   it('encrypts her own words under her key and shows them only back to her', async () => {
     const { draft, confirm, call, episodes, logs } = await setup();
     const id = (await draft()).json<{ id: string }>().id;
-    const res = await confirm(id, { text: `  ${MARKER}  ` });
+    const confirmKey = randomUUID();
+    const res = await confirm(id, { text: `  ${MARKER}  ` }, confirmKey);
     expect(res.statusCode).toBe(200);
     expect(res.json()).toMatchObject({
       status: 'active',
@@ -329,8 +335,13 @@ describe('REQ-002 the clinician drafts, she confirms with her goal', () => {
     expect(mine.json<{ episodes: { goal: { text: string } }[] }>().episodes[0]?.goal.text).toBe(
       MARKER,
     );
-    // A retry answers with the episode as it is now.
-    expect((await confirm(id, { text: MARKER })).statusCode).toBe(200);
+    // A retry with the same key and request replays; anything else is refused.
+    expect((await confirm(id, { text: MARKER }, confirmKey)).statusCode).toBe(200);
+    expect((await confirm(id, { text: 'other' }, confirmKey)).statusCode).toBe(422);
+    expect((await confirm(id, { template_code: 'synthetic_goal_a' }, confirmKey)).statusCode).toBe(
+      422,
+    );
+    expect((await confirm(id, { text: MARKER })).statusCode).toBe(409);
     expect(logs.join('\n')).not.toContain(MARKER);
   });
 
@@ -437,7 +448,7 @@ describe('REQ-003, REQ-007 weekly check-in and red flags', () => {
         shown_at: new Date(Date.now() - 1000).toISOString(),
         acknowledged_at: new Date().toISOString(),
       },
-      await redFlagKeyFor(key),
+      await redFlagKeyFor(key, ['RF1', 'RF3']),
     );
     expect(early.statusCode).toBe(201);
     const res = await call(
@@ -454,6 +465,44 @@ describe('REQ-003, REQ-007 weekly check-in and red flags', () => {
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({ red_flags: true });
     expect(episodes.redFlags).toHaveLength(1);
+  });
+
+  it('records a flag she added after her early report as a new event, never losing it', async () => {
+    const { call, id, episodes } = await active();
+    const key = randomUUID();
+    await call(
+      'POST',
+      `/v1/episodes/${id}/red-flags`,
+      'patient',
+      { flags: ['RF1'], shown_at: new Date().toISOString() },
+      await redFlagKeyFor(key, ['RF1']),
+    );
+    const res = await call(
+      'POST',
+      `/v1/episodes/${id}/checkins`,
+      'patient',
+      {
+        week_index: 1,
+        answers: { ...answers, Q1: 99, red_flags: ['RF1', 'RF6'] },
+        client_created_at: new Date().toISOString(),
+      },
+      key,
+    );
+    expect(res.statusCode).toBe(422);
+    expect(episodes.redFlags.map((r) => r.flags)).toEqual([['RF1'], ['RF1', 'RF6']]);
+  });
+
+  it('records red flags even for an episode on another instrument version', async () => {
+    const { call, id, episodes } = await active();
+    const e = episodes.episodes.get(id);
+    if (e) episodes.episodes.set(id, { ...e, instrumentVersion: '0.9.0' });
+    const res = await call('POST', `/v1/episodes/${id}/checkins`, 'patient', {
+      week_index: 1,
+      answers: { ...answers, red_flags: ['RF2'] },
+      client_created_at: new Date().toISOString(),
+    });
+    expect(res.statusCode).toBe(409);
+    expect(episodes.redFlags.map((r) => r.flags)).toEqual([['RF2']]);
   });
 
   it('refuses unknown flags, an acknowledgement before the screen, and another patient’s episode', async () => {
