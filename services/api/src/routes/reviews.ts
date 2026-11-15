@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { AuditEventInput } from '@endo/audit';
+import { AuditEventInput, type AuditEventInputType } from '@endo/audit';
 import type {
   EpisodeStore,
   NextTreatment,
@@ -28,7 +28,13 @@ export interface ReviewRouteDeps {
   readonly onCommitted: () => void;
   readonly now: () => Date;
   readonly deployed: boolean;
+  /** Per-patient audit of collection reads (the queue), so each shows in her access log. */
+  readonly audit: { write(e: AuditEventInputType): Promise<unknown> };
 }
+
+/** Most episodes the queue shows; more is flagged as `truncated` (red flags are never cut). */
+const QUEUE_LIMIT = 500;
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
 const DATE = '^[0-9]{4}-[0-9]{2}-[0-9]{2}$';
@@ -133,9 +139,23 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
     async (request) => {
       const { orgId } = org(request);
       const today = deps.now().toISOString().slice(0, 10);
-      const items = await deps.reviews.queue(orgId, today, 14);
+      const found = await deps.reviews.queue(orgId, today, 14, QUEUE_LIMIT + 1);
+      const items = found.slice(0, QUEUE_LIMIT);
+      // Spec 13.3: every patient the queue showed was accessed; one event each, before the reply.
+      for (const patientId of new Set(items.map((i) => i.patientId)))
+        await deps.audit.write({
+          actor: { id: request.subject?.id ?? null, role: request.subject?.role ?? 'clinician' },
+          action: 'review.queue.listed',
+          resource: { type: 'patient_record', id: patientId },
+          org_id: orgId,
+          purpose_of_use: 'treatment',
+          outcome: 'success',
+          reason: null,
+          request_id: request.id,
+        });
       return {
         verdicts: 'shadow',
+        truncated: found.length > QUEUE_LIMIT,
         items: items.map((i) => ({
           episode_id: i.episodeId,
           patient_id: i.patientId,
@@ -315,11 +335,16 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
         throw new ProblemError(422, 'review.added_required', 'Choose the treatment to add.');
       if ((b.decision === 'refer' || b.decision === 'stop') && (b.next || b.added))
         throw new ProblemError(422, 'review.no_next', 'Refer and stop open no new treatment.');
+      // Continue and add keep her treatment as it is (from the record); a change is a switch.
+      if (b.decision !== 'switch' && b.next)
+        throw new ProblemError(422, 'review.next_switch_only', 'To change a treatment, switch.');
+      if (b.decision !== 'add' && b.added)
+        throw new ProblemError(422, 'review.added_add_only', 'Choose add to add a treatment.');
       const nextInput =
         b.decision === 'switch'
           ? (b.next ?? same)
           : b.decision === 'continue' || b.decision === 'add'
-            ? (b.next ?? same)
+            ? same
             : null;
       const next = nextInput ? toNext(nextInput) : null;
       const added = b.decision === 'add' && b.added ? toNext(b.added) : null;
@@ -417,7 +442,8 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
       const { orgId } = org(request);
       const { patientId } = params(request);
       const { procedure } = request.body as { procedure: string };
-      return snapshotOf(await deps.reviews.treatmentFacts(orgId, patientId), procedure);
+      const snapshot = snapshotOf(await deps.reviews.treatmentFacts(orgId, patientId), procedure);
+      return { ...snapshot, snapshot_hash: sha256(canonicalJson(snapshot)) };
     },
   );
 
@@ -433,13 +459,24 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
           required: ['idempotency-key'],
           properties: { 'idempotency-key': { type: 'string', pattern: UUID } },
         },
-        body: { ...procedureBody, required: ['procedure', 'discussed_with_patient'] },
+        body: {
+          ...procedureBody,
+          required: ['procedure', 'discussed_with_patient', 'snapshot_hash'],
+          properties: {
+            ...procedureBody.properties,
+            // The preview she acknowledged: saved only if her record still matches it.
+            snapshot_hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+          },
+        },
       },
     },
     async (request, reply) => {
       const { orgId, clinicianId } = org(request);
       const { patientId } = params(request);
-      const { procedure } = request.body as { procedure: string };
+      const { procedure, snapshot_hash } = request.body as {
+        procedure: string;
+        snapshot_hash: string;
+      };
       const snapshot = snapshotOf(await deps.reviews.treatmentFacts(orgId, patientId), procedure);
       const id = uuidv7();
       const r = await deps.reviews.recordSurgeryCheck({
@@ -449,11 +486,27 @@ export function registerReviewRoutes(app: FastifyInstance, deps: ReviewRouteDeps
         clinicianId,
         procedure,
         snapshot,
+        fresh: sha256(canonicalJson(snapshot)) === snapshot_hash,
         idempotencyKey: request.headers['idempotency-key'] as string,
+        requestHash: sha256(canonicalJson({ patientId, procedure, snapshot_hash })),
         auditEvent: audit(request, 'surgery_check.recorded', 'surgery_check', id, orgId),
       });
-      if (!r.replay) deps.onCommitted();
-      return reply.code(r.replay ? 200 : 201).send({ id: r.id, snapshot });
+      if (r.outcome === 'conflict')
+        throw new ProblemError(
+          422,
+          'idempotency.key_reused',
+          'This Idempotency-Key was already used for a different request.',
+        );
+      if (r.outcome === 'stale')
+        throw new ProblemError(
+          409,
+          'surgery_check.evidence_changed',
+          'Her record changed since you looked. Review the check again.',
+        );
+      if (r.outcome === 'recorded') deps.onCommitted();
+      return reply
+        .code(r.outcome === 'recorded' ? 201 : 200)
+        .send({ id: r.id, snapshot: r.snapshot });
     },
   );
 

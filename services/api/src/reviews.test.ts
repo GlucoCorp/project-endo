@@ -63,7 +63,13 @@ const episode: Episode = {
 
 class FakeReviews implements ReviewStore {
   readonly decided: DecisionRequest[] = [];
-  readonly checks: { id: string; procedure: string; snapshot: unknown; key: string }[] = [];
+  readonly checks: {
+    id: string;
+    procedure: string;
+    snapshot: unknown;
+    key: string;
+    hash: string;
+  }[] = [];
   queue() {
     return Promise.resolve([
       {
@@ -136,14 +142,21 @@ class FakeReviews implements ReviewStore {
   }
   recordSurgeryCheck(c: Parameters<ReviewStore['recordSurgeryCheck']>[0]) {
     const same = this.checks.find((x) => x.key === c.idempotencyKey);
-    if (same) return Promise.resolve({ id: same.id, replay: true });
+    if (same)
+      return Promise.resolve(
+        same.hash === c.requestHash
+          ? { outcome: 'replay' as const, id: same.id, snapshot: same.snapshot }
+          : { outcome: 'conflict' as const },
+      );
+    if (!c.fresh) return Promise.resolve({ outcome: 'stale' as const });
     this.checks.push({
       id: c.id,
       procedure: c.procedure,
       snapshot: c.snapshot,
       key: c.idempotencyKey,
+      hash: c.requestHash,
     });
-    return Promise.resolve({ id: c.id, replay: false });
+    return Promise.resolve({ outcome: 'recorded' as const, id: c.id, snapshot: c.snapshot });
   }
   surgeryChecks() {
     return Promise.resolve(
@@ -203,6 +216,7 @@ async function setup(consent = true) {
   const kms = new DevKeyManager('test');
   const keys = new InMemoryPatientKeyStore();
   const logs: string[] = [];
+  const auditStore = new InMemoryAuditStore();
   const app = await buildApi({
     logLevel: 'info',
     logStream: { write: (l) => logs.push(l) },
@@ -210,7 +224,7 @@ async function setup(consent = true) {
       'bff-clinic': { publicJwk: clinicKeys.publicJwk, roles: ['clinician', 'org_admin'] },
       'bff-patient': { publicJwk: patientKeys.publicJwk, roles: ['patient'] },
     }),
-    audit: new AuditWriter(new InMemoryAuditStore()),
+    audit: new AuditWriter(auditStore),
     invitations: new InMemoryIdempotentInvitationStore(),
     memberships: new InMemoryMembershipStore().add(ORG, REF, {
       clinicianId: CLINICIAN_ID,
@@ -249,7 +263,8 @@ async function setup(consent = true) {
       },
       ...(payload ? { payload } : {}),
     });
-  return { call, reviews, logs };
+  const audited = async () => auditStore.readRange(1, 1000);
+  return { call, reviews, logs, audited };
 }
 
 const decision = (body: object, key?: string) => ({
@@ -260,11 +275,18 @@ const decision = (body: object, key?: string) => ({
 
 describe('REQ-005 the review queue and review', () => {
   it('lists the queue with red flags and overdue, and never a shadow verdict', async () => {
-    const { call } = await setup();
+    const { call, audited } = await setup();
     const res = await call('GET', '/v1/reviews/queue');
     expect(res.statusCode).toBe(200);
+    // Spec 13.3: each patient shown is audited against her record (her access log shows it).
+    expect(
+      (await audited()).filter(
+        (e) => e.action === 'review.queue.listed' && e.resource.id === PATIENT,
+      ),
+    ).toHaveLength(1);
     expect(res.json()).toMatchObject({
       verdicts: 'shadow',
+      truncated: false,
       items: [
         {
           episode_id: EPISODE,
@@ -350,6 +372,19 @@ describe('REQ-005 decisions', () => {
     ).toBe(201);
     expect(a.reviews.decided[0]?.added?.treatmentCode).toBe('SYNTH-DEVICE');
     expect(a.reviews.decided[0]?.next?.treatmentCode).toBe('SYNTH-DAILY');
+    // Continue and add keep her treatment; a different one is a switch.
+    expect(
+      (await (await setup()).call('POST', decision({}).url, { decision: 'continue', next }))
+        .statusCode,
+    ).toBe(422);
+    expect(
+      (await (await setup()).call('POST', decision({}).url, { decision: 'add', added: next, next }))
+        .statusCode,
+    ).toBe(422);
+    expect(
+      (await (await setup()).call('POST', decision({}).url, { decision: 'stop', added: next }))
+        .statusCode,
+    ).toBe(422);
     const unknown = { ...next, treatment: { system: 'urn:endo:synthetic', code: 'NOPE' } };
     expect(
       (await (await setup()).call('POST', decision({}).url, { decision: 'switch', next: unknown }))
@@ -388,20 +423,42 @@ describe('REQ-006 pre-surgery check', () => {
   it('is saved only once acknowledged, once per key, and is visible to her', async () => {
     const { call, reviews } = await setup();
     const url = `/v1/patients/${PATIENT}/surgery-checks`;
-    expect((await call('POST', url, { procedure: 'myomectomy' })).statusCode).toBe(400);
+    const hashOf = async (procedure: string) =>
+      (await call('POST', `${url}/preview`, { procedure })).json<{ snapshot_hash: string }>()
+        .snapshot_hash;
+    const myo = await hashOf('myomectomy');
+    const hyst = await hashOf('hysterectomy');
+    expect(myo).toMatch(/^[0-9a-f]{64}$/);
+    expect(myo).not.toBe(hyst);
+    const ok = { procedure: 'myomectomy', discussed_with_patient: true, snapshot_hash: myo };
     expect(
-      (await call('POST', url, { procedure: 'appendectomy', discussed_with_patient: true }))
+      (await call('POST', url, { procedure: 'myomectomy', snapshot_hash: myo })).statusCode,
+    ).toBe(400);
+    expect((await call('POST', url, { ...ok, procedure: 'appendectomy' })).statusCode).toBe(400);
+    // Without a preview, or after her record changed, nothing is saved.
+    expect(
+      (await call('POST', url, { procedure: 'myomectomy', discussed_with_patient: true }))
         .statusCode,
     ).toBe(400);
+    expect((await call('POST', url, { ...ok, snapshot_hash: 'f'.repeat(64) })).statusCode).toBe(
+      409,
+    );
+    // The acknowledgement covers the procedure it was shown for.
+    expect((await call('POST', url, { ...ok, snapshot_hash: hyst })).statusCode).toBe(409);
     const key = randomUUID();
+    expect((await call('POST', url, ok, key)).statusCode).toBe(201);
+    expect((await call('POST', url, ok, key)).statusCode).toBe(200);
+    // The same key for another procedure is refused, never reported as saved.
     expect(
-      (await call('POST', url, { procedure: 'myomectomy', discussed_with_patient: true }, key))
-        .statusCode,
-    ).toBe(201);
-    expect(
-      (await call('POST', url, { procedure: 'myomectomy', discussed_with_patient: true }, key))
-        .statusCode,
-    ).toBe(200);
+      (
+        await call(
+          'POST',
+          url,
+          { procedure: 'hysterectomy', discussed_with_patient: true, snapshot_hash: hyst },
+          key,
+        )
+      ).statusCode,
+    ).toBe(422);
     expect(reviews.checks).toHaveLength(1);
     expect((await call('GET', url)).json<{ checks: unknown[] }>().checks).toHaveLength(1);
     const mine = await call('GET', '/v1/me/surgery-checks', undefined, null, 'p');

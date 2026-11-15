@@ -103,8 +103,19 @@ export interface StoredSurgeryCheck {
   readonly acknowledgedAt: Date;
 }
 
+export type SurgeryCheckOutcome =
+  | { readonly outcome: 'recorded' | 'replay'; readonly id: string; readonly snapshot: unknown }
+  /** The key was used for another patient, procedure or snapshot. */
+  | { readonly outcome: 'conflict' }
+  /** Her record changed since the preview the clinician acknowledged: preview again. */
+  | { readonly outcome: 'stale' };
+
 export interface ReviewStore {
-  queue(orgId: string, today: string, horizonDays: number): Promise<QueueItem[]>;
+  /**
+   * Due within the horizon or overdue; episodes with red flags first, then by due date, at most
+   * `limit` (REQ-005: a long list never pushes a red flag off the end).
+   */
+  queue(orgId: string, today: string, horizonDays: number, limit?: number): Promise<QueueItem[]>;
   decide(r: DecisionRequest): Promise<DecisionOutcome>;
   decisions(orgId: string, patientId: string): Promise<StoredDecision[]>;
   treatmentFacts(orgId: string, patientId: string): Promise<TreatmentFacts[]>;
@@ -115,9 +126,12 @@ export interface ReviewStore {
     readonly clinicianId: string;
     readonly procedure: string;
     readonly snapshot: Readonly<Record<string, unknown>>;
+    /** Whether `snapshot` (read now) is the one the clinician acknowledged. */
+    readonly fresh: boolean;
     readonly idempotencyKey: string;
+    readonly requestHash: string;
     readonly auditEvent: Audit;
-  }): Promise<{ readonly id: string; readonly replay: boolean }>;
+  }): Promise<SurgeryCheckOutcome>;
   surgeryChecks(orgId: string, patientId: string): Promise<StoredSurgeryCheck[]>;
 }
 
@@ -140,7 +154,7 @@ export class PostgresReviewStore implements ReviewStore {
     this.#db = db;
   }
 
-  queue(orgId: string, today: string, horizonDays: number): Promise<QueueItem[]> {
+  queue(orgId: string, today: string, horizonDays: number, limit = 500): Promise<QueueItem[]> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(today))
       return Promise.reject(new TypeError('today must be YYYY-MM-DD'));
     return withOrg(this.#db, orgId, async (trx) => {
@@ -180,8 +194,20 @@ export class PostgresReviewStore implements ReviewStore {
         .where('e.org_id', '=', orgId)
         .where('e.status', 'in', ['active', 'in_review'])
         .where('e.review_date', '<=', addDays(today, horizonDays))
+        // Red flags first in SQL, before the limit (REQ-005).
+        .orderBy(
+          (eb) =>
+            eb.exists(
+              eb
+                .selectFrom('red_flag_event as rf')
+                .select('rf.id')
+                .whereRef('rf.episode_id', '=', 'e.id'),
+            ),
+          'desc',
+        )
         .orderBy('e.review_date')
-        .limit(500)
+        .orderBy('e.id')
+        .limit(limit)
         .execute();
       const verdicts = new Map<string, QueueItem['verdict']>();
       if (rows.length > 0) {
@@ -395,11 +421,15 @@ export class PostgresReviewStore implements ReviewStore {
       await lock(trx, 'surgery_check', c.clinicianId, c.idempotencyKey);
       const existing = await trx
         .selectFrom('surgery_check')
-        .select('id')
+        .select(['id', 'request_hash', 'snapshot'])
         .where('clinician_id', '=', c.clinicianId)
         .where('idempotency_key', '=', c.idempotencyKey)
         .executeTakeFirst();
-      if (existing) return { id: existing.id, replay: true };
+      if (existing)
+        return existing.request_hash === c.requestHash
+          ? { outcome: 'replay' as const, id: existing.id, snapshot: existing.snapshot }
+          : { outcome: 'conflict' as const };
+      if (!c.fresh) return { outcome: 'stale' as const };
       await trx
         .insertInto('surgery_check')
         .values({
@@ -410,13 +440,14 @@ export class PostgresReviewStore implements ReviewStore {
           procedure_code: c.procedure,
           snapshot: JSON.stringify(c.snapshot),
           idempotency_key: c.idempotencyKey,
+          request_hash: c.requestHash,
         })
         .execute();
       await trx
         .insertInto('audit_outbox')
         .values({ id: c.auditEvent.id, event: JSON.stringify(c.auditEvent) })
         .execute();
-      return { id: c.id, replay: false };
+      return { outcome: 'recorded' as const, id: c.id, snapshot: c.snapshot };
     });
   }
 

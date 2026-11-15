@@ -42,6 +42,9 @@ CREATE TABLE surgery_check (
                                                AND octet_length(snapshot::text) <= 32768),
   acknowledged_at  timestamptz NOT NULL DEFAULT now(),
   idempotency_key  uuid        NOT NULL,
+  -- SHA-256 of (patient, procedure, the hash of the snapshot she acknowledged): a retry with the
+  -- same key and another procedure or snapshot is refused, not reported as saved.
+  request_hash     text        NOT NULL CHECK (request_hash ~ '^[0-9a-f]{64}$'),
   UNIQUE (clinician_id, idempotency_key),
   FOREIGN KEY (patient_id, org_id) REFERENCES patient_record (id, org_id),
   FOREIGN KEY (clinician_id, org_id) REFERENCES clinician (id, org_id)
@@ -106,4 +109,4 @@ GRANT SELECT, INSERT (id, org_id, patient_id, episode_id, verdict_id, clinician_
   note_encrypted, next_episode_id, added_episode_id, idempotency_key, request_hash)
   ON review_decision TO endo_clinical_app;
 GRANT SELECT, INSERT (id, org_id, patient_id, clinician_id, procedure_code, snapshot,
-  idempotency_key) ON surgery_check TO endo_clinical_app;
+  idempotency_key, request_hash) ON surgery_check TO endo_clinical_app;

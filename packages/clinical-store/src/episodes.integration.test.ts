@@ -708,6 +708,10 @@ describe.skipIf(!url)(
         expect(
           (await reviews.queue(ORG_A, day(0), 14)).find((q) => q.episodeId === soon.id)?.redFlags,
         ).toBe(1);
+        // A limit cuts unflagged episodes first, never a red flag (ordered in SQL).
+        const top = await reviews.queue(ORG_A, day(0), 14, 1);
+        expect(top).toHaveLength(1);
+        expect(top[0]?.redFlags).toBeGreaterThan(0);
         await share(PAT_A, 'revoked');
         expect((await reviews.queue(ORG_A, day(0), 14)).map((q) => q.episodeId)).not.toContain(
           soon.id,
@@ -831,14 +835,34 @@ describe.skipIf(!url)(
           clinicianId: CLIN_A,
           procedure: 'hysterectomy',
           snapshot: { treatments: facts.length },
+          fresh: true,
           idempotencyKey: key,
+          requestHash: 'a'.repeat(64),
           auditEvent: audit('surgery_check.recorded'),
         };
-        expect(await reviews.recordSurgeryCheck(c)).toEqual({ id: c.id, replay: false });
-        expect(await reviews.recordSurgeryCheck({ ...c, id: randomUUID() })).toEqual({
+        // Evidence changed since the preview: nothing saved.
+        expect(
+          await reviews.recordSurgeryCheck({ ...c, idempotencyKey: randomUUID(), fresh: false }),
+        ).toEqual({ outcome: 'stale' });
+        expect(await reviews.recordSurgeryCheck(c)).toMatchObject({
+          outcome: 'recorded',
           id: c.id,
-          replay: true,
         });
+        expect(await reviews.recordSurgeryCheck({ ...c, id: randomUUID() })).toEqual({
+          outcome: 'replay',
+          id: c.id,
+          snapshot: c.snapshot,
+        });
+        // The same key for another procedure is refused, never reported as saved.
+        expect(
+          await reviews.recordSurgeryCheck({
+            ...c,
+            id: randomUUID(),
+            procedure: 'myomectomy',
+            requestHash: 'b'.repeat(64),
+          }),
+        ).toEqual({ outcome: 'conflict' });
+        expect(await reviews.surgeryChecks(ORG_A, PAT_A)).toHaveLength(1);
         expect((await reviews.surgeryChecks(ORG_A, PAT_A))[0]).toMatchObject({
           procedure: 'hysterectomy',
         });
@@ -849,6 +873,7 @@ describe.skipIf(!url)(
             id: randomUUID(),
             idempotencyKey: randomUUID(),
             procedure: 'appendectomy',
+            requestHash: 'c'.repeat(64),
           }),
         ).rejects.toThrow(/check/);
       });
@@ -890,6 +915,26 @@ describe.skipIf(!url)(
         });
         expect((await links.list(ORG_A, PAT_A)).map((l) => l.id)).toContain(link.id);
         expect(await links.list(ORG_B, PAT_A)).toEqual([]);
+        // 100 newer stopped links never hide a live one, from her list or her access log.
+        for (let i = 0; i < 101; i += 1) {
+          const id = randomUUID();
+          await links.create({
+            id,
+            orgId: ORG_A,
+            patientId: PAT_A,
+            tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
+            days: 1,
+            creationKey: randomUUID(),
+            auditEvent: audit('x'),
+          });
+          await links.revoke(ORG_A, PAT_A, id, audit('x'));
+        }
+        const listed = await links.list(ORG_A, PAT_A);
+        expect(listed.map((l) => l.id)).toContain(link.id);
+        expect(listed.length).toBeLessThanOrEqual(101);
+        expect(await links.ids(ORG_A, PAT_A)).toContain(link.id);
+        expect((await links.ids(ORG_A, PAT_A)).length).toBeGreaterThan(101);
+        expect(await links.ids(ORG_B, PAT_A)).toEqual([]);
         // Someone else's patient cannot revoke it; she can, once.
         expect(await links.revoke(ORG_A, PAT_A2, link.id, audit('x'))).toBe(false);
         expect(await links.revoke(ORG_A, PAT_A, link.id, audit('share_link.revoked'))).toBe(true);
