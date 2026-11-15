@@ -378,6 +378,55 @@ describe.skipIf(!url)(
         });
       });
 
+      it('keeps her acknowledgement when the check-in’s copy arrived first', async () => {
+        const e = await activate();
+        const key = randomUUID();
+        const shownAt = new Date(Date.now() - 60_000);
+        const base = {
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: e.id,
+          idempotencyKey: key,
+          flags: ['RF2'],
+          instrumentVersion: '1.0.0',
+          shownAt,
+        };
+        const first = await store.recordRedFlag({
+          ...base,
+          id: randomUUID(),
+          acknowledgedAt: null,
+          auditEvent: audit('x'),
+        });
+        expect(first.outcome).toBe('recorded');
+        const ack = new Date();
+        const again = await store.recordRedFlag({
+          ...base,
+          id: randomUUID(),
+          acknowledgedAt: ack,
+          auditEvent: audit('x'),
+        });
+        expect(again.outcome).toBe('replay');
+        const [stored] = await store.listRedFlags(ORG_A, e.id);
+        expect(stored?.acknowledgedAt?.getTime()).toBe(ack.getTime());
+        // Set once: a later different acknowledgement changes nothing.
+        await store.recordRedFlag({
+          ...base,
+          id: randomUUID(),
+          acknowledgedAt: new Date(),
+          auditEvent: audit('x'),
+        });
+        expect((await store.listRedFlags(ORG_A, e.id))[0]?.acknowledgedAt?.getTime()).toBe(
+          ack.getTime(),
+        );
+      });
+
+      it('refuses a key tombstone for another organisation’s patient', async () => {
+        // PAT_A belongs to organisation A; organisation B cannot shred (or block) her key.
+        await expect(new PostgresPatientKeyStore(apiDb, ORG_B).destroy(PAT_A)).rejects.toThrow(
+          /unknown patient/,
+        );
+      });
+
       it('is not recorded for a draft or someone else’s episode', async () => {
         const d = await store.createDraft(draft());
         expect(await report(d.id)).toEqual({ outcome: 'not_found' });

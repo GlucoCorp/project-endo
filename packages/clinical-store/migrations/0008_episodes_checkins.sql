@@ -169,12 +169,18 @@ BEGIN
           RAISE EXCEPTION 'patient key was shredded' USING ERRCODE = 'check_violation';
         END IF;
       ELSE
+        -- Only for a patient of this organisation: another organisation's tombstone must never
+        -- block or replace hers (review 2026-11-15).
+        IF NOT EXISTS (SELECT 1 FROM %I.patient_record
+                       WHERE id = NEW.patient_id AND org_id = NEW.org_id) THEN
+          RAISE EXCEPTION 'tombstone for an unknown patient' USING ERRCODE = 'check_violation';
+        END IF;
         DELETE FROM %I.patient_key WHERE patient_id = NEW.patient_id;
       END IF;
       RETURN NEW;
     END;
     $b$
-  $f$, s, s, s);
+  $f$, s, s, s, s);
 
   -- Episodes: the prescription is fixed once drafted; status moves forward only.
   --   draft -> active (she confirmed, with a goal) | closed (withdrawn)
@@ -315,16 +321,25 @@ BEGIN
         NEW.team_notified_at := NULL;
         RETURN NEW;
       END IF;
-      -- Only the care-team notification time may be set, once.
+      -- Fixed once recorded, except two times, each set once: her acknowledgement (when the
+      -- check-in's copy arrived before the urgent screen's own report) and the care-team
+      -- notification.
       IF ROW(NEW.id, NEW.org_id, NEW.patient_id, NEW.episode_id, NEW.idempotency_key, NEW.flags,
-             NEW.instrument_version, NEW.shown_at, NEW.acknowledged_at, NEW.recorded_at)
+             NEW.instrument_version, NEW.shown_at, NEW.recorded_at)
          IS DISTINCT FROM
          ROW(OLD.id, OLD.org_id, OLD.patient_id, OLD.episode_id, OLD.idempotency_key, OLD.flags,
-             OLD.instrument_version, OLD.shown_at, OLD.acknowledged_at, OLD.recorded_at)
-         OR OLD.team_notified_at IS NOT NULL OR NEW.team_notified_at IS NULL THEN
+             OLD.instrument_version, OLD.shown_at, OLD.recorded_at)
+         OR (OLD.acknowledged_at IS NOT NULL
+             AND NEW.acknowledged_at IS DISTINCT FROM OLD.acknowledged_at)
+         OR (OLD.team_notified_at IS NOT NULL
+             AND NEW.team_notified_at IS DISTINCT FROM OLD.team_notified_at)
+         OR (NEW.acknowledged_at IS NOT DISTINCT FROM OLD.acknowledged_at
+             AND NEW.team_notified_at IS NOT DISTINCT FROM OLD.team_notified_at) THEN
         RAISE EXCEPTION 'a red-flag event is fixed once recorded' USING ERRCODE = 'check_violation';
       END IF;
-      NEW.team_notified_at := clock_timestamp();
+      IF NEW.team_notified_at IS DISTINCT FROM OLD.team_notified_at THEN
+        NEW.team_notified_at := clock_timestamp();
+      END IF;
       RETURN NEW;
     END;
     $b$
@@ -379,4 +394,4 @@ GRANT SELECT, INSERT (id, org_id, patient_id, episode_id, week_index, idempotenc
   request_hash, answers, instrument_version, client_created_at) ON check_in TO endo_clinical_app;
 GRANT SELECT, INSERT (id, org_id, patient_id, episode_id, idempotency_key, flags,
   instrument_version, shown_at, acknowledged_at) ON red_flag_event TO endo_clinical_app;
-GRANT UPDATE (team_notified_at) ON red_flag_event TO endo_clinical_app;
+GRANT UPDATE (team_notified_at, acknowledged_at) ON red_flag_event TO endo_clinical_app;

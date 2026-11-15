@@ -424,7 +424,7 @@ export class PostgresEpisodeStore implements EpisodeStore {
         await lockKey(trx, 'red_flag', r.patientId, r.idempotencyKey);
         const existing = await trx
           .selectFrom('red_flag_event')
-          .select(['id', 'episode_id', 'flags', 'recorded_at'])
+          .select(['id', 'episode_id', 'flags', 'recorded_at', 'acknowledged_at', 'shown_at'])
           .where('patient_id', '=', r.patientId)
           .where('idempotency_key', '=', r.idempotencyKey)
           .executeTakeFirst();
@@ -432,9 +432,20 @@ export class PostgresEpisodeStore implements EpisodeStore {
           const same =
             existing.episode_id === r.episodeId &&
             JSON.stringify([...existing.flags].sort()) === JSON.stringify([...r.flags].sort());
-          return same
-            ? { outcome: 'replay' as const, id: existing.id, recordedAt: existing.recorded_at }
-            : { outcome: 'conflict' as const };
+          if (!same) return { outcome: 'conflict' as const };
+          // The urgent screen's own report may arrive after the check-in's copy: keep her
+          // acknowledgement (set once; the database refuses any other change).
+          if (
+            existing.acknowledged_at === null &&
+            r.acknowledgedAt !== null &&
+            r.acknowledgedAt >= existing.shown_at
+          )
+            await trx
+              .updateTable('red_flag_event')
+              .set({ acknowledged_at: r.acknowledgedAt })
+              .where('id', '=', existing.id)
+              .execute();
+          return { outcome: 'replay' as const, id: existing.id, recordedAt: existing.recorded_at };
         }
         const mine = await trx
           .selectFrom('treatment_episode')
