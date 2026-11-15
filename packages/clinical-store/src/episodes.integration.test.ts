@@ -1074,10 +1074,14 @@ describe.skipIf(!url)(
         ).rejects.toThrow(/permission denied/);
         expect(await deletions.erase(ORG_A, pat, audit('deletion.erased'))).toBe(true);
         expect(await deletions.erase(ORG_A, pat, audit('x'))).toBe(false);
-        for (const t of ['treatment_episode', 'goal', 'red_flag_event', 'check_in', 'consent'])
-          expect(
-            (await admin.query(`SELECT 1 FROM ${t} WHERE patient_id = $1`, [pat])).rowCount,
-          ).toBe(0);
+        for (const q of [
+          'SELECT 1 FROM treatment_episode WHERE patient_id = $1',
+          'SELECT 1 FROM goal WHERE patient_id = $1',
+          'SELECT 1 FROM red_flag_event WHERE patient_id = $1',
+          'SELECT 1 FROM check_in WHERE patient_id = $1',
+          'SELECT 1 FROM consent WHERE patient_id = $1',
+        ])
+          expect((await admin.query(q, [pat])).rowCount).toBe(0);
         expect(
           (await admin.query('SELECT 1 FROM patient_record WHERE id = $1', [pat])).rowCount,
         ).toBe(0);
