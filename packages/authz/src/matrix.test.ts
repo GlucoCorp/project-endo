@@ -114,6 +114,20 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  'share_link.manage_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'access_log.read_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'review.queue': {
     patient: '-',
     clinician: 'A',

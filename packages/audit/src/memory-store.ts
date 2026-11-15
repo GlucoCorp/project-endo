@@ -1,8 +1,13 @@
 import type { AuditEvent } from './schema.ts';
-import { AuditSequenceConflictError, type AuditStore } from './writer.ts';
+import {
+  AuditSequenceConflictError,
+  type AuditReader,
+  type AuditStore,
+  type ResourceRef,
+} from './writer.ts';
 
 /** Dev and test store. Enforces the same append-only, contiguous-sequence contract as production. */
-export class InMemoryAuditStore implements AuditStore {
+export class InMemoryAuditStore implements AuditStore, AuditReader {
   readonly #events: AuditEvent[] = [];
 
   head(): Promise<AuditEvent | null> {
@@ -27,5 +32,15 @@ export class InMemoryAuditStore implements AuditStore {
 
   readRange(fromSequence: number, limit: number): Promise<readonly AuditEvent[]> {
     return Promise.resolve(this.#events.filter((e) => e.sequence >= fromSequence).slice(0, limit));
+  }
+
+  forResources(refs: readonly ResourceRef[], limit: number): Promise<readonly AuditEvent[]> {
+    const keys = new Set(refs.map((r) => `${r.type}:${r.id}`));
+    return Promise.resolve(
+      this.#events
+        .filter((e) => e.resource.id !== null && keys.has(`${e.resource.type}:${e.resource.id}`))
+        .reverse()
+        .slice(0, limit),
+    );
   }
 }

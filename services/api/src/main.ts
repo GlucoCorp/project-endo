@@ -7,6 +7,7 @@ import {
   InMemoryAuditStore,
   PostgresAuditStore,
   type AuditDatabase,
+  type AuditReader,
   type AuditStore,
 } from '@endo/audit';
 import {
@@ -29,6 +30,7 @@ import {
   PostgresVerdictStore,
   PostgresReminderStore,
   PostgresReviewStore,
+  PostgresShareLinkStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -39,6 +41,7 @@ import {
   type EpisodeStore,
   type ReminderStore,
   type ReviewStore,
+  type ShareLinkStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -99,6 +102,8 @@ const Config = z.object({
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
   API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The patient BFF's workload key: a receiver's view of a share link (REQ-008), nothing else. */
+  API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
   API_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   API_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
@@ -197,7 +202,7 @@ async function main(): Promise<void> {
   const kms = new DevKeyManager(config.ENDO_ENV);
 
   // Spec 2.6: deployed environments must use the durable Postgres audit store. Fail closed.
-  let auditStore: AuditStore;
+  let auditStore: AuditStore & AuditReader;
   let closeAudit = (): Promise<void> => Promise.resolve();
   if (config.API_AUDIT_DATABASE_URL) {
     const pool = createPool(config.API_AUDIT_DATABASE_URL, { applicationName: 'endo-api-audit' });
@@ -216,6 +221,7 @@ async function main(): Promise<void> {
   let consents: ConsentStore;
   let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let verdicts: VerdictService | undefined;
+  let links: ShareLinkStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -243,6 +249,7 @@ async function main(): Promise<void> {
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
     verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
+    links = new PostgresShareLinkStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -335,6 +342,14 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      ...(config.API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            'bff-patient': {
+              publicJwk: config.API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.share.view'],
+            },
+          }
+        : {}),
     }),
     audit: auditWriter,
     invitations,
@@ -356,6 +371,18 @@ async function main(): Promise<void> {
             content,
             cipherFor: episodes.cipherFor,
             deployed: isDeployedEnvironment(config.ENDO_ENV),
+          },
+        }
+      : {}),
+    ...(reviews && links
+      ? {
+          history: {
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
           },
         }
       : {}),

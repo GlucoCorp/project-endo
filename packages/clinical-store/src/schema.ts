@@ -205,6 +205,18 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0013: share links (REQ-008). */
+  share_link: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    scope: Generated<string>;
+    token_hash: string;
+    created_at: Generated<Date>;
+    expires_at: Date;
+    revoked_at: Date | null;
+    creation_key: string;
+  };
   surgery_check: {
     id: string;
     org_id: string;

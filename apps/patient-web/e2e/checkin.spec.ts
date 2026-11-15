@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { expect, test, type BrowserContext, type Page } from '@playwright/test';
@@ -32,6 +33,11 @@ const api = {
   openWeeks: [1] as number[],
   done: [] as number[],
   calls: [] as { path: string; key: string | null; body: Record<string, unknown> }[],
+};
+const shared = {
+  made: false,
+  stopped: false,
+  hash: createHash('sha256').update('S'.repeat(43)).digest('hex'),
 };
 const content = {
   draft: true,
@@ -86,6 +92,57 @@ function fakeApi(url: URL, init: RequestInit): Response {
     body,
   });
   if (url.pathname === '/v1/me/episodes') return reply(200, { episodes: [episode()] });
+  // M4 (REQ-008): history, sharing, access log, and a receiver's view.
+  const card = {
+    id: EPISODE,
+    status: 'closed',
+    treatment: { code: 'SYNTH-DAILY', display: 'Synthetic daily tablet (placeholder)' },
+    dose_text: '1 tablet daily',
+    start_date: '2026-08-01',
+    review_date: '2026-10-24',
+    review_interval_weeks: 12,
+    goal: 'Synthetic goal A (placeholder)',
+    decision: 'switch',
+    weeks: [{ week_index: 1, is_late: false, answers: { Q1: 7, Q7: 7, Q8: ['none'] } }],
+  };
+  if (url.pathname === '/v1/me/history') return reply(200, { treatments: [card] });
+  if (url.pathname === '/v1/me/share-links' && init.method === 'POST') {
+    shared.made = true;
+    return reply(201, { id: 'l1', token: 'S'.repeat(43), expires_at: '2026-11-22T00:00:00Z' });
+  }
+  if (url.pathname === '/v1/me/share-links')
+    return reply(200, {
+      links: shared.made
+        ? [
+            {
+              id: '01900000-0000-7000-8000-0000000000d9',
+              created_at: '2026-11-15',
+              expires_at: '2026-11-22T00:00:00Z',
+              active: !shared.stopped,
+            },
+          ]
+        : [],
+    });
+  if (url.pathname.startsWith('/v1/me/share-links/') && init.method === 'DELETE') {
+    shared.stopped = true;
+    return new Response(null, { status: 204 });
+  }
+  if (url.pathname === '/v1/me/access-log')
+    return reply(200, {
+      events: [
+        {
+          at: '2026-11-15T10:00:00Z',
+          role: 'clinician',
+          action: 'patient_data.read',
+          purpose: 'treatment',
+          outcome: 'success',
+        },
+      ],
+    });
+  if (url.pathname === '/internal/v1/shared/view')
+    return body['token_hash'] === shared.hash
+      ? reply(200, { expires_at: '2026-11-22T00:00:00Z', treatments: [card] })
+      : reply(404, {});
   if (url.pathname === '/v1/me/checkin-content') return reply(200, content);
   if (url.pathname.endsWith('/confirm')) {
     api.status = 'active';
@@ -266,5 +323,40 @@ test('REQ-002, REQ-003, REQ-007 goal, a red flag, then an offline check-in synce
   // Quick exit: the screen goes, the session ends, the queue and its key are destroyed.
   await page.getByRole('button', { name: 'Quick exit' }).click();
   await expect(page).toHaveURL('about:blank');
+  expect(violations).toEqual([]);
+});
+
+test('REQ-008 her history, a share link the receiver opens, stopping it, and her access log', async ({
+  context,
+  page,
+  browser,
+}) => {
+  await signIn(context, page);
+  await page.goto(`${origin}/history`);
+  await expect(page.getByRole('heading', { name: 'Your treatments' })).toBeVisible();
+  await expect(page.getByText('“Synthetic goal A (placeholder)”')).toBeVisible();
+  await expect(page.getByRole('img', { name: /Weekly check-ins from 2026-08-01/ })).toBeVisible();
+  await expect(page.getByText('They do not see your name', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Make a link' }).click();
+  const link = await page.getByLabel('Share link').inputValue();
+  expect(link).toBe(`${origin}/shared#${'S'.repeat(43)}`);
+  await expect(page.getByText('A link works until 2026-11-22.')).toBeVisible();
+  await expect(page.getByText('2026-11-15 10:00: clinician, patient data read')).toBeVisible();
+
+  // The receiver: no session; the token never appears in a request URL or the address bar.
+  const other = await browser.newContext();
+  const receiver = await other.newPage();
+  const urls: string[] = [];
+  receiver.on('request', (r) => urls.push(r.url()));
+  await receiver.goto(link);
+  await expect(receiver.getByRole('heading', { name: 'Shared treatment summary' })).toBeVisible();
+  await expect(receiver.getByText('Shared until 2026-11-22.')).toBeVisible();
+  await expect(receiver.getByText('“Synthetic goal A (placeholder)”')).toBeVisible();
+  expect(receiver.url()).toBe(`${origin}/shared`);
+  expect(urls.some((u) => u.includes('S'.repeat(43)))).toBe(false);
+  await other.close();
+
+  await page.getByRole('button', { name: 'Stop sharing' }).click();
+  await expect(page.getByText('A link works until 2026-11-22.')).toHaveCount(0);
   expect(violations).toEqual([]);
 });

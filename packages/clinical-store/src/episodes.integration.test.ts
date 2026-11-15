@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
@@ -11,6 +11,7 @@ import {
   PostgresEpisodeStore,
   PostgresPatientKeyStore,
   PostgresVerdictStore,
+  PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
   type ClinicalDatabase,
@@ -849,6 +850,79 @@ describe.skipIf(!url)(
             procedure: 'appendectomy',
           }),
         ).rejects.toThrow(/check/);
+      });
+    });
+
+    describe('REQ-008 share links (migration 0013)', () => {
+      it('creates a link found only by its token hash while live, at most 30 days, revoked once', async () => {
+        const links = new PostgresShareLinkStore(apiDb);
+        const key = randomUUID();
+        const hash = createHash('sha256').update(randomUUID()).digest('hex');
+        const link = await links.create({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          tokenHash: hash,
+          days: 7,
+          creationKey: key,
+          auditEvent: audit('share_link.created'),
+        });
+        expect(link.replay).toBe(false);
+        // A retry with her key finds the same link (its token is never shown again).
+        const retry = await links.create({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
+          days: 7,
+          creationKey: key,
+          auditEvent: audit('x'),
+        });
+        expect(retry).toMatchObject({ id: link.id, replay: true });
+        const days = (link.expiresAt.getTime() - link.createdAt.getTime()) / 86_400_000;
+        expect(days).toBeGreaterThan(6.9);
+        expect(days).toBeLessThan(7.1);
+        expect(await links.findLive(hash)).toMatchObject({
+          id: link.id,
+          orgId: ORG_A,
+          patientId: PAT_A,
+        });
+        expect((await links.list(ORG_A, PAT_A)).map((l) => l.id)).toContain(link.id);
+        expect(await links.list(ORG_B, PAT_A)).toEqual([]);
+        // Someone else's patient cannot revoke it; she can, once.
+        expect(await links.revoke(ORG_A, PAT_A2, link.id, audit('x'))).toBe(false);
+        expect(await links.revoke(ORG_A, PAT_A, link.id, audit('share_link.revoked'))).toBe(true);
+        expect(await links.revoke(ORG_A, PAT_A, link.id, audit('x'))).toBe(false);
+        expect(await links.findLive(hash)).toBeNull();
+        // Even a caller asking for more than 30 days gets at most 30 (database clock).
+        const capped = createHash('sha256').update(randomUUID()).digest('hex');
+        await asApi(async (c) => {
+          await c.query(
+            `INSERT INTO share_link (id, org_id, patient_id, token_hash, expires_at, creation_key)
+           VALUES ($1, $2, $3, $4, now() + interval '90 days', $5)`,
+            [randomUUID(), ORG_A, PAT_A, capped, randomUUID()],
+          );
+          const r = await c.query(
+            `SELECT expires_at - created_at <= interval '30 days' AS ok FROM share_link WHERE token_hash = $1`,
+            [capped],
+          );
+          expect(r.rows[0]).toEqual({ ok: true });
+          await expect(
+            c.query('DELETE FROM share_link WHERE token_hash = $1', [capped]),
+          ).rejects.toThrow(/permission denied|not deleted/);
+        });
+        await expect(
+          links.create({
+            id: randomUUID(),
+            orgId: ORG_A,
+            patientId: PAT_A,
+            tokenHash: hash,
+            days: 31,
+            creationKey: randomUUID(),
+            auditEvent: audit('x'),
+          }),
+        ).rejects.toThrow(TypeError);
+        await expect(links.findLive('nope')).rejects.toThrow(TypeError);
       });
     });
 

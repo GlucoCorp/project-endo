@@ -41,6 +41,8 @@ export const ACTIONS = [
   'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
   'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
   'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
+  'share_link.manage_own', // REQ-008: she makes, lists and stops her share links
+  'access_log.read_own', // Spec 13.3: she sees who accessed her record
   'review.queue', // REQ-005: clinician's review queue (the store lists consented patients only)
   'reminders.manage_own', // Spec 15: she turns her weekly reminder on or off on a device
   'verdict.generate', // REQ-004: clinician asks for a (shadow) verdict on a consented patient's episode
@@ -168,6 +170,8 @@ export function can(
     case 'consent.update_own':
     case 'episode.confirm_own':
     case 'reminders.manage_own':
+    case 'share_link.manage_own':
+    case 'access_log.read_own':
     case 'checkin.submit':
     case 'own_data.export':
     case 'own_data.delete':

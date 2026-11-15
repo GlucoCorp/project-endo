@@ -79,6 +79,9 @@ export function HomePage() {
       {state.kind === 'signed-in' && (
         <>
           <TrialHome />
+          <p>
+            <a href="/history">{t('home.history')}</a>
+          </p>
           <p className={styles['muted']}>
             {t(state.appLock ? 'home.app-lock-on' : 'home.app-lock-off')}
           </p>

@@ -2,7 +2,7 @@ import { fileURLToPath } from 'node:url';
 export { AuditEventInput, AuditOutcome, PurposeOfUse, GENESIS_HASH } from './schema.ts';
 export type { AuditEvent, AuditEventInputType } from './schema.ts';
 export { AuditWriter, AuditSequenceConflictError, verifyChain, hashEvent } from './writer.ts';
-export type { AuditStore, ChainVerification } from './writer.ts';
+export type { AuditReader, AuditStore, ChainVerification, ResourceRef } from './writer.ts';
 export { InMemoryAuditStore } from './memory-store.ts';
 export { PostgresAuditStore } from './postgres-store.ts';
 export type { AuditDatabase } from './postgres-store.ts';

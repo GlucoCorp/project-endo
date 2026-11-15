@@ -16,6 +16,7 @@ import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts'
 import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 import { registerAppShell, type AppShell } from './app-shell.ts';
 import { registerEpisodeProxy } from './episodes.ts';
+import { registerHistoryProxy } from './history.ts';
 import { registerAppConfig, registerServiceWorker } from './service-worker.ts';
 import { registerSessionRoutes } from './session-routes.ts';
 
@@ -28,7 +29,7 @@ export type BffAuth =
   | { readonly kind: 'enrolment' }
   | {
       readonly kind: 'public';
-      readonly reason: 'liveness' | 'app-shell' | 'sign-out' | 'sign-in';
+      readonly reason: 'liveness' | 'app-shell' | 'sign-out' | 'sign-in' | 'shared-view';
     };
 
 declare module 'fastify' {
@@ -55,6 +56,7 @@ export function isBffAuth(value: unknown): value is BffAuth {
       (v.reason === 'liveness' ||
         v.reason === 'app-shell' ||
         v.reason === 'sign-out' ||
+        v.reason === 'shared-view' ||
         v.reason === 'sign-in'))
   );
 }
@@ -215,6 +217,15 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   registerAppConfig(app, deps.emergencyNumber ?? null, deps.vapidPublicKey ?? null);
   if (deps.enrolment)
     registerEnrolmentRoutes(app, { ...deps.enrolment, sessionsResolver: deps.sessions });
+  // M4: her history, sharing, access log, and a receiver's view of a share link.
+  if (deps.enrolment)
+    registerHistoryProxy(app, {
+      signer: deps.signer,
+      workload: deps.enrolment.signer,
+      apiBaseUrl: deps.apiBaseUrl,
+      patientOrigin: deps.enrolment.patientOrigin,
+      fetch: deps.fetch,
+    });
   // M2: her episodes and check-ins (needs her app's origin for the state-change checks).
   if (deps.enrolment)
     registerEpisodeProxy(app, {

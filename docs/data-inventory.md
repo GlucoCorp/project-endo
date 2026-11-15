@@ -254,6 +254,22 @@ Append-only, row-level security. Recorded only with her current `share_with_care
 | `surgery_check.acknowledged_at`    | When acknowledged as discussed with her (database clock)                          | as above                                        | as above                                                               | S1          |
 | `surgery_check.idempotency_key`    | The clinician's Idempotency-Key                                                   | as above                                        | as above                                                               | S0          |
 
+### Share links — `packages/clinical-store/migrations/0013` (M4)
+
+Row-level security; revoked, never deleted. A receiver sees her treatments, dates, goal and weekly answers, never her identity, clinic, red-flag answers or notes (REQ-008).
+
+| Column                    | Purpose                                                  | Legal basis              | Retention                                                                                             | Sensitivity |
+| ------------------------- | -------------------------------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------- | ----------- |
+| `share_link.id`           | Link identifier (audited views refer to it)              | Her request (she shares) | Until it expires (at most 30 days) plus the clinical-record period for its audit trail (`TODO_LEGAL`) | S1          |
+| `share_link.org_id`       | Organisation (row-level security)                        | as above                 | as above                                                                                              | S0          |
+| `share_link.patient_id`   | Whose summary (pseudonymous)                             | as above                 | as above                                                                                              | S1          |
+| `share_link.scope`        | What it shows: history_summary                           | as above                 | as above                                                                                              | S0          |
+| `share_link.token_hash`   | SHA-256 of the link token; the token is only in the link | as above                 | as above                                                                                              | S1          |
+| `share_link.created_at`   | When made (database clock)                               | as above                 | as above                                                                                              | S1          |
+| `share_link.expires_at`   | When it stops working (at most 30 days, database clock)  | as above                 | as above                                                                                              | S1          |
+| `share_link.revoked_at`   | When she stopped sharing                                 | as above                 | as above                                                                                              | S1          |
+| `share_link.creation_key` | Her Idempotency-Key (a retry finds the same link)        | as above                 | as above                                                                                              | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

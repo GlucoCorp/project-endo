@@ -83,3 +83,5 @@ export type {
   StoredSurgeryCheck,
   TreatmentFacts,
 } from './reviews.ts';
+export { PostgresShareLinkStore } from './share-links.ts';
+export type { LiveShareLink, ShareLink, ShareLinkStore } from './share-links.ts';

@@ -52,6 +52,31 @@ describe.skipIf(!url)('RISK-R01 PostgresAuditStore (spec 2.6, 12.9)', () => {
     expect(verifyChain(events)).toMatchObject({ ok: true, count: 5 });
   });
 
+  it('spec 13.3 reads the events about given resources, newest first', async () => {
+    const store = new PostgresAuditStore(db);
+    const writer = new AuditWriter(store);
+    const mine = '0190a000-0000-4000-8000-00000000aa01';
+    await writer.write({ ...input(), resource: { type: 'patient_record', id: mine } });
+    await writer.write({
+      ...input(),
+      action: 'share_link.viewed',
+      resource: { type: 'share_link', id: mine },
+    });
+    await writer.write({
+      ...input(),
+      resource: { type: 'patient_record', id: '0190a000-0000-4000-8000-00000000bb01' },
+    });
+    const events = await store.forResources(
+      [
+        { type: 'patient_record', id: mine },
+        { type: 'share_link', id: mine },
+      ],
+      10,
+    );
+    expect(events.map((e) => e.action)).toEqual(['share_link.viewed', input().action]);
+    expect(await store.forResources([], 10)).toEqual([]);
+  });
+
   it('keeps one valid chain when several processes write at once', async () => {
     // Separate writers (no shared in-process queue) behave like separate service instances.
     // appendNext is exclusive across processes, so no writer can be starved by the others.
