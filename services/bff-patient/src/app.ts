@@ -25,7 +25,16 @@ import { registerSessionRoutes } from './session-routes.ts';
  * account, bound to the browser by the enrolment cookie, checked by the route (ADR-0021 section 4).
  */
 export type BffAuth =
-  | { readonly kind: 'session'; readonly allowLocked?: true }
+  | {
+      readonly kind: 'session';
+      readonly allowLocked?: true;
+      /**
+       * Spec 10.1: export, deletion, share links and consent changes need a recent sign-in. Every
+       * sign-in asks for her passkey again (`prompt=login`, `max_age=0`) and makes a new session,
+       * so a session younger than RECENT_SIGN_IN_MS is a recent sign-in.
+       */
+      readonly recentSignIn?: true;
+    }
   | { readonly kind: 'enrolment' }
   | {
       readonly kind: 'public';
@@ -82,7 +91,12 @@ export interface BffDeps {
   readonly emergencyNumber?: string | null;
   /** Spec 15: the VAPID public key (base64url, uncompressed P-256) for push reminders. */
   readonly vapidPublicKey?: string | null;
+  /** The clock for the recent-sign-in check (milliseconds); the session store's own by default. */
+  readonly now?: () => number;
 }
+
+/** Spec 10.1 re-authentication window (Section 24 item 37). */
+export const RECENT_SIGN_IN_MS = 10 * 60 * 1000;
 
 const HelloResponse = z.strictObject({
   message: z.string(),
@@ -147,6 +161,8 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     // Spec 10.1 app lock: a locked session reaches only the lock screen until she signs in again.
     if (session.locked && !auth.allowLocked)
       throw new ProblemError(401, 'authn.locked', 'Unlock to continue.');
+    if (auth.recentSignIn && (deps.now ?? Date.now)() - session.createdAt > RECENT_SIGN_IN_MS)
+      throw new ProblemError(401, 'authn.reauth_required', 'Sign in again to continue.');
     request.claims = session.claims;
   });
 

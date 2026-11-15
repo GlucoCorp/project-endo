@@ -10,6 +10,8 @@ export const en = {
   'common.loading': 'Loading',
   'common.try-later': 'Something went wrong on our side. Try again in a minute.',
   'common.too-many': 'Too many tries. Wait a minute, then try again.',
+  'common.reauth': 'To keep your record safe, sign in again to do this.',
+  'common.sign-in-again': 'Sign in again',
 
   'enrol.title': 'Set up your treatment diary',
   'enrol.intro':
@@ -62,6 +64,22 @@ export const en = {
   'history.log-row': '{date}: {who}, {what}',
   'history.log-link': 'someone with your share link',
   'home.history': 'Your treatments and sharing',
+  'home.data': 'Your data: download or delete',
+  'data.title': 'Your data',
+  'data.export-title': 'Download your record',
+  'data.export-what':
+    'A file with everything you have recorded and every decision about your treatment, in a standard health-record format other services can read. For a copy to read or print, use Print on your treatments page.',
+  'data.export': 'Download my record',
+  'data.exported': 'Your record has downloaded. Keep the file somewhere private.',
+  'data.delete-title': 'Delete your account',
+  'data.delete-what':
+    'Your treatments, check-ins, goals and account are deleted 14 days after you ask. Until then you can change your mind. After that they cannot be recovered. Copies in backups expire on their normal schedule.',
+  'data.delete-confirm': 'I understand my record will be deleted and cannot be recovered.',
+  'data.delete': 'Delete my account',
+  'data.delete-scheduled':
+    'Your account will be deleted on {date}. You can still change your mind.',
+  'data.delete-keep': 'Keep my account',
+  'data.delete-kept': 'Your account is kept.',
   'shared.title': 'Shared treatment summary',
   'shared.invalid': 'This link cannot be used. Ask for a new one.',
   'shared.until': 'Shared until {date}.',
