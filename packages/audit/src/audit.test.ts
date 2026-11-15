@@ -226,6 +226,16 @@ describe('spec 13.3 access log reads events about given resources', () => {
       10,
     );
     expect(mine.map((e) => e.action)).toEqual(['share_link.viewed', 'patient_data.read']);
+    // Paging back: older than the newest.
+    const older = await store.forResources(
+      [
+        { type: 'patient_record', id: a },
+        { type: 'share_link', id: b },
+      ],
+      10,
+      mine[0]?.sequence,
+    );
+    expect(older.map((e) => e.action)).toEqual(['patient_data.read']);
     expect(await store.forResources([{ type: 'patient_record', id: a }], 0)).toEqual([]);
   });
 });

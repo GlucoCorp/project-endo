@@ -30,7 +30,8 @@ export interface ExportInput {
 }
 
 const SYSTEM = 'https://fhir.glucorp.health/CodeSystem';
-const ref = (type: string, id: string) => ({ reference: `${type}/${id}` });
+/** A collection has no server base: references are the entries' own `urn:uuid` full URLs. */
+const ref = (_type: string, id: string) => ({ reference: `urn:uuid:${id}` });
 const full = (type: string, id: string, resource: Record<string, unknown>) => ({
   fullUrl: `urn:uuid:${id}`,
   resource: { resourceType: type, id, ...resource },

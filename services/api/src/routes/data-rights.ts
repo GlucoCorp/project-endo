@@ -119,11 +119,12 @@ export function registerDataRightsRoutes(app: FastifyInstance, deps: DataRightsR
       const { orgId, patientId } = own(request);
       const cipher = deps.cipherFor(orgId);
       const [episodes, decisions, surgeryChecks, consents, log] = await Promise.all([
-        deps.episodes.listForPatient(orgId, patientId),
+        // Everything, never a first page (REQ-009: a complete export).
+        deps.episodes.listForPatient(orgId, patientId, null),
         deps.reviews.decisions(orgId, patientId),
         deps.reviews.surgeryChecks(orgId, patientId),
         deps.consents.current(orgId, patientId),
-        accessLog(deps, orgId, patientId, 500),
+        accessLog(deps, orgId, patientId, 'all'),
       ]);
       const bundle = fhirExport({
         patientId,

@@ -294,6 +294,11 @@ describe('REQ-009 export', () => {
         { linkId: 'Q8', answer: [{ valueString: 'none' }, { valueString: 'rest' }] },
       ]),
     );
+    // Every reference resolves to an entry of the Bundle (a collection has no server base).
+    const urls = new Set(b.entry.map((e) => (e as { fullUrl?: string }).fullUrl).filter(Boolean));
+    const refs = [...res.body.matchAll(/"reference":"([^"]+)"/g)].map((m) => m[1] ?? '');
+    expect(refs.length).toBeGreaterThan(0);
+    expect(refs.filter((r) => !urls.has(r))).toEqual([]);
     // Shadow verdicts are not part of it; neither are her name or email (identity vault).
     expect(types).not.toContain('Observation');
     // Audited (the policy writes it before the handler), with no content.
