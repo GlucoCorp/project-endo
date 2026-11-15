@@ -100,6 +100,27 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  'episode.confirm_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'patient.list': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'catalogue.read': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'org.clinicians.manage': {
     patient: '-',
     clinician: '-',
@@ -386,6 +407,11 @@ describe('properties', () => {
             'enrolment.create',
             'enrolment.read',
             'enrolment.confirm',
+            // REQ-002: the catalogue holds no patient data, and the patient list is filtered by
+            // the store to patients whose current share_with_care_team is granted, so a patient
+            // who withdraws disappears from it (services/api episodes routes test this).
+            'catalogue.read',
+            'patient.list',
           ]).toContain(action);
       }),
     );

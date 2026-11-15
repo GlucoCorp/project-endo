@@ -55,3 +55,16 @@ describe('roles', () => {
     expect(isRole(1)).toBe(false);
   });
 });
+
+describe('REQ-007 red-flag report key', () => {
+  it('is the same for the same check-in, different for another, and shaped as a UUID', async () => {
+    const { redFlagKeyFor } = await import('./index.ts');
+    const a = '0190a000-0000-4000-8000-000000000001';
+    const k = await redFlagKeyFor(a);
+    expect(k).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-8[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(await redFlagKeyFor(a)).toBe(k);
+    expect(await redFlagKeyFor('0190a000-0000-4000-8000-000000000002')).not.toBe(k);
+    expect(k).not.toBe(a);
+    await expect(redFlagKeyFor('not-a-uuid')).rejects.toThrow(TypeError);
+  });
+});

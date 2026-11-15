@@ -38,6 +38,9 @@ export const ACTIONS = [
   'enrolment.confirm', // REQ-001, ADR-0021: clinician confirms the patient in front of them by code
   'consent.read_own', // Spec 13.1: she sees her consent decisions
   'consent.update_own', // Spec 13.1: she grants or withdraws a purpose, effective immediately
+  'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
+  'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
+  'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -160,6 +163,7 @@ export function can(
     case 'episode.read_own':
     case 'consent.read_own':
     case 'consent.update_own':
+    case 'episode.confirm_own':
     case 'checkin.submit':
     case 'own_data.export':
     case 'own_data.delete':
@@ -191,6 +195,10 @@ export function can(
     case 'enrolment.create':
     case 'enrolment.read':
     case 'enrolment.confirm':
+    // REQ-002: organisation-level reads; the patient list itself is filtered to patients who
+    // share with the care team, and each patient's data is still checked per patient.
+    case 'patient.list':
+    case 'catalogue.read':
       if (subject.role !== 'clinician') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 

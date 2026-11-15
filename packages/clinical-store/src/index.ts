@@ -54,6 +54,7 @@ export type {
   CheckInOutcome,
   CheckInSubmission,
   ConfirmOutcome,
+  DraftOutcome,
   Episode,
   EpisodeConfirmation,
   EpisodeStore,
@@ -61,6 +62,7 @@ export type {
   RedFlagOutcome,
   RedFlagReport,
   SavedCheckIn,
+  SharingPatient,
   StoredCheckIn,
   StoredRedFlag,
 } from './episodes.ts';

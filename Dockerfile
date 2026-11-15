@@ -57,9 +57,12 @@ USER 0:0
 COPY --from=os-patches /patch/ /
 WORKDIR /app
 COPY --from=build /out/ ./
-# The API reads the clinical rule set at startup (spec 7.3); staging and production refuse
-# TODO_CLINICAL values. Later milestones mount a signed rule set instead.
+# The API reads the clinical content at startup (spec 6, 7.3; ADR-0027): rule set, instrument,
+# treatment catalogue and goals. Staging and production refuse TODO_CLINICAL values.
 COPY clinical/rulesets clinical/rulesets
+COPY clinical/instrument clinical/instrument
+COPY clinical/treatments clinical/treatments
+COPY clinical/goals clinical/goals
 WORKDIR /app/services/${SERVICE}
 USER 65532:65532
 # The image's entrypoint is node; services run TypeScript via native type stripping.
