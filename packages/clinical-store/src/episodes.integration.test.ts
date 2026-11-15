@@ -41,8 +41,16 @@ describe.skipIf(!url)(
       return u.toString();
     };
 
+    /** A created draft (fails the test otherwise). */
+    const mk = async (o: Partial<NewEpisode> = {}) => {
+      const r = await store.createDraft(draft(o));
+      if (r.outcome !== 'created') throw new Error(`draft ${r.outcome}`);
+      return r.episode;
+    };
+
     const draft = (o: Partial<NewEpisode> = {}): NewEpisode => ({
       id: randomUUID(),
+      creationKey: randomUUID(),
       orgId: ORG_A,
       patientId: PAT_A,
       prescriberId: CLIN_A,
@@ -59,7 +67,7 @@ describe.skipIf(!url)(
     });
 
     const activate = async (o: Partial<NewEpisode> = {}) => {
-      const e = await store.createDraft(draft(o));
+      const e = await mk(o);
       const r = await store.confirm({
         orgId: e.orgId,
         patientId: e.patientId,
@@ -170,7 +178,9 @@ describe.skipIf(!url)(
     describe('REQ-002 episodes', () => {
       it('is a draft until she confirms with her goal, then active with her time zone', async () => {
         const d = draft();
-        const created = await store.createDraft(d);
+        const r0 = await store.createDraft(d);
+        if (r0.outcome !== 'created') throw new Error('not created');
+        const created = r0.episode;
         expect(created).toMatchObject({
           status: 'draft',
           lineId: d.id,
@@ -208,7 +218,7 @@ describe.skipIf(!url)(
             })
           ).outcome,
         ).toBe('not_found');
-        const other = await store.createDraft(draft({ patientId: PAT_A2 }));
+        const other = await mk({ patientId: PAT_A2 });
         expect(
           (
             await store.confirm({
@@ -232,7 +242,7 @@ describe.skipIf(!url)(
 
       it('allows one active episode per line: a switch waits, a parallel line does not', async () => {
         const first = await activate();
-        const sw = await store.createDraft(draft({ previousEpisodeId: first.id }));
+        const sw = await mk({ previousEpisodeId: first.id });
         expect(sw.lineId).toBe(first.lineId);
         const busy = await store.confirm({
           orgId: ORG_A,
@@ -248,13 +258,13 @@ describe.skipIf(!url)(
         expect((await store.get(ORG_A, sw.id, PAT_A))?.goal).toBeNull();
         await activate(); // a new line beside it
         // A switch can only continue her own episode.
-        await expect(
-          store.createDraft(draft({ patientId: PAT_A2, previousEpisodeId: first.id })),
-        ).rejects.toThrow();
+        expect(
+          await store.createDraft(draft({ patientId: PAT_A2, previousEpisodeId: first.id })),
+        ).toEqual({ outcome: 'not_found' });
       });
 
       it('enforces the lifecycle in the database, whatever the caller', async () => {
-        const e = await store.createDraft(draft());
+        const e = await mk();
         const sqlAsApi = (text: string, params: unknown[]) => asApi((c) => c.query(text, params));
         await expect(
           sqlAsApi(
@@ -269,9 +279,9 @@ describe.skipIf(!url)(
           sqlAsApi(
             `INSERT INTO treatment_episode (id, org_id, patient_id, prescriber_id, line_id,
              treatment_system, treatment_code, adherence_mode, dose_text, start_date,
-             review_interval_weeks, instrument_version)
-           VALUES ($1, $2, $3, $4, $1, 'http://www.whocc.no/atc', 'X', 'daily', 'd', now(), 27, '1.0.0')`,
-            [randomUUID(), ORG_A, PAT_A, CLIN_A],
+             review_interval_weeks, instrument_version, creation_key)
+           VALUES ($1, $2, $3, $4, $1, 'http://www.whocc.no/atc', 'X', 'daily', 'd', now(), 27, '1.0.0', $5)`,
+            [randomUUID(), ORG_A, PAT_A, CLIN_A, randomUUID()],
           ),
         ).rejects.toThrow(/check/);
         await expect(
@@ -288,8 +298,37 @@ describe.skipIf(!url)(
         ).rejects.toThrow(/permission denied/);
       });
 
+      it('spec 9.1 a retried draft with the same key returns the same episode; another draft conflicts', async () => {
+        const d = draft();
+        const first = await store.createDraft(d);
+        expect(first.outcome).toBe('created');
+        const again = await store.createDraft({ ...d, id: randomUUID(), auditEvent: audit('x') });
+        expect(again.outcome).toBe('replay');
+        if (first.outcome === 'created' && again.outcome === 'replay')
+          expect(again.episode.id).toBe(first.episode.id);
+        expect(await store.createDraft({ ...d, id: randomUUID(), doseText: 'other' })).toEqual({
+          outcome: 'conflict',
+        });
+      });
+
+      it('lists only patients who currently share with the care team', async () => {
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+         VALUES ($1, $2, $3, 'share_with_care_team', 'granted', 1)`,
+          [randomUUID(), PAT_A, ORG_A],
+        );
+        expect((await store.listSharingPatients(ORG_A)).map((p) => p.id)).toEqual([PAT_A]);
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+         VALUES ($1, $2, $3, 'share_with_care_team', 'revoked', 1)`,
+          [randomUUID(), PAT_A, ORG_A],
+        );
+        expect(await store.listSharingPatients(ORG_A)).toEqual([]);
+        expect(await store.listSharingPatients(ORG_B)).toEqual([]);
+      });
+
       it('keeps organisations apart', async () => {
-        const e = await store.createDraft(draft());
+        const e = await mk();
         expect(await store.get(ORG_B, e.id, null)).toBeNull();
         expect(await store.listForPatient(ORG_B, PAT_A)).toEqual([]);
         expect((await store.listForPatient(ORG_A, PAT_A)).map((x) => x.id)).toContain(e.id);
@@ -326,7 +365,7 @@ describe.skipIf(!url)(
       });
 
       it('refuses a draft episode or another patient’s episode', async () => {
-        const d = await store.createDraft(draft());
+        const d = await mk();
         expect(await checkIn(d.id)).toEqual({ outcome: 'not_found' });
         const theirs = await activate({ patientId: PAT_A2 });
         expect(await checkIn(theirs.id)).toEqual({ outcome: 'not_found' });
@@ -379,7 +418,7 @@ describe.skipIf(!url)(
       });
 
       it('is not recorded for a draft or someone else’s episode', async () => {
-        const d = await store.createDraft(draft());
+        const d = await mk();
         expect(await report(d.id)).toEqual({ outcome: 'not_found' });
         const theirs = await activate({ patientId: PAT_A2 });
         expect(await report(theirs.id)).toEqual({ outcome: 'not_found' });

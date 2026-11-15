@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import {
   AuditEventInput,
@@ -12,6 +13,7 @@ import {
   Environment,
   assertClinicalReleaseReady,
   isDeployedEnvironment,
+  loadClinicalContent,
   loadConfig,
 } from '@endo/config';
 import {
@@ -19,9 +21,11 @@ import {
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
   PostgresConsentStore,
+  PostgresEpisodeStore,
   PostgresIdempotentInvitationStore,
   PostgresInvitationReservationStore,
   PostgresMembershipStore,
+  PostgresPatientKeyStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -29,10 +33,11 @@ import {
   relayAuditOutbox,
   type ClinicalDatabase,
   type ConsentStore,
+  type EpisodeStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
-import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
+import { DevKeyManager, EnvelopeSealer, FieldCipher } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
 import {
   ServiceTokenVerifier,
@@ -109,6 +114,20 @@ async function main(): Promise<void> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   const rulesetText = await readFile(config.ENDO_CLINICAL_RULESET_PATH, 'utf8');
   assertClinicalReleaseReady(config.ENDO_ENV, rulesetText);
+  // The instrument, catalogue and goals sit beside the rule set in clinical/ (ADR-0027). Any
+  // TODO_CLINICAL refuses startup in staging and production; development uses placeholders.
+  const clinicalDir = join(dirname(config.ENDO_CLINICAL_RULESET_PATH), '..');
+  const readClinical = (p: string) =>
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    readFile(join(clinicalDir, p), 'utf8');
+  const content = loadClinicalContent(config.ENDO_ENV, {
+    instrument: await readClinical('instrument/checkin.v1.json'),
+    treatments: await readClinical('treatments/catalogue.v1.json'),
+    goals: await readClinical('goals/templates.v1.json'),
+  });
+  // DevKeyManager refuses staging and production: deployed environments need the OpenBao
+  // KeyManager (infra slice) before the API can start. Fail closed.
+  const kms = new DevKeyManager(config.ENDO_ENV);
 
   // Spec 2.6: deployed environments must use the durable Postgres audit store. Fail closed.
   let auditStore: AuditStore;
@@ -128,6 +147,7 @@ async function main(): Promise<void> {
   let invitations: IdempotentInvitationStore;
   let memberships: MembershipStore;
   let consents: ConsentStore;
+  let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
@@ -150,6 +170,10 @@ async function main(): Promise<void> {
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
+    episodes = {
+      store: new PostgresEpisodeStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
     const reservations = new PostgresInvitationReservationStore(db);
     coordination = {
       find: (tokenHash) => findLiveInvitation(db, tokenHash),
@@ -233,13 +257,21 @@ async function main(): Promise<void> {
     audit: auditWriter,
     invitations,
     memberships,
-    // DevKeyManager refuses staging and production: deployed environments need the OpenBao
-    // KeyManager (infra slice) before the API can start. Fail closed.
-    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/clinical'),
+    sealer: new EnvelopeSealer(kms, 'kms/clinical'),
     relayOutbox,
     now: () => new Date(),
     consents,
     ...(coordination ? { coordination } : {}),
+    ...(episodes
+      ? {
+          episodes: {
+            episodes: episodes.store,
+            content,
+            cipherFor: episodes.cipherFor,
+            deployed: isDeployedEnvironment(config.ENDO_ENV),
+          },
+        }
+      : {}),
     ...(config.API_WORKLOAD_PRIVATE_KEY_JWK && config.API_IDENTITY_BASE_URL
       ? {
           identity: new HttpIdentityEnrolment({

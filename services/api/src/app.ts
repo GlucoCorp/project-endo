@@ -30,6 +30,7 @@ import {
   type WorkloadTokenVerifier,
 } from '@endo/service-kit';
 import { registerConsentRoutes } from './routes/consents.ts';
+import { registerEpisodeRoutes, type EpisodeRouteDeps } from './routes/episodes.ts';
 import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerMembershipRoutes } from './routes/memberships.ts';
@@ -118,6 +119,11 @@ export interface ApiDeps {
   readonly coordination?: EnrolmentCoordination;
   /** The identity service's clinic-side enrolment route (ADR-0021). Without it, no confirm. */
   readonly identity?: IdentityEnrolment;
+  /**
+   * Episodes, check-ins and red flags (M2). Only with a clinical database and loaded clinical
+   * content; without them these routes do not exist (fail closed).
+   */
+  readonly episodes?: Omit<EpisodeRouteDeps, 'onCommitted' | 'now'>;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
@@ -157,6 +163,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
       consents: deps.consents,
     });
   registerConsentRoutes(app, { consents: deps.consents });
+  if (deps.episodes) registerEpisodeRoutes(app, { ...deps.episodes, onCommitted, now: deps.now });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,

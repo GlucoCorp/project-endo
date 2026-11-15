@@ -105,6 +105,8 @@ export interface ClinicalDatabase {
     review_date: Generated<string>;
     time_zone: string | null;
     instrument_version: string;
+    /** Migration 0009: the clinician's Idempotency-Key for the draft. */
+    creation_key: string;
     status: Generated<EpisodeStatus>;
     created_at: Generated<Date>;
     confirmed_at: Generated<Date | null>;

@@ -36,6 +36,8 @@ export interface Episode {
 
 export interface NewEpisode {
   readonly id: string;
+  /** The clinician's Idempotency-Key: a retry with it returns the same draft (spec 9.1). */
+  readonly creationKey: string;
   readonly orgId: string;
   readonly patientId: string;
   readonly prescriberId: string;
@@ -59,6 +61,19 @@ export interface EpisodeConfirmation {
   readonly goal: { readonly templateCode: string } | { readonly textEncrypted: string };
   readonly timeZone: string;
   readonly auditEvent: Audit;
+}
+
+export type DraftOutcome =
+  | { readonly outcome: 'created' | 'replay'; readonly episode: Episode }
+  /** The same key was used for a different draft. */
+  | { readonly outcome: 'conflict' }
+  /** The previous episode is not this patient's. */
+  | { readonly outcome: 'not_found' };
+
+/** A patient a clinician may draft for: her current share_with_care_team is granted. */
+export interface SharingPatient {
+  readonly id: string;
+  readonly enrolledAt: Date;
 }
 
 export type ConfirmOutcome =
@@ -135,7 +150,9 @@ export interface StoredRedFlag {
 
 /** Treatment episodes, goals, check-ins and red flags (M2), always inside one organisation's scope. */
 export interface EpisodeStore {
-  createDraft(e: NewEpisode): Promise<Episode>;
+  createDraft(e: NewEpisode): Promise<DraftOutcome>;
+  /** Patients of the organisation who currently share with the care team, newest first. */
+  listSharingPatients(orgId: string): Promise<SharingPatient[]>;
   /** One episode, only if it belongs to this patient (or, with `patientId` null, the org). */
   get(orgId: string, episodeId: string, patientId: string | null): Promise<Episode | null>;
   listForPatient(orgId: string, patientId: string): Promise<Episode[]>;
@@ -257,8 +274,28 @@ export class PostgresEpisodeStore implements EpisodeStore {
     this.#db = db;
   }
 
-  createDraft(e: NewEpisode): Promise<Episode> {
+  createDraft(e: NewEpisode): Promise<DraftOutcome> {
     return withOrg(this.#db, e.orgId, async (trx) => {
+      await lockKey(trx, 'episode', e.prescriberId, e.creationKey);
+      const existing = await episodeQuery(trx)
+        .select('e.creation_key')
+        .where('e.prescriber_id', '=', e.prescriberId)
+        .where('e.creation_key', '=', e.creationKey)
+        .executeTakeFirst();
+      if (existing) {
+        const ep = toEpisode(existing);
+        const same =
+          ep.patientId === e.patientId &&
+          ep.previousEpisodeId === e.previousEpisodeId &&
+          ep.treatmentSystem === e.treatmentSystem &&
+          ep.treatmentCode === e.treatmentCode &&
+          ep.doseText === e.doseText &&
+          ep.startDate === e.startDate &&
+          ep.reviewIntervalWeeks === e.reviewIntervalWeeks;
+        return same
+          ? { outcome: 'replay' as const, episode: ep }
+          : { outcome: 'conflict' as const };
+      }
       let lineId = e.id;
       if (e.previousEpisodeId) {
         const prev = await trx
@@ -267,7 +304,7 @@ export class PostgresEpisodeStore implements EpisodeStore {
           .where('id', '=', e.previousEpisodeId)
           .where('patient_id', '=', e.patientId)
           .executeTakeFirst();
-        if (!prev) throw new TypeError('previous episode is not this patient’s');
+        if (!prev) return { outcome: 'not_found' as const };
         lineId = prev.line_id;
       }
       await trx
@@ -286,10 +323,33 @@ export class PostgresEpisodeStore implements EpisodeStore {
           start_date: e.startDate,
           review_interval_weeks: e.reviewIntervalWeeks,
           instrument_version: e.instrumentVersion,
+          creation_key: e.creationKey,
         })
         .execute();
       await queueAudit(trx, e.auditEvent);
-      return toEpisode(await episodeQuery(trx).where('e.id', '=', e.id).executeTakeFirstOrThrow());
+      const episode = toEpisode(
+        await episodeQuery(trx).where('e.id', '=', e.id).executeTakeFirstOrThrow(),
+      );
+      return { outcome: 'created' as const, episode };
+    });
+  }
+
+  listSharingPatients(orgId: string): Promise<SharingPatient[]> {
+    return withOrg(this.#db, orgId, async (trx) => {
+      const rows = await trx
+        .selectFrom('patient_record as p')
+        .innerJoin('consent_current as c', (j) =>
+          j
+            .onRef('c.patient_id', '=', 'p.id')
+            .on('c.purpose', '=', 'share_with_care_team')
+            .on('c.status', '=', 'granted'),
+        )
+        .select(['p.id', 'p.created_at'])
+        .where('p.org_id', '=', orgId)
+        .orderBy('p.created_at', 'desc')
+        .limit(100)
+        .execute();
+      return rows.map((r) => ({ id: r.id, enrolledAt: r.created_at }));
     });
   }
 
