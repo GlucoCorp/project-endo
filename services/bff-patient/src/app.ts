@@ -78,6 +78,8 @@ export interface BffDeps {
   readonly rateLimitPerMinute?: number;
   /** The local emergency number for the urgent-care screen (REQ-007); per deployment. */
   readonly emergencyNumber?: string | null;
+  /** Spec 15: the VAPID public key (base64url, uncompressed P-256) for push reminders. */
+  readonly vapidPublicKey?: string | null;
 }
 
 const HelloResponse = z.strictObject({
@@ -210,7 +212,7 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
 
   registerSessionRoutes(app, deps.sessions);
   registerServiceWorker(app);
-  registerAppConfig(app, deps.emergencyNumber ?? null);
+  registerAppConfig(app, deps.emergencyNumber ?? null, deps.vapidPublicKey ?? null);
   if (deps.enrolment)
     registerEnrolmentRoutes(app, { ...deps.enrolment, sessionsResolver: deps.sessions });
   // M2: her episodes and check-ins (needs her app's origin for the state-change checks).

@@ -27,6 +27,7 @@ import {
   PostgresMembershipStore,
   PostgresPatientKeyStore,
   PostgresVerdictStore,
+  PostgresReminderStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -35,6 +36,7 @@ import {
   type ClinicalDatabase,
   type ConsentStore,
   type EpisodeStore,
+  type ReminderStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -48,6 +50,7 @@ import {
 import { uuidv7 } from '@endo/domain';
 import { HttpIdentityEnrolment } from './identity-client.ts';
 import { VerdictService, loadRuleset } from './verdicts.ts';
+import { ReminderService } from './reminders.ts';
 import { buildApi } from './app.ts';
 import type { EnrolmentCoordination } from './routes/coordinator.ts';
 
@@ -97,6 +100,32 @@ const Config = z.object({
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
   API_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   API_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
+  // Spec 15: Web Push reminders. A P-256 private JWK for VAPID, and the operator contact sent to
+  // push services (an https URL or mailto of the organisation, never a person). Without both, no
+  // reminder is sent.
+  API_VAPID_PRIVATE_KEY_JWK: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        return z
+          .object({
+            kty: z.literal('EC'),
+            crv: z.literal('P-256'),
+            x: z.string(),
+            y: z.string(),
+            d: z.string(),
+          })
+          .parse(JSON.parse(s));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
+  API_VAPID_SUBJECT: z
+    .string()
+    .regex(/^(https:\/\/|mailto:)[^\s]{3,200}$/)
+    .optional(),
   // Spec 18.5: public keys that may sign the rule set, as {"key-id": <Ed25519 public JWK>}.
   // Required in staging and production (the rule set must verify before the API starts).
   ENDO_RULESET_PUBLIC_KEYS: z
@@ -185,6 +214,7 @@ async function main(): Promise<void> {
   let consents: ConsentStore;
   let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let verdicts: VerdictService | undefined;
+  let reminders: { store: ReminderStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
@@ -208,6 +238,10 @@ async function main(): Promise<void> {
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
     verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
+    reminders = {
+      store: new PostgresReminderStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
     episodes = {
       store: new PostgresEpisodeStore(db),
       cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
@@ -301,6 +335,7 @@ async function main(): Promise<void> {
     consents,
     ...(coordination ? { coordination } : {}),
     ...(verdicts ? { verdicts } : {}),
+    ...(reminders ? { reminders } : {}),
     ...(episodes
       ? {
           episodes: {
@@ -328,6 +363,26 @@ async function main(): Promise<void> {
     relayOutbox().catch(() => process.stderr.write('audit outbox relay failed\n'));
   }, 5_000);
   relayTimer.unref();
+
+  // Spec 15: reminders, hourly at the top of her chosen hour. Counts only in the logs.
+  if (reminders && config.API_VAPID_PRIVATE_KEY_JWK && config.API_VAPID_SUBJECT) {
+    const sender = new ReminderService(
+      reminders.store,
+      reminders.cipherFor,
+      { privateJwk: config.API_VAPID_PRIVATE_KEY_JWK, subject: config.API_VAPID_SUBJECT },
+      fetch,
+      () => new Date(),
+    );
+    const reminderTimer = setInterval(() => {
+      sender
+        .run()
+        .then((r) => {
+          if (r.failed > 0) process.stderr.write(`reminders: ${String(r.failed)} not accepted\n`);
+        })
+        .catch(() => process.stderr.write('reminder run failed\n'));
+    }, 3_600_000);
+    reminderTimer.unref();
+  }
 
   // REQ-004: the verdict schedule (shadow mode), hourly; each episode once per rule set version.
   if (verdicts) {

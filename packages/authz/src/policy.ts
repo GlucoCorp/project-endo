@@ -41,6 +41,7 @@ export const ACTIONS = [
   'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
   'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
   'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
+  'reminders.manage_own', // Spec 15: she turns her weekly reminder on or off on a device
   'verdict.generate', // REQ-004: clinician asks for a (shadow) verdict on a consented patient's episode
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
@@ -165,6 +166,7 @@ export function can(
     case 'consent.read_own':
     case 'consent.update_own':
     case 'episode.confirm_own':
+    case 'reminders.manage_own':
     case 'checkin.submit':
     case 'own_data.export':
     case 'own_data.delete':

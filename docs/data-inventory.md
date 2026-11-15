@@ -206,6 +206,26 @@ Append-only, row-level security. One row per generation attempt; shown to no one
 | `verdict.shadow`             | Shadow mode: not shown in care (database forces true in M3) | as above                                                                 | as above                                                               | S0          |
 | `verdict.generated_at`       | When (database clock)                                       | as above                                                                 | as above                                                               | S1          |
 
+### Reminders — `packages/clinical-store/migrations/0011` (M2)
+
+Row-level security. The push carries no payload; the endpoint is stored encrypted and never logged (spec 15; Section 24 item 28).
+
+| Column                                 | Purpose                                                                        | Legal basis                                   | Retention                                                                                     | Sensitivity |
+| -------------------------------------- | ------------------------------------------------------------------------------ | --------------------------------------------- | --------------------------------------------------------------------------------------------- | ----------- |
+| `push_subscription.id`                 | Subscription identifier; part of the ciphertext binding                        | Her request (she turns reminders on); spec 15 | Until she turns the reminder off, the push service says it is gone, or her account is deleted | S1          |
+| `push_subscription.org_id`             | Organisation (row-level security)                                              | as above                                      | as above                                                                                      | S0          |
+| `push_subscription.patient_id`         | Whose device (pseudonymous)                                                    | as above                                      | as above                                                                                      | S1          |
+| `push_subscription.endpoint_encrypted` | Her browser push endpoint (identifies her device), encrypted under her own key | as above                                      | as above                                                                                      | S3          |
+| `push_subscription.endpoint_hash`      | SHA-256 of the endpoint, to find the same device again                         | as above                                      | as above                                                                                      | S1          |
+| `push_subscription.remind_hour`        | Her chosen hour (8 to 20)                                                      | as above                                      | as above                                                                                      | S1          |
+| `push_subscription.time_zone`          | Her time zone for the hour                                                     | as above                                      | as above                                                                                      | S1          |
+| `push_subscription.created_at`         | When she turned it on                                                          | as above                                      | as above                                                                                      | S1          |
+| `reminder_sent.episode_id`             | Episode reminded about                                                         | as above                                      | as above                                                                                      | S1          |
+| `reminder_sent.week_index`             | Week reminded about (once per week)                                            | as above                                      | as above                                                                                      | S1          |
+| `reminder_sent.org_id`                 | Organisation (row-level security)                                              | as above                                      | as above                                                                                      | S0          |
+| `reminder_sent.patient_id`             | Whose reminder (pseudonymous)                                                  | as above                                      | as above                                                                                      | S1          |
+| `reminder_sent.sent_at`                | When it was handed to the push service (not proof of delivery)                 | as above                                      | as above                                                                                      | S1          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

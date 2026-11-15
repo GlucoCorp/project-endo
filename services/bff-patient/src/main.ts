@@ -27,6 +27,11 @@ const Config = z.object({
   BFF_PATIENT_HOST: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
   BFF_PATIENT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(120),
   // REQ-007: the local emergency number on the urgent-care screen, per deployment (region).
+  // Spec 15: the API's VAPID public key (uncompressed P-256, base64url), for push reminders.
+  BFF_PATIENT_VAPID_PUBLIC_KEY: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{87}$/)
+    .optional(),
   BFF_PATIENT_EMERGENCY_NUMBER: z
     .string()
     .regex(/^\+?[0-9]{2,15}$/)
@@ -138,6 +143,7 @@ async function main(): Promise<void> {
     fetch,
     rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
     emergencyNumber: config.BFF_PATIENT_EMERGENCY_NUMBER ?? null,
+    vapidPublicKey: config.BFF_PATIENT_VAPID_PUBLIC_KEY ?? null,
     ...(config.BFF_PATIENT_APP_DIR ? { appShell: loadAppShell(config.BFF_PATIENT_APP_DIR) } : {}),
     ...(config.BFF_PATIENT_IDENTITY_BASE_URL &&
     config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK &&

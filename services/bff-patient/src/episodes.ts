@@ -116,4 +116,17 @@ export function registerEpisodeProxy(app: FastifyInstance, deps: EpisodeProxyDep
         pass(request, reply, 'POST', `/v1/episodes/${episodeId(request)}/${action}`),
     );
   }
+  // Spec 15: her weekly reminder on this device (the API checks the push endpoint).
+  for (const path of ['/v1/me/push-subscriptions', '/v1/me/push-subscriptions/remove'] as const) {
+    app.post(
+      path,
+      {
+        config: session,
+        preValidation: guard,
+        bodyLimit: 4096,
+        schema: { body: { type: 'object' } },
+      },
+      (request, reply) => pass(request, reply, 'POST', path),
+    );
+  }
 }

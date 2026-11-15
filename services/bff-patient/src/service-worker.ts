@@ -87,11 +87,18 @@ export function registerServiceWorker(app: FastifyInstance): void {
  * number for the urgent-care screen (REQ-007), configured per deployment (region). Null when not
  * configured: the screen then says to call the local emergency number, and never guesses one.
  */
-export function registerAppConfig(app: FastifyInstance, emergencyNumber: string | null): void {
+export function registerAppConfig(
+  app: FastifyInstance,
+  emergencyNumber: string | null,
+  vapidPublicKey: string | null = null,
+): void {
   app.get(
     '/v1/app-config',
     { config: { auth: { kind: 'public', reason: 'app-shell' } } },
     (_r, reply) =>
-      reply.header('cache-control', 'no-store').send({ emergency_number: emergencyNumber }),
+      reply
+        .header('cache-control', 'no-store')
+        // The VAPID public key her browser subscribes with (spec 15); null: no reminders here.
+        .send({ emergency_number: emergencyNumber, vapid_public_key: vapidPublicKey }),
   );
 }

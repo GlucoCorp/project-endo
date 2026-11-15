@@ -69,3 +69,5 @@ export type {
 export type { AdherenceMode, EpisodeStatus } from './schema.ts';
 export { PostgresVerdictStore } from './verdicts.ts';
 export type { EpisodeEvidence, NewVerdict, StoredVerdict, VerdictStore } from './verdicts.ts';
+export { PostgresReminderStore } from './reminders.ts';
+export type { ReminderEpisode, ReminderStore, Subscription } from './reminders.ts';

@@ -146,6 +146,18 @@ describe('REQ-002, REQ-003, REQ-007 the patient BFF passes her episode calls to 
     expect((await denied.post(`/v1/episodes/${EPISODE}/confirm`, {})).statusCode).toBe(403);
   });
 
+  it('passes her reminder subscription with the same checks (spec 15)', async () => {
+    const { post, seen } = await setup(() => json(201, { subscribed: true }));
+    expect(
+      (await post('/v1/me/push-subscriptions', { endpoint: 'x', time_zone: 'UTC' })).statusCode,
+    ).toBe(201);
+    expect(seen[0]?.url.pathname).toBe('/v1/me/push-subscriptions');
+    expect(
+      (await post('/v1/me/push-subscriptions/remove', {}, { origin: 'https://evil.test' }))
+        .statusCode,
+    ).toBe(403);
+  });
+
   it('is refused while the app is locked (spec 10.1)', async () => {
     const { app, sessions } = await setup(() => json(200, { episodes: [] }));
     const token = sessions.create(CLAIMS, true);
@@ -177,7 +189,7 @@ describe('spec 14 service worker and app config', () => {
     expect(sw.body).toContain("url.pathname.startsWith('/v1/')");
     expect(sw.body).toContain('Your weekly check-in is ready.');
     const config = await app.inject({ url: '/v1/app-config' });
-    expect(config.json()).toEqual({ emergency_number: '112' });
+    expect(config.json()).toEqual({ emergency_number: '112', vapid_public_key: null });
     expect(config.headers['cache-control']).toBe('no-store');
   });
 });

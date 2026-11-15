@@ -11,6 +11,7 @@ import {
   PostgresEpisodeStore,
   PostgresPatientKeyStore,
   PostgresVerdictStore,
+  PostgresReminderStore,
   type ClinicalDatabase,
   type NewEpisode,
 } from './index.ts';
@@ -599,6 +600,42 @@ describe.skipIf(!url)(
           checkIns: [{ weekIndex: 1, answers: { Q1: 4 } }],
         });
         expect(await verdicts.evidence(ORG_B, e.id)).toBeNull();
+      });
+    });
+
+    describe('spec 15 reminders (migration 0011)', () => {
+      it('keeps one row per device, finds organisations, claims a week once, removes on request', async () => {
+        const reminders = new PostgresReminderStore(apiDb);
+        const sub = (id: string, hour = 18) =>
+          reminders.subscribe({
+            id,
+            orgId: ORG_A,
+            patientId: PAT_A,
+            endpointEncrypted: 'v1.synthetic-ciphertext',
+            endpointHash: 'e'.repeat(64),
+            remindHour: hour,
+            timeZone: 'UTC',
+          });
+        await sub(randomUUID());
+        await sub(randomUUID(), 9); // same device: updated, not duplicated
+        const subs = await reminders.subscriptions(ORG_A);
+        expect(subs.filter((x) => x.patientId === PAT_A)).toHaveLength(1);
+        expect(subs.find((x) => x.patientId === PAT_A)?.remindHour).toBe(9);
+        expect(await reminders.orgs()).toContain(ORG_A);
+        expect(await reminders.subscriptions(ORG_B)).toEqual([]);
+        const e = await activate();
+        expect((await reminders.episodes(ORG_A, PAT_A)).map((x) => x.episodeId)).toContain(e.id);
+        expect(await reminders.claim(ORG_A, PAT_A, e.id, 1)).toBe(true);
+        expect(await reminders.claim(ORG_A, PAT_A, e.id, 1)).toBe(false);
+        expect(
+          (await reminders.episodes(ORG_A, PAT_A)).find((x) => x.episodeId === e.id)?.remindedWeeks,
+        ).toEqual([1]);
+        const [only] = subs.filter((x) => x.patientId === PAT_A);
+        if (only) await reminders.remove(ORG_A, only.id);
+        await sub(randomUUID());
+        expect(await reminders.unsubscribe(ORG_A, PAT_A, 'e'.repeat(64))).toBe(1);
+        await sub(randomUUID());
+        expect(await reminders.unsubscribe(ORG_A, PAT_A, null)).toBe(1);
       });
     });
 

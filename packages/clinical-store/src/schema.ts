@@ -171,6 +171,24 @@ export interface ClinicalDatabase {
     shadow: Generated<boolean>;
     generated_at: Generated<Date>;
   };
+  /** Migration 0011: push subscriptions (endpoint encrypted per patient) and sent reminders. */
+  push_subscription: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    endpoint_encrypted: string;
+    endpoint_hash: string;
+    remind_hour: Generated<number>;
+    time_zone: string;
+    created_at: Generated<Date>;
+  };
+  reminder_sent: {
+    episode_id: string;
+    week_index: number;
+    org_id: string;
+    patient_id: string;
+    sent_at: Generated<Date>;
+  };
 }
 
 export type EpisodeStatus = 'draft' | 'active' | 'in_review' | 'closed';
