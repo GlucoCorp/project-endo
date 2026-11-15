@@ -29,6 +29,7 @@ export function DeskPage() {
   );
   const [ready, setReady] = useState<'loading' | 'active' | 'choose-org' | 'signed-out'>('loading');
   const [rows, setRows] = useState<readonly QueueRow[] | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [filter, setFilter] = useState<QueueFilter>('all');
   const [search, setSearch] = useState('');
   const [index, setIndex] = useState(0);
@@ -38,7 +39,11 @@ export function DeskPage() {
   useEffect(() => {
     void portal.session().then((s) => {
       setReady(s.kind === 'active' || s.kind === 'choose-org' ? s.kind : 'signed-out');
-      if (s.kind === 'active') void desk.queue().then(setRows);
+      if (s.kind === 'active')
+        void desk.queue().then((q) => {
+          setRows(q?.rows ?? null);
+          setTruncated(q?.truncated ?? false);
+        });
     });
   }, [portal, desk]);
 
@@ -76,7 +81,10 @@ export function DeskPage() {
         csrf={() => portal.csrfToken()}
         onClose={() => {
           setOpen(null);
-          void desk.queue().then(setRows);
+          void desk.queue().then((q) => {
+            setRows(q?.rows ?? null);
+            setTruncated(q?.truncated ?? false);
+          });
         }}
       />
     );
@@ -84,6 +92,7 @@ export function DeskPage() {
     <main className={styles['page']} onKeyDown={onKey}>
       <h1 className={styles['title']}>{t('desk.queue-title')}</h1>
       <p className={styles['muted']}>{t('desk.shadow')}</p>
+      {truncated && <p role="status">{t('desk.truncated')}</p>}
       <div className={styles['filters']} role="group" aria-label={t('desk.filters')}>
         {(['all', 'this_week', 'overdue'] as const).map((f) => (
           <button
@@ -369,6 +378,7 @@ function ReviewView(props: { desk: Desk; row: QueueRow; csrf: () => string; onCl
 }
 
 interface Snapshot {
+  readonly snapshot_hash: string;
   readonly treatments: readonly {
     readonly treatment: { readonly code: string; readonly display: string | null };
     readonly start_date: string;
@@ -383,8 +393,18 @@ function SurgeryCheck(props: { desk: Desk; patientId: string }) {
   const [procedure, setProcedure] = useState('');
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [discussed, setDiscussed] = useState(false);
-  const [saved, setSaved] = useState<boolean | null>(null);
+  const [saved, setSaved] = useState<'saved' | 'changed' | 'error' | null>(null);
+  // One key per check: a new procedure or a fresh preview is a new check (REQ-006).
   const key = useRef(crypto.randomUUID());
+  const preview = (p: string) => {
+    key.current = crypto.randomUUID();
+    setSnapshot(null);
+    setDiscussed(false);
+    if (p)
+      void props.desk.surgeryPreview(props.patientId, p, crypto.randomUUID()).then((r) => {
+        if (r.kind === 'ok') setSnapshot(r.body as Snapshot);
+      });
+  };
   return (
     <section aria-label={t('desk.surgery')}>
       <h2>{t('desk.surgery')}</h2>
@@ -394,15 +414,8 @@ function SurgeryCheck(props: { desk: Desk; patientId: string }) {
           value={procedure}
           onChange={(e) => {
             setProcedure(e.target.value);
-            setSnapshot(null);
-            setDiscussed(false);
             setSaved(null);
-            if (e.target.value)
-              void props.desk
-                .surgeryPreview(props.patientId, e.target.value, crypto.randomUUID())
-                .then((r) => {
-                  if (r.kind === 'ok') setSnapshot(r.body as Snapshot);
-                });
+            preview(e.target.value);
           }}
         >
           <option value="">{t('clinic.choose')}</option>
@@ -443,16 +456,25 @@ function SurgeryCheck(props: { desk: Desk; patientId: string }) {
             type="button"
             disabled={!discussed}
             onClick={() => {
-              void props.desk.surgeryRecord(props.patientId, procedure, key.current).then((r) => {
-                setSaved(r.kind === 'ok');
-              });
+              void props.desk
+                .surgeryRecord(props.patientId, procedure, snapshot.snapshot_hash, key.current)
+                .then((r) => {
+                  if (r.kind === 'refused' && r.code === 'surgery_check.evidence_changed') {
+                    setSaved('changed');
+                    preview(procedure);
+                  } else setSaved(r.kind === 'ok' ? 'saved' : 'error');
+                });
             }}
           >
             {t('desk.save-check')}
           </button>
           {saved !== null && (
-            <p role={saved ? 'status' : 'alert'}>
-              {saved ? t('desk.check-saved') : t('common.try-later')}
+            <p role={saved === 'saved' ? 'status' : 'alert'}>
+              {saved === 'saved'
+                ? t('desk.check-saved')
+                : saved === 'changed'
+                  ? t('desk.check-changed')
+                  : t('common.try-later')}
             </p>
           )}
         </>
