@@ -31,6 +31,8 @@ import {
 } from '@endo/service-kit';
 import { registerConsentRoutes } from './routes/consents.ts';
 import { registerEpisodeRoutes, type EpisodeRouteDeps } from './routes/episodes.ts';
+import { registerVerdictRoutes } from './routes/verdicts.ts';
+import type { VerdictService } from './verdicts.ts';
 import { registerEnrolmentRoutes } from './routes/enrolments.ts';
 import { registerHelloRoutes } from './routes/hello.ts';
 import { registerMembershipRoutes } from './routes/memberships.ts';
@@ -124,6 +126,8 @@ export interface ApiDeps {
    * content; without them these routes do not exist (fail closed).
    */
   readonly episodes?: Omit<EpisodeRouteDeps, 'onCommitted' | 'now'>;
+  /** Verdicts in shadow mode (M3). Only with a clinical database (fail closed). */
+  readonly verdicts?: VerdictService;
   readonly logStream?: { write(msg: string): void };
   /**
    * Requests per minute per caller (spec 12.3; RISK-D01). Callers are BFFs and jobs, so this is a
@@ -164,6 +168,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
     });
   registerConsentRoutes(app, { consents: deps.consents });
   if (deps.episodes) registerEpisodeRoutes(app, { ...deps.episodes, onCommitted, now: deps.now });
+  if (deps.verdicts) registerVerdictRoutes(app, { verdicts: deps.verdicts, onCommitted });
   registerEnrolmentRoutes(app, {
     invitations: deps.invitations,
     sealer: deps.sealer,

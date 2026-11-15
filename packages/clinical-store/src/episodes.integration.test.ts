@@ -10,6 +10,7 @@ import {
   CLINICAL_MIGRATIONS_DIR,
   PostgresEpisodeStore,
   PostgresPatientKeyStore,
+  PostgresVerdictStore,
   type ClinicalDatabase,
   type NewEpisode,
 } from './index.ts';
@@ -483,6 +484,121 @@ describe.skipIf(!url)(
         expect(await report(d.id)).toEqual({ outcome: 'not_found' });
         const theirs = await activate({ patientId: PAT_A2 });
         expect(await report(theirs.id)).toEqual({ outcome: 'not_found' });
+      });
+    });
+
+    describe('REQ-004 verdicts in shadow mode (migration 0010)', () => {
+      const base = (episodeId: string, patientId = PAT_A) => ({
+        orgId: ORG_A,
+        patientId,
+        episodeId,
+        rulesetVersion: '1.0.0',
+        rulesetDigest: 'd'.repeat(64),
+        instrumentVersion: '1.0.0',
+      });
+
+      it('finds episodes due across organisations, records once per rule set version, append-only', async () => {
+        const verdicts = new PostgresVerdictStore(apiDb);
+        // Review in 2 days: due (3 days before). Another with review far away: not due.
+        const due = await activate({ startDate: day(2 - 84) });
+        const notDue = await activate({ startDate: day(-6) });
+        const listed = (await verdicts.due(day(0), '1.0.0')).map((d) => d.episodeId);
+        expect(listed).toContain(due.id);
+        expect(listed).not.toContain(notDue.id);
+        const id = randomUUID();
+        expect(
+          await verdicts.record({
+            ...base(due.id),
+            id,
+            result: { outcome: 'not_generated', reason: 'ruleset_incomplete' },
+            generatedBy: 'system',
+            requestedBy: null,
+            auditEvent: audit('verdict.generate'),
+          }),
+        ).toBe(true);
+        // The schedule does it once per rule set version.
+        expect(
+          await verdicts.record({
+            ...base(due.id),
+            id: randomUUID(),
+            result: { outcome: 'not_generated', reason: 'ruleset_incomplete' },
+            generatedBy: 'system',
+            requestedBy: null,
+            auditEvent: audit('verdict.generate'),
+          }),
+        ).toBe(false);
+        expect((await verdicts.due(day(0), '1.0.0')).map((d) => d.episodeId)).not.toContain(due.id);
+        expect((await verdicts.due(day(0), '1.0.1')).map((d) => d.episodeId)).toContain(due.id);
+        // On demand, with a verdict and its trace; always shadow.
+        expect(
+          await verdicts.record({
+            ...base(due.id),
+            id: randomUUID(),
+            result: {
+              outcome: 'generated',
+              code: 'RED_FLAG',
+              secondary: 'WORKING',
+              modifiers: ['DATA_GAPS'],
+              inputHash: 'a'.repeat(64),
+              explanation: { trace: [] },
+            },
+            generatedBy: 'on_demand',
+            requestedBy: CLIN_A,
+            auditEvent: audit('verdict.generate'),
+          }),
+        ).toBe(true);
+        const list = await verdicts.list(ORG_A, due.id);
+        expect(list.map((v) => v.outcome)).toEqual(['generated', 'not_generated']);
+        expect(list.every((v) => v.shadow)).toBe(true);
+        expect(await verdicts.list(ORG_B, due.id)).toEqual([]);
+        await expect(
+          asApi((c) => c.query(`UPDATE verdict SET verdict_code = 'WORKING' WHERE id = $1`, [id])),
+        ).rejects.toThrow(/permission denied|append-only/);
+        // A secondary only with RED_FLAG; a generated verdict needs its hash and trace.
+        await expect(
+          verdicts.record({
+            ...base(due.id),
+            id: randomUUID(),
+            result: {
+              outcome: 'generated',
+              code: 'WORKING',
+              secondary: 'WORKING',
+              modifiers: [],
+              inputHash: 'a'.repeat(64),
+              explanation: {},
+            },
+            generatedBy: 'on_demand',
+            requestedBy: CLIN_A,
+            auditEvent: audit('x'),
+          }),
+        ).rejects.toThrow(/check/);
+      });
+
+      it('reads the evidence: her answers by week and the red-flag count', async () => {
+        const verdicts = new PostgresVerdictStore(apiDb);
+        const e = await activate();
+        await checkIn(e.id, 1);
+        await store.recordRedFlag({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: e.id,
+          idempotencyKey: randomUUID(),
+          flags: ['RF1'],
+          instrumentVersion: '1.0.0',
+          shownAt: new Date(),
+          acknowledgedAt: null,
+          auditEvent: audit('x'),
+        });
+        const ev = await verdicts.evidence(ORG_A, e.id);
+        expect(ev).toMatchObject({
+          episodeId: e.id,
+          reviewIntervalWeeks: 12,
+          adherenceMode: 'daily',
+          redFlagEvents: 1,
+          checkIns: [{ weekIndex: 1, answers: { Q1: 4 } }],
+        });
+        expect(await verdicts.evidence(ORG_B, e.id)).toBeNull();
       });
     });
 

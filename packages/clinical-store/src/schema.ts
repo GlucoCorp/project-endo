@@ -150,6 +150,27 @@ export interface ClinicalDatabase {
     recorded_at: Generated<Date>;
     team_notified_at: Generated<Date | null>;
   };
+  /** Migration 0010: verdict generation attempts, shadow mode (REQ-004). */
+  verdict: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    outcome: 'generated' | 'not_generated';
+    reason: string | null;
+    verdict_code: string | null;
+    secondary_code: string | null;
+    modifiers: Generated<string[]>;
+    ruleset_version: string;
+    ruleset_digest: string;
+    instrument_version: string;
+    input_hash: string | null;
+    explanation: unknown;
+    generated_by: 'system' | 'on_demand';
+    requested_by: string | null;
+    shadow: Generated<boolean>;
+    generated_at: Generated<Date>;
+  };
 }
 
 export type EpisodeStatus = 'draft' | 'active' | 'in_review' | 'closed';

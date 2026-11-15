@@ -406,6 +406,8 @@ importers:
 
   packages/ui: {}
 
+  packages/verdict: {}
+
   services/api:
     dependencies:
       '@endo/audit':
@@ -432,6 +434,9 @@ importers:
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/verdict':
+        specifier: workspace:*
+        version: link:../../packages/verdict
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1

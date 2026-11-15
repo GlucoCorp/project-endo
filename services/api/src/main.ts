@@ -26,6 +26,7 @@ import {
   PostgresInvitationReservationStore,
   PostgresMembershipStore,
   PostgresPatientKeyStore,
+  PostgresVerdictStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -44,7 +45,9 @@ import {
   WorkloadTokenSigner,
   WorkloadTokenVerifier,
 } from '@endo/service-kit';
+import { uuidv7 } from '@endo/domain';
 import { HttpIdentityEnrolment } from './identity-client.ts';
+import { VerdictService, loadRuleset } from './verdicts.ts';
 import { buildApi } from './app.ts';
 import type { EnrolmentCoordination } from './routes/coordinator.ts';
 
@@ -94,6 +97,25 @@ const Config = z.object({
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
   API_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   API_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
+  // Spec 18.5: public keys that may sign the rule set, as {"key-id": <Ed25519 public JWK>}.
+  // Required in staging and production (the rule set must verify before the API starts).
+  ENDO_RULESET_PUBLIC_KEYS: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        const parsed = z
+          .record(
+            z.string().regex(/^[a-z0-9-]{1,64}$/),
+            z.object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string() }),
+          )
+          .parse(JSON.parse(s));
+        return new Map(Object.entries(parsed));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -114,6 +136,20 @@ async function main(): Promise<void> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   const rulesetText = await readFile(config.ENDO_CLINICAL_RULESET_PATH, 'utf8');
   assertClinicalReleaseReady(config.ENDO_ENV, rulesetText);
+  // Spec 18.5: the signature beside it (`<rule set>.sig.json`) must verify with a pinned key;
+  // deployed environments refuse to start without one.
+  // Same operator-controlled path as the rule set, never from a request.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
+  const signatureText = await readFile(
+    `${config.ENDO_CLINICAL_RULESET_PATH}.sig.json`,
+    'utf8',
+  ).catch(() => null);
+  const ruleset = loadRuleset(
+    rulesetText,
+    signatureText,
+    config.ENDO_RULESET_PUBLIC_KEYS ?? new Map(),
+    isDeployedEnvironment(config.ENDO_ENV),
+  );
   // The instrument, catalogue and goals sit beside the rule set in clinical/ (ADR-0027). Any
   // TODO_CLINICAL refuses startup in staging and production; development uses placeholders.
   const clinicalDir = join(dirname(config.ENDO_CLINICAL_RULESET_PATH), '..');
@@ -148,6 +184,7 @@ async function main(): Promise<void> {
   let memberships: MembershipStore;
   let consents: ConsentStore;
   let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
+  let verdicts: VerdictService | undefined;
   let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
@@ -170,6 +207,7 @@ async function main(): Promise<void> {
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
+    verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
     episodes = {
       store: new PostgresEpisodeStore(db),
       cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
@@ -262,6 +300,7 @@ async function main(): Promise<void> {
     now: () => new Date(),
     consents,
     ...(coordination ? { coordination } : {}),
+    ...(verdicts ? { verdicts } : {}),
     ...(episodes
       ? {
           episodes: {
@@ -289,6 +328,18 @@ async function main(): Promise<void> {
     relayOutbox().catch(() => process.stderr.write('audit outbox relay failed\n'));
   }, 5_000);
   relayTimer.unref();
+
+  // REQ-004: the verdict schedule (shadow mode), hourly; each episode once per rule set version.
+  if (verdicts) {
+    const service = verdicts;
+    const scheduleTimer = setInterval(() => {
+      service
+        .runSchedule(() => uuidv7())
+        .then(() => relayOutbox())
+        .catch(() => process.stderr.write('verdict schedule failed\n'));
+    }, 3_600_000);
+    scheduleTimer.unref();
+  }
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void app.close().then(closeAudit).then(closeClinical));

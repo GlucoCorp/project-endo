@@ -41,6 +41,7 @@ export const ACTIONS = [
   'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
   'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
   'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
+  'verdict.generate', // REQ-004: clinician asks for a (shadow) verdict on a consented patient's episode
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -170,6 +171,7 @@ export function can(
       return ownPatientData(subject, resource);
 
     case 'episode.create':
+    case 'verdict.generate':
     case 'patient_data.read':
     case 'review_decision.record':
       return clinicianWithCareTeamConsent(subject, resource, context);

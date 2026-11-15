@@ -181,6 +181,31 @@ Row-level security on every table. Goals, check-ins and red-flag events are appe
 | `red_flag_event.recorded_at`              | When received (database clock)                                                                | as above                                                            | as above                                                               | S1          |
 | `red_flag_event.team_notified_at`         | When the care team was notified, set once (REQ-007)                                           | as above                                                            | as above                                                               | S1          |
 
+### Verdicts (shadow mode) — `packages/clinical-store/migrations/0010` (M3)
+
+Append-only, row-level security. One row per generation attempt; shown to no one in the care path while `shadow` is true (ADR-0028).
+
+| Column                       | Purpose                                                     | Legal basis                                                              | Retention                                                              | Sensitivity |
+| ---------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------- | ----------- |
+| `verdict.id`                 | Generation attempt identifier                               | Health care; her `share_with_care_team` consent for on-demand generation | Active account plus the regional clinical-record period (`TODO_LEGAL`) | S1          |
+| `verdict.org_id`             | Organisation (row-level security)                           | as above                                                                 | as above                                                               | S0          |
+| `verdict.patient_id`         | Whose episode (pseudonymous)                                | as above                                                                 | as above                                                               | S1          |
+| `verdict.episode_id`         | Episode judged                                              | as above                                                                 | as above                                                               | S1          |
+| `verdict.outcome`            | Generated, or not generated                                 | as above                                                                 | as above                                                               | S1          |
+| `verdict.reason`             | Why not generated (code, e.g. ruleset_incomplete)           | as above                                                                 | as above                                                               | S0          |
+| `verdict.verdict_code`       | Verdict (spec 7.1), shadow only                             | as above                                                                 | as above                                                               | S2          |
+| `verdict.secondary_code`     | With RED_FLAG: the rest of the evaluation                   | as above                                                                 | as above                                                               | S2          |
+| `verdict.modifiers`          | Verdict modifiers (spec 7.1)                                | as above                                                                 | as above                                                               | S2          |
+| `verdict.ruleset_version`    | Rule set version used (spec 18.5)                           | as above                                                                 | as above                                                               | S0          |
+| `verdict.ruleset_digest`     | SHA-256 of the rule set file used                           | as above                                                                 | as above                                                               | S0          |
+| `verdict.instrument_version` | Instrument version of the answers                           | as above                                                                 | as above                                                               | S0          |
+| `verdict.input_hash`         | SHA-256 of the canonical input snapshot (REQ-004)           | as above                                                                 | as above                                                               | S1          |
+| `verdict.explanation`        | Trace: values and thresholds of every step; no free text    | as above                                                                 | as above                                                               | S2          |
+| `verdict.generated_by`       | Schedule or clinician request                               | as above                                                                 | as above                                                               | S0          |
+| `verdict.requested_by`       | Clinician who asked (on demand)                             | as above                                                                 | as above                                                               | S1          |
+| `verdict.shadow`             | Shadow mode: not shown in care (database forces true in M3) | as above                                                                 | as above                                                               | S0          |
+| `verdict.generated_at`       | When (database clock)                                       | as above                                                                 | as above                                                               | S1          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

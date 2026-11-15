@@ -67,3 +67,5 @@ export type {
   StoredRedFlag,
 } from './episodes.ts';
 export type { AdherenceMode, EpisodeStatus } from './schema.ts';
+export { PostgresVerdictStore } from './verdicts.ts';
+export type { EpisodeEvidence, NewVerdict, StoredVerdict, VerdictStore } from './verdicts.ts';
