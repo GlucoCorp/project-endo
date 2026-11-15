@@ -9,5 +9,12 @@
     "noEmit": true,
     "declaration": false
   },
-  "include": ["src", "e2e", "vite.config.ts", "vitest.config.ts", "playwright.config.ts"]
+  "include": [
+    "src",
+    "e2e",
+    "e2e-keycloak",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "playwright.config.ts"
+  ]
 }

@@ -216,7 +216,7 @@ Each scope belongs to one caller, and a valid token alone is never enough: every
 5. Java extension (authenticator, guarded action, post-commit hook), its build pipeline and realm changes.
 6. Provisioning and completion, the reconciliation and cleanup jobs.
 7. The consent-pending session.
-8. Real-Keycloak and browser tests (including ADR-0019 7b).
+8. Real-Keycloak and browser tests (including ADR-0019 7b). **Built 2026-11-15** (`apps/patient-web/e2e-keycloak/`, workflow `keycloak-e2e`): the real Keycloak image with the extension imports the reviewed realm unchanged; the real identity service, API and patient BFF run against migrated schemas; Chromium's virtual authenticator registers her passkey. Covered: invitation, code confirmation, first passkey through the guarded required action, four consent choices, activation, single-use link, sign-out and passkey sign-in, the email-code alternative offered, and a replayed handoff refused. It found three defects the unit tests could not: a flow description over Keycloak's 255-character column (the realm did not import), the email-code option shown as raw message keys, and the refusal page's missing message; `check:realm` now checks both. Still to add: a Keycloak restart mid-flow, concurrent confirmation, a direct `kc_action`, crash points, no WebAuthn support, and the clinician sign-in (ADR-0019 7b).
 
 ## Consequences
 

@@ -270,9 +270,18 @@ importers:
       '@endo/bff-patient':
         specifier: workspace:*
         version: link:../../services/bff-patient
+      '@endo/clinical-store':
+        specifier: workspace:*
+        version: link:../../packages/clinical-store
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@endo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@endo/identity-store':
+        specifier: workspace:*
+        version: link:../../packages/identity-store
       '@endo/oidc':
         specifier: workspace:*
         version: link:../../packages/oidc
@@ -282,6 +291,9 @@ importers:
       '@playwright/test':
         specifier: 1.64.1
         version: 1.64.1
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
       '@types/react':
         specifier: 19.3.0
         version: 19.3.0
@@ -291,6 +303,9 @@ importers:
       '@vitejs/plugin-react':
         specifier: 6.2.1
         version: 6.2.1(vite@8.3.5(@types/node@24.19.2))
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
       vite:
         specifier: 8.3.5
         version: 8.3.5(@types/node@24.19.2)

@@ -5,3 +5,4 @@ dist/
 PROJECT_ENDO_BUILD_SPEC.md
 **/test-results/
 **/playwright-report/
+**/test-results-keycloak

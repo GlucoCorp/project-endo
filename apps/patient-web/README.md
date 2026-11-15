@@ -20,4 +20,5 @@ The patient BFF serves the built app from its own origin (`BFF_PATIENT_APP_DIR`)
 - `pnpm --filter @endo/patient-web dev`: Vite dev server on 127.0.0.1, proxying `/v1` to the BFF (`BFF_URL`, default `http://127.0.0.1:8080`).
 - `pnpm --filter @endo/patient-web build`: production build into `dist/` (first load is about 95 KB of compressed JavaScript; budget 150 KB, spec 14).
 - `pnpm --filter @endo/patient-web test`: unit tests for the page logic (`src/enrol/flow.ts`).
+- `pnpm --filter @endo/patient-web test:e2e:keycloak`: ADR-0021 slice 8 against the real Keycloak image (`endo-keycloak:e2e`, or `ENDO_KEYCLOAK_IMAGE`), identity service, API and patient BFF; needs Docker and `ENDO_TEST_DATABASE_URL`. Synthetic data; keys and passwords generated per run.
 - `pnpm --filter @endo/patient-web test:e2e`: builds, then drives the real BFF and the built app in headless Chromium: CSP violations fail the test.
