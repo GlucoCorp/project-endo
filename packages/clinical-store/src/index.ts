@@ -81,5 +81,6 @@ export type {
   ReviewStore,
   StoredDecision,
   StoredSurgeryCheck,
+  SurgeryCheckOutcome,
   TreatmentFacts,
 } from './reviews.ts';

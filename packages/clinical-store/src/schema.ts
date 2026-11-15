@@ -214,6 +214,7 @@ export interface ClinicalDatabase {
     snapshot: unknown;
     acknowledged_at: Generated<Date>;
     idempotency_key: string;
+    request_hash: string;
   };
 }
 
