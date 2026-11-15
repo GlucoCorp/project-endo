@@ -159,7 +159,8 @@ export interface EpisodeStore {
   listSharingPatients(orgId: string): Promise<SharingPatient[]>;
   /** One episode, only if it belongs to this patient (or, with `patientId` null, the org). */
   get(orgId: string, episodeId: string, patientId: string | null): Promise<Episode | null>;
-  listForPatient(orgId: string, patientId: string): Promise<Episode[]>;
+  /** Newest first; at most `limit` (100), or every one with `null` (her export, REQ-009). */
+  listForPatient(orgId: string, patientId: string, limit?: number | null): Promise<Episode[]>;
   /** Her goal and confirmation together: the episode becomes active (REQ-002). */
   confirm(c: EpisodeConfirmation): Promise<ConfirmOutcome>;
   submitCheckIn(c: CheckInSubmission): Promise<CheckInOutcome>;
@@ -368,13 +369,12 @@ export class PostgresEpisodeStore implements EpisodeStore {
     });
   }
 
-  listForPatient(orgId: string, patientId: string): Promise<Episode[]> {
+  listForPatient(orgId: string, patientId: string, limit: number | null = 100): Promise<Episode[]> {
     return withOrg(this.#db, orgId, async (trx) => {
-      const rows = await episodeQuery(trx)
+      const q = episodeQuery(trx)
         .where('e.patient_id', '=', patientId)
-        .orderBy('e.created_at', 'desc')
-        .limit(100)
-        .execute();
+        .orderBy('e.created_at', 'desc');
+      const rows = await (limit === null ? q : q.limit(limit)).execute();
       return rows.map(toEpisode);
     });
   }
