@@ -281,24 +281,30 @@ export async function accessLog(
   deps: Pick<HistoryRouteDeps, 'episodes' | 'reviews' | 'links' | 'audit'>,
   orgId: string,
   patientId: string,
-  limit = 200,
+  limit: number | 'all' = 200,
 ) {
   const [episodes, decisions, checks, links] = await Promise.all([
-    deps.episodes.listForPatient(orgId, patientId),
+    deps.episodes.listForPatient(orgId, patientId, null),
     deps.reviews.decisions(orgId, patientId),
     deps.reviews.surgeryChecks(orgId, patientId),
     deps.links.ids(orgId, patientId),
   ]);
-  const events = await deps.audit.forResources(
-    [
-      { type: 'patient_record', id: patientId },
-      ...episodes.map((e) => ({ type: 'treatment_episode', id: e.id })),
-      ...decisions.map((d) => ({ type: 'review_decision', id: d.id })),
-      ...checks.map((c) => ({ type: 'surgery_check', id: c.id })),
-      ...links.map((id) => ({ type: 'share_link', id })),
-    ],
-    limit,
-  );
+  const refs = [
+    { type: 'patient_record', id: patientId },
+    ...episodes.map((e) => ({ type: 'treatment_episode', id: e.id })),
+    ...decisions.map((d) => ({ type: 'review_decision', id: d.id })),
+    ...checks.map((c) => ({ type: 'surgery_check', id: c.id })),
+    ...links.map((id) => ({ type: 'share_link', id })),
+  ];
+  // 'all' (her export): page back 500 at a time until the oldest.
+  const events = [];
+  let before: number | undefined;
+  for (;;) {
+    const page = await deps.audit.forResources(refs, limit === 'all' ? 500 : limit, before);
+    events.push(...page);
+    if (limit !== 'all' || page.length < 500) break;
+    before = page.at(-1)?.sequence;
+  }
   return events
     .filter((e) => !(e.outcome === 'success' && CHANGE_GATES.has(e.action)))
     .map((e) => ({

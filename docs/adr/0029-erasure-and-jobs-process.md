@@ -22,6 +22,6 @@ REQ-009 asks for account deletion with a 14-day grace period, then hard deletion
 
 ## Consequences
 
-- Her Keycloak account is not removed yet: the identity service shreds her identity (she can no longer be resolved, so she cannot sign in to the app), but the Keycloak user and passkey remain until the extension or admin API removes them (Section 24 item 38).
+- The identity step shreds her identity key and clears her sign-in subject; `identity_erased_at` records that, not removal. Hard deletion of her identity rows (person, patient links, enrolment and email-code records) and of her Keycloak user and passkey is still to do (Section 24 item 38).
 - Backups keep her rows until they expire; the shredded key makes her goal text and notes unreadable there. A restore must replay `patient_key_shredded` and erased requests before serving (M6 runbook).
 - A second deletion after a cancel is a new request with a new 14 days.

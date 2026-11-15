@@ -97,7 +97,11 @@ export class PostgresAuditStore implements AuditStore, AuditReader {
     return rows.map(toEvent);
   }
 
-  async forResources(refs: readonly ResourceRef[], limit: number): Promise<readonly AuditEvent[]> {
+  async forResources(
+    refs: readonly ResourceRef[],
+    limit: number,
+    beforeSequence?: number,
+  ): Promise<readonly AuditEvent[]> {
     if (refs.length === 0) return [];
     // One `type = … AND id IN (…)` per resource type, however many resources she has.
     const byType = new Map<string, string[]>();
@@ -111,6 +115,9 @@ export class PostgresAuditStore implements AuditStore, AuditReader {
             eb.and([eb('resource_type', '=', type), eb('resource_id', 'in', ids)]),
           ),
         ),
+      )
+      .$if(beforeSequence !== undefined, (q) =>
+        q.where('sequence', '<', String(beforeSequence ?? 0)),
       )
       .orderBy('sequence', 'desc')
       .limit(Math.min(Math.max(limit, 1), 500))

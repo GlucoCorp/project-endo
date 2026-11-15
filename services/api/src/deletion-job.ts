@@ -1,7 +1,11 @@
 import type { DeletionStore } from '@endo/clinical-store';
 import type { WorkloadTokenSigner } from '@endo/service-kit';
 
-/** The identity service's erasure route (crypto-shreds her identity key at once). */
+/**
+ * The identity service's erasure route. It crypto-shreds her identity key and clears her sign-in
+ * subject at once (her name and email are unreadable; she can no longer be resolved). Removing
+ * the identity rows and her Keycloak account is a later step (Section 24 item 38).
+ */
 export interface IdentityErasure {
   /** True once her identity record is erased (or was already gone). */
   erase(personId: string, requestId: string): Promise<boolean>;

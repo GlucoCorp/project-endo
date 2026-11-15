@@ -74,6 +74,15 @@ describe.skipIf(!url)('RISK-R01 PostgresAuditStore (spec 2.6, 12.9)', () => {
       10,
     );
     expect(events.map((e) => e.action)).toEqual(['share_link.viewed', input().action]);
+    const older = await store.forResources(
+      [
+        { type: 'patient_record', id: mine },
+        { type: 'share_link', id: mine },
+      ],
+      10,
+      events[0]?.sequence,
+    );
+    expect(older.map((e) => e.action)).toEqual([input().action]);
     expect(await store.forResources([], 10)).toEqual([]);
   });
 

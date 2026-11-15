@@ -34,13 +34,22 @@ export class InMemoryAuditStore implements AuditStore, AuditReader {
     return Promise.resolve(this.#events.filter((e) => e.sequence >= fromSequence).slice(0, limit));
   }
 
-  forResources(refs: readonly ResourceRef[], limit: number): Promise<readonly AuditEvent[]> {
+  forResources(
+    refs: readonly ResourceRef[],
+    limit: number,
+    beforeSequence?: number,
+  ): Promise<readonly AuditEvent[]> {
     const keys = new Set(refs.map((r) => `${r.type}:${r.id}`));
     return Promise.resolve(
       this.#events
-        .filter((e) => e.resource.id !== null && keys.has(`${e.resource.type}:${e.resource.id}`))
+        .filter(
+          (e) =>
+            e.resource.id !== null &&
+            keys.has(`${e.resource.type}:${e.resource.id}`) &&
+            (beforeSequence === undefined || e.sequence < beforeSequence),
+        )
         .reverse()
-        .slice(0, limit),
+        .slice(0, Math.min(Math.max(limit, 0), 500)),
     );
   }
 }

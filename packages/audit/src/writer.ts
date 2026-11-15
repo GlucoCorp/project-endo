@@ -35,7 +35,12 @@ export interface ResourceRef {
  * AuditStore: only the access-log route needs it.
  */
 export interface AuditReader {
-  forResources(refs: readonly ResourceRef[], limit: number): Promise<readonly AuditEvent[]>;
+  /** At most `limit` (1 to 500); `beforeSequence` pages back through older events. */
+  forResources(
+    refs: readonly ResourceRef[],
+    limit: number,
+    beforeSequence?: number,
+  ): Promise<readonly AuditEvent[]>;
 }
 
 /**
