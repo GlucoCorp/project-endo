@@ -41,6 +41,7 @@ export const ACTIONS = [
   'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
   'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
   'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
+  'review.queue', // REQ-005: clinician's review queue (the store lists consented patients only)
   'reminders.manage_own', // Spec 15: she turns her weekly reminder on or off on a device
   'verdict.generate', // REQ-004: clinician asks for a (shadow) verdict on a consented patient's episode
   'system.hello', // M0 walking skeleton: authenticated, no health data
@@ -203,6 +204,7 @@ export function can(
     // share with the care team, and each patient's data is still checked per patient.
     case 'patient.list':
     case 'catalogue.read':
+    case 'review.queue':
       if (subject.role !== 'clinician') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 

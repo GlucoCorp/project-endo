@@ -28,6 +28,7 @@ import {
   PostgresPatientKeyStore,
   PostgresVerdictStore,
   PostgresReminderStore,
+  PostgresReviewStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -37,6 +38,7 @@ import {
   type ConsentStore,
   type EpisodeStore,
   type ReminderStore,
+  type ReviewStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -214,6 +216,9 @@ async function main(): Promise<void> {
   let consents: ConsentStore;
   let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let verdicts: VerdictService | undefined;
+  let reviews:
+    | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
+    | undefined;
   let reminders: { store: ReminderStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
@@ -238,6 +243,11 @@ async function main(): Promise<void> {
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
     verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
+    reviews = {
+      reviews: new PostgresReviewStore(db),
+      episodes: new PostgresEpisodeStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
     reminders = {
       store: new PostgresReminderStore(db),
       cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
@@ -336,6 +346,9 @@ async function main(): Promise<void> {
     ...(coordination ? { coordination } : {}),
     ...(verdicts ? { verdicts } : {}),
     ...(reminders ? { reminders } : {}),
+    ...(reviews
+      ? { reviews: { ...reviews, content, deployed: isDeployedEnvironment(config.ENDO_ENV) } }
+      : {}),
     ...(episodes
       ? {
           episodes: {

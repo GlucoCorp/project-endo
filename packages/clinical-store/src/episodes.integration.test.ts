@@ -11,6 +11,7 @@ import {
   PostgresEpisodeStore,
   PostgresPatientKeyStore,
   PostgresVerdictStore,
+  PostgresReviewStore,
   PostgresReminderStore,
   type ClinicalDatabase,
   type NewEpisode,
@@ -636,6 +637,218 @@ describe.skipIf(!url)(
         expect(await reminders.unsubscribe(ORG_A, PAT_A, 'e'.repeat(64))).toBe(1);
         await sub(randomUUID());
         expect(await reminders.unsubscribe(ORG_A, PAT_A, null)).toBe(1);
+      });
+    });
+
+    describe('REQ-005, REQ-006 reviews and pre-surgery checks (migration 0012)', () => {
+      const share = async (patientId: string, status: 'granted' | 'revoked') =>
+        admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+         VALUES ($1, $2, $3, 'share_with_care_team', $4, 1)`,
+          [randomUUID(), patientId, ORG_A, status],
+        );
+      const next = (o: Record<string, unknown> = {}) => ({
+        id: randomUUID(),
+        treatmentSystem: 'http://www.whocc.no/atc',
+        treatmentCode: 'G03DB08',
+        adherenceMode: 'daily' as const,
+        doseText: '2 mg',
+        startDate: day(1),
+        reviewIntervalWeeks: 12,
+        ...o,
+      });
+      const decide = (
+        reviews: PostgresReviewStore,
+        episodeId: string,
+        decision: 'continue' | 'switch' | 'add' | 'refer' | 'stop',
+        o: Record<string, unknown> = {},
+      ) =>
+        reviews.decide({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId,
+          clinicianId: CLIN_A,
+          decision,
+          verdictId: null,
+          noteEncrypted: null,
+          next:
+            decision === 'continue' || decision === 'switch' || decision === 'add' ? next() : null,
+          added: decision === 'add' ? next() : null,
+          idempotencyKey: randomUUID(),
+          requestHash: 'h'.repeat(64).replace(/h/g, 'a'),
+          instrumentVersion: '1.0.0',
+          auditEvent: audit('review.decided'),
+          ...o,
+        });
+
+      it('lists consented patients due within the horizon, red flags first', async () => {
+        const reviews = new PostgresReviewStore(apiDb);
+        await share(PAT_A, 'granted');
+        const soon = await activate({ startDate: day(10 - 84) }); // review in 10 days
+        const later = await activate({ startDate: day(5 - 84) }); // review in 5 days
+        const far = await activate({ startDate: day(-6) }); // review in 78 days
+        await store.recordRedFlag({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: soon.id,
+          idempotencyKey: randomUUID(),
+          flags: ['RF3'],
+          instrumentVersion: '1.0.0',
+          shownAt: new Date(),
+          acknowledgedAt: null,
+          auditEvent: audit('x'),
+        });
+        const ids = (await reviews.queue(ORG_A, day(0), 14)).map((q) => q.episodeId);
+        expect(ids.indexOf(soon.id)).toBeLessThan(ids.indexOf(later.id)); // red flag pinned
+        expect(ids).not.toContain(far.id);
+        expect(
+          (await reviews.queue(ORG_A, day(0), 14)).find((q) => q.episodeId === soon.id)?.redFlags,
+        ).toBe(1);
+        await share(PAT_A, 'revoked');
+        expect((await reviews.queue(ORG_A, day(0), 14)).map((q) => q.episodeId)).not.toContain(
+          soon.id,
+        );
+        await share(PAT_A, 'granted');
+        expect(await reviews.queue(ORG_B, day(0), 14)).toEqual([]);
+      });
+
+      it('records a decision once: closes the episode and opens the next in the same line', async () => {
+        const reviews = new PostgresReviewStore(apiDb);
+        const e = await activate();
+        const key = randomUUID();
+        const r = await decide(reviews, e.id, 'continue', { idempotencyKey: key });
+        expect(r.outcome).toBe('recorded');
+        if (r.outcome !== 'recorded') return;
+        const closed = await store.get(ORG_A, e.id, PAT_A);
+        expect(closed?.status).toBe('closed');
+        const draft = await store.get(ORG_A, r.nextEpisodeId ?? '', PAT_A);
+        expect(draft).toMatchObject({ status: 'draft', lineId: e.lineId, previousEpisodeId: e.id });
+        expect((await decide(reviews, e.id, 'continue', { idempotencyKey: key })).outcome).toBe(
+          'replay',
+        );
+        expect(
+          await decide(reviews, e.id, 'continue', {
+            idempotencyKey: key,
+            requestHash: 'b'.repeat(64),
+          }),
+        ).toEqual({ outcome: 'conflict' });
+        // Already decided: another key cannot decide it again.
+        expect(await decide(reviews, e.id, 'stop')).toEqual({ outcome: 'not_open' });
+        expect((await reviews.decisions(ORG_A, PAT_A)).some((d) => d.episodeId === e.id)).toBe(
+          true,
+        );
+      });
+
+      it('add opens a parallel line; refer and stop open nothing; drafts are not decided', async () => {
+        const reviews = new PostgresReviewStore(apiDb);
+        const e = await activate();
+        const added = await decide(reviews, e.id, 'add');
+        if (added.outcome !== 'recorded') throw new Error('not recorded');
+        const parallel = await store.get(ORG_A, added.addedEpisodeId ?? '', PAT_A);
+        expect(parallel?.lineId).toBe(parallel?.id);
+        const s = await activate();
+        expect(await decide(reviews, s.id, 'stop')).toMatchObject({
+          outcome: 'recorded',
+          nextEpisodeId: null,
+        });
+        const d = await mk();
+        expect(await decide(reviews, d.id, 'refer')).toEqual({ outcome: 'not_open' });
+        await expect(
+          asApi((c) => c.query('UPDATE review_decision SET decision_code = $1', ['stop'])),
+        ).rejects.toThrow(/permission denied|append-only/);
+      });
+
+      it('works out adherence from her answers (daily and device) and shows the latest verdict', async () => {
+        const reviews = new PostgresReviewStore(apiDb);
+        const verdicts = new PostgresVerdictStore(apiDb);
+        await share(PAT_A, 'granted');
+        const daily = await activate({ startDate: day(-6) });
+        await store.submitCheckIn({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: daily.id,
+          weekIndex: 1,
+          idempotencyKey: randomUUID(),
+          requestHash: 'c'.repeat(64),
+          answers: { Q1: 3, Q7: 6 },
+          instrumentVersion: '1.0.0',
+          clientCreatedAt: new Date(),
+          auditEvent: audit('x'),
+        });
+        const device = await activate({ startDate: day(-6), adherenceMode: 'device_or_injection' });
+        await store.submitCheckIn({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: device.id,
+          weekIndex: 1,
+          idempotencyKey: randomUUID(),
+          requestHash: 'd'.repeat(64),
+          answers: { Q1: 3, Q7: 'yes' },
+          instrumentVersion: '1.0.0',
+          clientCreatedAt: new Date(),
+          auditEvent: audit('x'),
+        });
+        const facts = await reviews.treatmentFacts(ORG_A, PAT_A);
+        expect(facts.find((f) => f.episodeId === daily.id)?.adherence).toBe(0.857);
+        expect(facts.find((f) => f.episodeId === device.id)?.adherence).toBe(1);
+        const due = await activate({ startDate: day(3 - 84) });
+        await verdicts.record({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          episodeId: due.id,
+          result: { outcome: 'not_generated', reason: 'ruleset_incomplete' },
+          rulesetVersion: '1.0.0',
+          rulesetDigest: 'd'.repeat(64),
+          instrumentVersion: '1.0.0',
+          generatedBy: 'system',
+          requestedBy: null,
+          auditEvent: audit('x'),
+        });
+        const row = (await reviews.queue(ORG_A, day(0), 14)).find((q) => q.episodeId === due.id);
+        expect(row?.verdict).toMatchObject({ code: null, shadow: true });
+        await expect(reviews.queue(ORG_A, 'today', 14)).rejects.toThrow(TypeError);
+      });
+
+      it('reads the facts for a pre-surgery check and records it once', async () => {
+        const reviews = new PostgresReviewStore(apiDb);
+        const e = await activate();
+        await checkIn(e.id, 1);
+        const facts = await reviews.treatmentFacts(ORG_A, PAT_A);
+        const f = facts.find((x) => x.episodeId === e.id);
+        expect(f).toMatchObject({ checkIns: 1, adherence: null, status: 'active' });
+        const key = randomUUID();
+        const c = {
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: PAT_A,
+          clinicianId: CLIN_A,
+          procedure: 'hysterectomy',
+          snapshot: { treatments: facts.length },
+          idempotencyKey: key,
+          auditEvent: audit('surgery_check.recorded'),
+        };
+        expect(await reviews.recordSurgeryCheck(c)).toEqual({ id: c.id, replay: false });
+        expect(await reviews.recordSurgeryCheck({ ...c, id: randomUUID() })).toEqual({
+          id: c.id,
+          replay: true,
+        });
+        expect((await reviews.surgeryChecks(ORG_A, PAT_A))[0]).toMatchObject({
+          procedure: 'hysterectomy',
+        });
+        expect(await reviews.surgeryChecks(ORG_B, PAT_A)).toEqual([]);
+        await expect(
+          reviews.recordSurgeryCheck({
+            ...c,
+            id: randomUUID(),
+            idempotencyKey: randomUUID(),
+            procedure: 'appendectomy',
+          }),
+        ).rejects.toThrow(/check/);
       });
     });
 

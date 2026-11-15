@@ -71,3 +71,15 @@ export { PostgresVerdictStore } from './verdicts.ts';
 export type { EpisodeEvidence, NewVerdict, StoredVerdict, VerdictStore } from './verdicts.ts';
 export { PostgresReminderStore } from './reminders.ts';
 export type { ReminderEpisode, ReminderStore, Subscription } from './reminders.ts';
+export { PostgresReviewStore } from './reviews.ts';
+export type {
+  DecisionCode,
+  DecisionOutcome,
+  DecisionRequest,
+  NextTreatment,
+  QueueItem,
+  ReviewStore,
+  StoredDecision,
+  StoredSurgeryCheck,
+  TreatmentFacts,
+} from './reviews.ts';

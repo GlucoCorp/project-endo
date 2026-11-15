@@ -189,6 +189,32 @@ export interface ClinicalDatabase {
     patient_id: string;
     sent_at: Generated<Date>;
   };
+  /** Migration 0012: review decisions and pre-surgery checks (M4). */
+  review_decision: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    verdict_id: string | null;
+    clinician_id: string;
+    decision_code: 'continue' | 'switch' | 'add' | 'refer' | 'stop';
+    note_encrypted: string | null;
+    next_episode_id: string | null;
+    added_episode_id: string | null;
+    idempotency_key: string;
+    request_hash: string;
+    decided_at: Generated<Date>;
+  };
+  surgery_check: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    clinician_id: string;
+    procedure_code: string;
+    snapshot: unknown;
+    acknowledged_at: Generated<Date>;
+    idempotency_key: string;
+  };
 }
 
 export type EpisodeStatus = 'draft' | 'active' | 'in_review' | 'closed';

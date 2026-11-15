@@ -114,6 +114,13 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  'review.queue': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'reminders.manage_own': {
     patient: 'A',
     clinician: '-',
@@ -426,6 +433,8 @@ describe('properties', () => {
             // who withdraws disappears from it (services/api episodes routes test this).
             'catalogue.read',
             'patient.list',
+            // REQ-005: the queue is filtered by the store to consented patients.
+            'review.queue',
           ]).toContain(action);
       }),
     );
