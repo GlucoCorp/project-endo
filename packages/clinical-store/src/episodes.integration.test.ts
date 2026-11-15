@@ -987,6 +987,34 @@ describe.skipIf(!url)(
          VALUES ($1, $2, $3, 'share_with_care_team', 'granted', 1)`,
           [randomUUID(), pat, ORG_A],
         );
+        // Enrolled like any patient: a claimed invitation, with a released reservation on it.
+        const invitation = randomUUID();
+        const setup = await admin.connect();
+        try {
+          await setup.query('BEGIN');
+          await setup.query('SET LOCAL session_replication_role = replica');
+          await setup.query(
+            `INSERT INTO enrolment_invitation
+               (id, org_id, created_by, token_hash, expires_at, claimed_at, patient_id,
+                reserved_by, reserved_at)
+             VALUES ($1, $2, $3, $4, now() + interval '1 day', now(), $5, $6, now())`,
+            [
+              invitation,
+              ORG_A,
+              CLIN_A,
+              createHash('sha256').update(invitation).digest('hex'),
+              pat,
+              randomUUID(),
+            ],
+          );
+          await setup.query(
+            'INSERT INTO enrolment_reservation_fence (transaction_id, org_id, invitation_id) VALUES ($1, $2, $3)',
+            [randomUUID(), ORG_A, invitation],
+          );
+          await setup.query('COMMIT');
+        } finally {
+          setup.release();
+        }
         const e = await mk({ patientId: pat, startDate: day(-6) });
         const keys = new PostgresPatientKeyStore(apiDb, ORG_A);
         const cipher = new FieldCipher(new DevKeyManager('test'), keys);
@@ -1082,6 +1110,18 @@ describe.skipIf(!url)(
           'SELECT 1 FROM consent WHERE patient_id = $1',
         ])
           expect((await admin.query(q, [pat])).rowCount).toBe(0);
+        expect(
+          (await admin.query('SELECT 1 FROM enrolment_invitation WHERE id = $1', [invitation]))
+            .rowCount,
+        ).toBe(0);
+        expect(
+          (
+            await admin.query(
+              'SELECT 1 FROM enrolment_reservation_fence WHERE invitation_id = $1',
+              [invitation],
+            )
+          ).rowCount,
+        ).toBe(0);
         expect(
           (await admin.query('SELECT 1 FROM patient_record WHERE id = $1', [pat])).rowCount,
         ).toBe(0);

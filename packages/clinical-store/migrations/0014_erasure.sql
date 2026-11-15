@@ -205,13 +205,16 @@ BEGIN
       DELETE FROM %I.goal WHERE patient_id = p_patient;
       DELETE FROM %I.treatment_episode WHERE patient_id = p_patient;
       DELETE FROM %I.consent WHERE patient_id = p_patient;
+      -- Released reservations refer to her invitation (an enrolled patient always has one).
+      DELETE FROM %I.enrolment_reservation_fence
+        WHERE invitation_id IN (SELECT id FROM %I.enrolment_invitation WHERE patient_id = p_patient);
       DELETE FROM %I.enrolment_invitation WHERE patient_id = p_patient;
       DELETE FROM %I.patient_record WHERE id = p_patient;
       UPDATE %I.deletion_request SET erased_at = clock_timestamp() WHERE id = req;
       RETURN true;
     END;
     $b$
-  $f$, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s);
+  $f$, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s, s);
 
   EXECUTE format($f$
     CREATE FUNCTION deletion_due() RETURNS TABLE (patient_id uuid, org_id uuid)
