@@ -85,3 +85,5 @@ export type {
 } from './reviews.ts';
 export { PostgresShareLinkStore } from './share-links.ts';
 export type { LiveShareLink, ShareLink, ShareLinkStore } from './share-links.ts';
+export { PostgresDeletionStore } from './deletions.ts';
+export type { DeletionStatus, DeletionStore } from './deletions.ts';

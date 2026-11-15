@@ -11,6 +11,7 @@ import {
   PostgresEpisodeStore,
   PostgresPatientKeyStore,
   PostgresVerdictStore,
+  PostgresDeletionStore,
   PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
@@ -923,6 +924,139 @@ describe.skipIf(!url)(
           }),
         ).rejects.toThrow(TypeError);
         await expect(links.findLive('nope')).rejects.toThrow(TypeError);
+      });
+    });
+
+    describe('REQ-009 deletion: 14 days of grace, then erasure with crypto-shredding (migration 0014)', () => {
+      it('erases only a due, uncancelled request; everything of hers goes, her key first', async () => {
+        const deletions = new PostgresDeletionStore(apiDb);
+        // A patient of her own, with one of everything.
+        const pat = randomUUID();
+        const ref = randomUUID();
+        await admin.query(
+          'INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3)',
+          [pat, ORG_A, ref],
+        );
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+         VALUES ($1, $2, $3, 'share_with_care_team', 'granted', 1)`,
+          [randomUUID(), pat, ORG_A],
+        );
+        const e = await mk({ patientId: pat, startDate: day(-6) });
+        const keys = new PostgresPatientKeyStore(apiDb, ORG_A);
+        const cipher = new FieldCipher(new DevKeyManager('test'), keys);
+        const goalId = randomUUID();
+        const sealed = await cipher.encrypt('SYNTHETIC goal', {
+          patientId: pat,
+          field: 'goal.text',
+          recordId: goalId,
+        });
+        await store.confirm({
+          orgId: ORG_A,
+          patientId: pat,
+          episodeId: e.id,
+          confirmKey: randomUUID(),
+          goalId,
+          goal: { textEncrypted: sealed },
+          timeZone: 'UTC',
+          auditEvent: audit('x'),
+        });
+        await store.recordRedFlag({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: pat,
+          episodeId: e.id,
+          idempotencyKey: randomUUID(),
+          flags: ['RF1'],
+          instrumentVersion: '1.0.0',
+          shownAt: new Date(),
+          acknowledgedAt: null,
+          auditEvent: audit('x'),
+        });
+
+        expect(await deletions.identityRefOf(ORG_A, pat)).toBe(ref);
+        const req = await deletions.request({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: pat,
+          identityRef: ref,
+          auditEvent: audit('deletion.requested'),
+        });
+        expect((req.dueAt.getTime() - req.requestedAt.getTime()) / 86_400_000).toBeCloseTo(14, 3);
+        // Asking again returns the same open request.
+        expect(
+          (
+            await deletions.request({
+              id: randomUUID(),
+              orgId: ORG_A,
+              patientId: pat,
+              identityRef: ref,
+              auditEvent: audit('x'),
+            })
+          ).id,
+        ).toBe(req.id);
+        // Not due yet: nothing happens.
+        expect(await deletions.erase(ORG_A, pat, audit('x'))).toBe(false);
+        expect((await deletions.due()).map((d) => d.patientId)).not.toContain(pat);
+        // Cancel, then ask again.
+        expect(await deletions.cancel(ORG_A, pat, audit('deletion.cancelled'))).toBe(true);
+        expect(await deletions.cancel(ORG_A, pat, audit('x'))).toBe(false);
+        const again = await deletions.request({
+          id: randomUUID(),
+          orgId: ORG_A,
+          patientId: pat,
+          identityRef: ref,
+          auditEvent: audit('x'),
+        });
+        expect(again.id).not.toBe(req.id);
+        // The 14 days pass (setup only: moved back with triggers off).
+        const c = await admin.connect();
+        try {
+          await c.query('BEGIN');
+          await c.query('SET LOCAL session_replication_role = replica');
+          await c.query(
+            `UPDATE deletion_request SET due_at = now() - interval '1 minute' WHERE id = $1`,
+            [again.id],
+          );
+          await c.query('COMMIT');
+        } finally {
+          c.release();
+        }
+        expect((await deletions.due()).map((d) => d.patientId)).toContain(pat);
+        // The API role cannot delete her data directly, even now.
+        await expect(
+          asApi((cl) => cl.query('DELETE FROM check_in WHERE patient_id = $1', [pat])),
+        ).rejects.toThrow(/permission denied/);
+        expect(await deletions.erase(ORG_A, pat, audit('deletion.erased'))).toBe(true);
+        expect(await deletions.erase(ORG_A, pat, audit('x'))).toBe(false);
+        for (const t of ['treatment_episode', 'goal', 'red_flag_event', 'check_in', 'consent'])
+          expect(
+            (await admin.query(`SELECT 1 FROM ${t} WHERE patient_id = $1`, [pat])).rowCount,
+          ).toBe(0);
+        expect(
+          (await admin.query('SELECT 1 FROM patient_record WHERE id = $1', [pat])).rowCount,
+        ).toBe(0);
+        expect(
+          (await admin.query('SELECT 1 FROM patient_key WHERE patient_id = $1', [pat])).rowCount,
+        ).toBe(0);
+        expect(
+          (await admin.query('SELECT 1 FROM patient_key_shredded WHERE patient_id = $1', [pat]))
+            .rowCount,
+        ).toBe(1);
+        await expect(
+          cipher.decrypt(sealed, { patientId: pat, field: 'goal.text', recordId: goalId }),
+        ).rejects.toThrow();
+        expect((await deletions.status(ORG_A, pat))?.erasedAt).toBeInstanceOf(Date);
+        // Then her identity record, through the identity service.
+        const pending = await deletions.identityPending();
+        expect(pending.map((p) => p.identityRef)).toContain(ref);
+        const mine = pending.find((p) => p.identityRef === ref);
+        if (mine) await deletions.markIdentityErased(ORG_A, mine.id);
+        expect((await deletions.identityPending()).map((p) => p.identityRef)).not.toContain(ref);
+        // The request itself is kept, and cannot be undone or removed.
+        await expect(
+          asApi((cl) => cl.query('DELETE FROM deletion_request WHERE patient_id = $1', [pat])),
+        ).rejects.toThrow(/permission denied/);
       });
     });
 

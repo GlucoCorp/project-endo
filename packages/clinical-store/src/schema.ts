@@ -205,6 +205,18 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0014: account deletion requests (REQ-009). */
+  deletion_request: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    identity_ref: string;
+    requested_at: Generated<Date>;
+    due_at: Generated<Date>;
+    cancelled_at: Date | null;
+    erased_at: Generated<Date | null>;
+    identity_erased_at: Date | null;
+  };
   /** Migration 0013: share links (REQ-008). */
   share_link: {
     id: string;
