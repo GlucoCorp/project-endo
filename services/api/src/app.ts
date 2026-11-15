@@ -136,7 +136,7 @@ export interface ApiDeps {
   /** Her history, sharing and access log (M4). Only with a clinical database (fail closed). */
   readonly history?: Omit<HistoryRouteDeps, 'onCommitted' | 'writer'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
-  readonly reviews?: Omit<ReviewRouteDeps, 'onCommitted' | 'now'>;
+  readonly reviews?: Omit<ReviewRouteDeps, 'onCommitted' | 'now' | 'audit'>;
   /** Weekly reminders (spec 15): her subscriptions. Only with a clinical database. */
   readonly reminders?: {
     readonly store: ReminderStore;
@@ -183,7 +183,13 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   registerConsentRoutes(app, { consents: deps.consents });
   if (deps.episodes) registerEpisodeRoutes(app, { ...deps.episodes, onCommitted, now: deps.now });
   if (deps.verdicts) registerVerdictRoutes(app, { verdicts: deps.verdicts, onCommitted });
-  if (deps.reviews) registerReviewRoutes(app, { ...deps.reviews, onCommitted, now: deps.now });
+  if (deps.reviews)
+    registerReviewRoutes(app, {
+      ...deps.reviews,
+      onCommitted,
+      now: deps.now,
+      audit: deps.audit,
+    });
   if (deps.history)
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
   if (deps.reminders)

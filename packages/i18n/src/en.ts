@@ -223,6 +223,10 @@ export const en = {
   'desk.discussed': 'I have discussed these with the patient.',
   'desk.save-check': 'Save the check',
   'desk.check-saved': 'Check saved. She can see it in her app.',
+  'desk.check-changed':
+    'Her record changed since this check was shown. It is up to date now: look again before saving.',
+  'desk.truncated':
+    'More reviews are due than this list can show. Those with red flags are always at the top.',
   'clinic.select': 'Select',
   'clinic.code': 'Code from her phone',
   'clinic.identified': 'I have identified her the way this clinic normally does.',

@@ -157,8 +157,13 @@ export class Desk {
     }
   }
 
-  async queue(): Promise<readonly QueueRow[] | null> {
-    return (await this.#get<{ items: QueueRow[] }>('/v1/reviews/queue'))?.items ?? null;
+  /** The queue; `truncated` when more are due than it shows (red flags are never cut). */
+  async queue(): Promise<{
+    readonly rows: readonly QueueRow[];
+    readonly truncated: boolean;
+  } | null> {
+    const q = await this.#get<{ items: QueueRow[]; truncated?: boolean }>('/v1/reviews/queue');
+    return q ? { rows: q.items, truncated: q.truncated === true } : null;
   }
 
   review(patientId: string, episodeId: string): Promise<Review | null> {
@@ -195,10 +200,16 @@ export class Desk {
     );
   }
 
-  surgeryRecord(patientId: string, procedure: string, key: string): Promise<Result> {
+  /** Saves the check she was shown: `snapshotHash` is the preview's (REQ-006). */
+  surgeryRecord(
+    patientId: string,
+    procedure: string,
+    snapshotHash: string,
+    key: string,
+  ): Promise<Result> {
     return this.#post(
       `/v1/patients/${encodeURIComponent(patientId)}/surgery-checks`,
-      { procedure, discussed_with_patient: true },
+      { procedure, discussed_with_patient: true, snapshot_hash: snapshotHash },
       key,
     );
   }

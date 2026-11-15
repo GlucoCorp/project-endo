@@ -67,7 +67,7 @@ describe('REQ-005 spec 21.8 desk logic', () => {
       json(500, {}),
       new TypeError('x'),
     ]);
-    expect(await d.queue()).toHaveLength(1);
+    expect((await d.queue())?.rows).toHaveLength(1);
     expect(await d.review(P, E)).toEqual({ episode: {} });
     expect(calls[1]?.url).toBe(`/v1/patients/${P}/episodes/${E}/review`);
     expect(await d.queue()).toBeNull();
@@ -117,10 +117,13 @@ describe('REQ-005 spec 21.8 desk logic', () => {
       kind: 'ok',
       body: { procedure: 'ablation' },
     });
-    expect(await d.surgeryRecord(P, 'ablation', KEY)).toMatchObject({ kind: 'ok' });
+    expect(await d.surgeryRecord(P, 'ablation', 'a'.repeat(64), KEY)).toMatchObject({
+      kind: 'ok',
+    });
     expect(JSON.parse(calls[1]?.init?.body as string)).toEqual({
       procedure: 'ablation',
       discussed_with_patient: true,
+      snapshot_hash: 'a'.repeat(64),
     });
   });
 });

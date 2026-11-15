@@ -120,6 +120,7 @@ function api(path: string, body: Record<string, unknown> | null): Response {
   if (path === `/v1/patients/${PATIENT}/surgery-checks/preview`)
     return reply({
       procedure: body?.['procedure'],
+      snapshot_hash: 'e'.repeat(64),
       treatments: [
         {
           treatment: { code: 'SYNTH-DAILY', display: 'Synthetic daily tablet' },
@@ -326,6 +327,10 @@ test('REQ-005, REQ-006 the desk: queue, review with the Trial Strip, decision, p
   await page.getByLabel('I have discussed these with the patient.').check();
   await save.click();
   await expect(page.getByText('Check saved.', { exact: false })).toBeVisible();
-  expect(lastSurgery).toEqual({ procedure: 'hysterectomy', discussed_with_patient: true });
+  expect(lastSurgery).toEqual({
+    procedure: 'hysterectomy',
+    discussed_with_patient: true,
+    snapshot_hash: 'e'.repeat(64),
+  });
   expect(violations).toEqual([]);
 });
