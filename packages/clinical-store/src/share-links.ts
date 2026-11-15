@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import { withOrg } from './org-scope.ts';
 import type { ClinicalDatabase } from './schema.ts';
 
@@ -31,7 +31,10 @@ export interface ShareLinkStore {
     readonly creationKey: string;
     readonly auditEvent: Audit;
   }): Promise<ShareLink & { readonly replay: boolean }>;
+  /** Every live link, and the latest 100 others, newest first (a live link is never hidden). */
   list(orgId: string, patientId: string): Promise<ShareLink[]>;
+  /** Every link of hers ever made (ids only), for her access log (spec 13.3). */
+  ids(orgId: string, patientId: string): Promise<string[]>;
   /** Stops sharing now. False if it is not hers or was already stopped. */
   revoke(orgId: string, patientId: string, id: string, auditEvent: Audit): Promise<boolean>;
   /** A live link by its token's SHA-256 (cross-organisation, ids only), or null. */
@@ -93,8 +96,22 @@ export class PostgresShareLinkStore implements ShareLinkStore {
         .selectFrom('share_link')
         .select(['id', 'created_at', 'expires_at', 'revoked_at'])
         .where('patient_id', '=', patientId)
+        .where((eb) =>
+          eb.or([
+            eb.and([eb('revoked_at', 'is', null), eb('expires_at', '>', sql<Date>`now()`)]),
+            eb(
+              'id',
+              'in',
+              eb
+                .selectFrom('share_link as recent')
+                .select('recent.id')
+                .where('recent.patient_id', '=', patientId)
+                .orderBy('recent.created_at', 'desc')
+                .limit(100),
+            ),
+          ]),
+        )
         .orderBy('created_at', 'desc')
-        .limit(100)
         .execute();
       return rows.map((r) => ({
         id: r.id,
@@ -103,6 +120,18 @@ export class PostgresShareLinkStore implements ShareLinkStore {
         revokedAt: r.revoked_at,
       }));
     });
+  }
+
+  ids(orgId: string, patientId: string): Promise<string[]> {
+    return withOrg(this.#db, orgId, async (trx) =>
+      (
+        await trx
+          .selectFrom('share_link')
+          .select('id')
+          .where('patient_id', '=', patientId)
+          .execute()
+      ).map((r) => r.id),
+    );
   }
 
   revoke(orgId: string, patientId: string, id: string, auditEvent: Audit): Promise<boolean> {

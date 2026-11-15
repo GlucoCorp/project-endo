@@ -28,6 +28,7 @@ import { buildApi } from './app.ts';
 const ORG = '01900000-0000-7000-8000-00000000000a';
 const PATIENT = '01900000-0000-7000-8000-0000000000a1';
 const EPISODE = '01900000-0000-7000-8000-0000000000e5';
+const DECISION = randomUUID();
 const MARKER = 'SYNTHETIC_PHI_MARKER-goal-7f3a';
 const read = (p: string) =>
   readFileSync(fileURLToPath(new URL(`../../../clinical/${p}`, import.meta.url)), 'utf8');
@@ -95,6 +96,9 @@ class FakeLinks implements ShareLinkStore {
   list() {
     return Promise.resolve(this.rows);
   }
+  ids() {
+    return Promise.resolve(this.rows.map((r) => r.id));
+  }
   revoke(_o: string, _p: string, id: string) {
     const r = this.rows.find((x) => x.id === id && x.revokedAt === null);
     if (r) Object.assign(r, { revokedAt: new Date() });
@@ -135,7 +139,7 @@ async function setup() {
     decisions: () =>
       Promise.resolve([
         {
-          id: 'd',
+          id: DECISION,
           episodeId: EPISODE,
           decision: 'switch',
           noteEncrypted: 'v1.secret-note',
@@ -144,6 +148,7 @@ async function setup() {
           decidedAt: new Date(),
         },
       ]),
+    surgeryChecks: () => Promise.resolve([]),
   } as unknown as ReviewStore;
   const app = await buildApi({
     logLevel: 'silent',
@@ -190,7 +195,7 @@ async function setup() {
       headers: { authorization: `Bearer ${await signer.sign(['api.share.view'], 'api')}` },
       payload: { token_hash: tokenHash },
     });
-  return { me, view, links, store };
+  return { me, view, links, store, writer };
 }
 
 describe('REQ-008 her history and share links', () => {
@@ -245,5 +250,48 @@ describe('REQ-008 her history and share links', () => {
     expect(log.json<{ events: { action: string; role: string }[] }>().events).toContainEqual(
       expect.objectContaining({ action: 'share_link.viewed', role: 'anonymous' }),
     );
+  });
+
+  it('spec 13.3: her access log shows reads of her record and changes once made', async () => {
+    const { me, writer } = await setup();
+    const base = {
+      actor: { id: randomUUID(), role: 'clinician' as const },
+      org_id: ORG,
+      purpose_of_use: 'treatment' as const,
+      outcome: 'success' as const,
+      reason: null,
+      request_id: randomUUID(),
+    };
+    await writer.write({
+      ...base,
+      action: 'review.queue.listed',
+      resource: { type: 'patient_record', id: PATIENT },
+    });
+    // Allowed to start, then made: shown once, as made.
+    await writer.write({
+      ...base,
+      action: 'review_decision.record',
+      resource: { type: 'patient_record', id: PATIENT },
+    });
+    await writer.write({
+      ...base,
+      action: 'review.decided',
+      resource: { type: 'review_decision', id: DECISION },
+    });
+    // Refused: shown.
+    await writer.write({
+      ...base,
+      outcome: 'denied',
+      reason: 'authz.no_consent',
+      action: 'episode.create',
+      resource: { type: 'patient_record', id: PATIENT },
+    });
+    const actions = (await me('GET', '/v1/me/access-log'))
+      .json<{ events: { action: string }[] }>()
+      .events.map((e) => e.action);
+    expect(actions).toEqual(
+      expect.arrayContaining(['review.queue.listed', 'review.decided', 'episode.create']),
+    );
+    expect(actions).not.toContain('review_decision.record');
   });
 });

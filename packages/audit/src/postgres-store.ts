@@ -99,12 +99,17 @@ export class PostgresAuditStore implements AuditStore, AuditReader {
 
   async forResources(refs: readonly ResourceRef[], limit: number): Promise<readonly AuditEvent[]> {
     if (refs.length === 0) return [];
+    // One `type = … AND id IN (…)` per resource type, however many resources she has.
+    const byType = new Map<string, string[]>();
+    for (const r of refs) byType.set(r.type, [...(byType.get(r.type) ?? []), r.id]);
     const rows = await this.#db
       .selectFrom('audit_event')
       .selectAll()
       .where((eb) =>
         eb.or(
-          refs.map((r) => eb.and([eb('resource_type', '=', r.type), eb('resource_id', '=', r.id)])),
+          [...byType].map(([type, ids]) =>
+            eb.and([eb('resource_type', '=', type), eb('resource_id', 'in', ids)]),
+          ),
         ),
       )
       .orderBy('sequence', 'desc')

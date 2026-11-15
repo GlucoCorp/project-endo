@@ -30,6 +30,12 @@ export interface HistoryRouteDeps {
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$';
+/**
+ * Authorisation events for changes. Each change writes its own event when it commits
+ * (`review.decided`, `surgery_check.recorded`, `episode.drafted`), so the log shows that instead;
+ * a refused attempt is still shown.
+ */
+const CHANGE_GATES = new Set(['review_decision.record', 'episode.create']);
 /** What a week shows on the strip; red-flag answers and anything else stay out of a summary. */
 const STRIP_KEYS = ['Q1', 'Q3', 'Q5', 'Q6', 'Q7', 'Q8'] as const;
 
@@ -261,22 +267,34 @@ export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRouteDe
     { config: { policy: policy('access_log.read_own', 'audit_event') } },
     async (request) => {
       const { orgId, patientId } = own(request);
-      const links = await deps.links.list(orgId, patientId);
+      // Everything of hers an event can name: her record, treatments, decisions, checks, links.
+      const [episodes, decisions, checks, links] = await Promise.all([
+        deps.episodes.listForPatient(orgId, patientId),
+        deps.reviews.decisions(orgId, patientId),
+        deps.reviews.surgeryChecks(orgId, patientId),
+        deps.links.ids(orgId, patientId),
+      ]);
       const events = await deps.audit.forResources(
         [
           { type: 'patient_record', id: patientId },
-          ...links.map((l) => ({ type: 'share_link', id: l.id })),
+          ...episodes.map((e) => ({ type: 'treatment_episode', id: e.id })),
+          ...decisions.map((d) => ({ type: 'review_decision', id: d.id })),
+          ...checks.map((c) => ({ type: 'surgery_check', id: c.id })),
+          ...links.map((id) => ({ type: 'share_link', id })),
         ],
         200,
       );
       return {
-        events: events.map((e) => ({
-          at: e.occurred_at,
-          role: e.actor.role,
-          action: e.action,
-          purpose: e.purpose_of_use,
-          outcome: e.outcome,
-        })),
+        events: events
+          // A change is shown once it is made (its own event), not when it was allowed to start.
+          .filter((e) => !(e.outcome === 'success' && CHANGE_GATES.has(e.action)))
+          .map((e) => ({
+            at: e.occurred_at,
+            role: e.actor.role,
+            action: e.action,
+            purpose: e.purpose_of_use,
+            outcome: e.outcome,
+          })),
       };
     },
   );
