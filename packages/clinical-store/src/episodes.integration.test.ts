@@ -706,6 +706,10 @@ describe.skipIf(!url)(
         expect(
           (await reviews.queue(ORG_A, day(0), 14)).find((q) => q.episodeId === soon.id)?.redFlags,
         ).toBe(1);
+        // A limit cuts unflagged episodes first, never a red flag (ordered in SQL).
+        const top = await reviews.queue(ORG_A, day(0), 14, 1);
+        expect(top).toHaveLength(1);
+        expect(top[0]?.redFlags).toBeGreaterThan(0);
         await share(PAT_A, 'revoked');
         expect((await reviews.queue(ORG_A, day(0), 14)).map((q) => q.episodeId)).not.toContain(
           soon.id,
@@ -829,14 +833,34 @@ describe.skipIf(!url)(
           clinicianId: CLIN_A,
           procedure: 'hysterectomy',
           snapshot: { treatments: facts.length },
+          fresh: true,
           idempotencyKey: key,
+          requestHash: 'a'.repeat(64),
           auditEvent: audit('surgery_check.recorded'),
         };
-        expect(await reviews.recordSurgeryCheck(c)).toEqual({ id: c.id, replay: false });
-        expect(await reviews.recordSurgeryCheck({ ...c, id: randomUUID() })).toEqual({
+        // Evidence changed since the preview: nothing saved.
+        expect(
+          await reviews.recordSurgeryCheck({ ...c, idempotencyKey: randomUUID(), fresh: false }),
+        ).toEqual({ outcome: 'stale' });
+        expect(await reviews.recordSurgeryCheck(c)).toMatchObject({
+          outcome: 'recorded',
           id: c.id,
-          replay: true,
         });
+        expect(await reviews.recordSurgeryCheck({ ...c, id: randomUUID() })).toEqual({
+          outcome: 'replay',
+          id: c.id,
+          snapshot: c.snapshot,
+        });
+        // The same key for another procedure is refused, never reported as saved.
+        expect(
+          await reviews.recordSurgeryCheck({
+            ...c,
+            id: randomUUID(),
+            procedure: 'myomectomy',
+            requestHash: 'b'.repeat(64),
+          }),
+        ).toEqual({ outcome: 'conflict' });
+        expect(await reviews.surgeryChecks(ORG_A, PAT_A)).toHaveLength(1);
         expect((await reviews.surgeryChecks(ORG_A, PAT_A))[0]).toMatchObject({
           procedure: 'hysterectomy',
         });
@@ -847,6 +871,7 @@ describe.skipIf(!url)(
             id: randomUUID(),
             idempotencyKey: randomUUID(),
             procedure: 'appendectomy',
+            requestHash: 'c'.repeat(64),
           }),
         ).rejects.toThrow(/check/);
       });
