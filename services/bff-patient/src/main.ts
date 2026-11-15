@@ -26,6 +26,11 @@ const Config = z.object({
   // Loopback by default; containers set 0.0.0.0 and rely on NetworkPolicy (ADR-0016).
   BFF_PATIENT_HOST: z.enum(['127.0.0.1', '0.0.0.0']).default('127.0.0.1'),
   BFF_PATIENT_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().min(1).default(120),
+  // REQ-007: the local emergency number on the urgent-care screen, per deployment (region).
+  BFF_PATIENT_EMERGENCY_NUMBER: z
+    .string()
+    .regex(/^\+?[0-9]{2,15}$/)
+    .optional(),
   BFF_PATIENT_API_BASE_URL: z.url({ protocol: /^https?$/ }),
   BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK: z.string().transform((s, ctx) => {
     try {
@@ -132,6 +137,7 @@ async function main(): Promise<void> {
     apiBaseUrl: config.BFF_PATIENT_API_BASE_URL,
     fetch,
     rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
+    emergencyNumber: config.BFF_PATIENT_EMERGENCY_NUMBER ?? null,
     ...(config.BFF_PATIENT_APP_DIR ? { appShell: loadAppShell(config.BFF_PATIENT_APP_DIR) } : {}),
     ...(config.BFF_PATIENT_IDENTITY_BASE_URL &&
     config.BFF_PATIENT_WORKLOAD_PRIVATE_KEY_JWK &&

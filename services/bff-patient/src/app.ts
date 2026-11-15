@@ -15,6 +15,8 @@ import {
 import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts';
 import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 import { registerAppShell, type AppShell } from './app-shell.ts';
+import { registerEpisodeProxy } from './episodes.ts';
+import { registerAppConfig, registerServiceWorker } from './service-worker.ts';
 import { registerSessionRoutes } from './session-routes.ts';
 
 /**
@@ -74,6 +76,8 @@ export interface BffDeps {
    * and stricter limits on sign-in endpoints, arrive with real sessions in M1.
    */
   readonly rateLimitPerMinute?: number;
+  /** The local emergency number for the urgent-care screen (REQ-007); per deployment. */
+  readonly emergencyNumber?: string | null;
 }
 
 const HelloResponse = z.strictObject({
@@ -205,8 +209,18 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   });
 
   registerSessionRoutes(app, deps.sessions);
+  registerServiceWorker(app);
+  registerAppConfig(app, deps.emergencyNumber ?? null);
   if (deps.enrolment)
     registerEnrolmentRoutes(app, { ...deps.enrolment, sessionsResolver: deps.sessions });
+  // M2: her episodes and check-ins (needs her app's origin for the state-change checks).
+  if (deps.enrolment)
+    registerEpisodeProxy(app, {
+      signer: deps.signer,
+      apiBaseUrl: deps.apiBaseUrl,
+      patientOrigin: deps.enrolment.patientOrigin,
+      fetch: deps.fetch,
+    });
   if (deps.appShell) registerAppShell(app, deps.appShell);
 
   await app.ready();

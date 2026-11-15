@@ -251,6 +251,9 @@ importers:
 
   apps/patient-web:
     dependencies:
+      '@endo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@endo/i18n':
         specifier: workspace:*
         version: link:../../packages/i18n
@@ -270,9 +273,6 @@ importers:
       '@endo/bff-patient':
         specifier: workspace:*
         version: link:../../services/bff-patient
-      '@endo/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@endo/oidc':
         specifier: workspace:*
         version: link:../../packages/oidc

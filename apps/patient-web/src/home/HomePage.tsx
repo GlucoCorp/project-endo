@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { t } from '../i18n.ts';
 import { EmailSettings } from './EmailSettings.tsx';
+import { TrialHome, offlineQueue } from '../checkin/TrialHome.tsx';
 import styles from '../enrol/enrol.module.css';
 import {
   SIGN_IN_PATH,
@@ -26,6 +27,8 @@ export function HomePage() {
     let live = true;
     const refresh = () => {
       void checkSession(fetchFn).then((s) => {
+        // No session: whatever is queued can never be sent under it (spec 14).
+        if (s.kind === 'signed-out') void offlineQueue.clear().catch(() => undefined);
         if (live) setState(s);
       });
     };
@@ -44,6 +47,7 @@ export function HomePage() {
 
   const leave = () => {
     setState({ kind: 'loading' });
+    void offlineQueue.clear().catch(() => undefined);
     void signOut(fetchFn).then((ok) => {
       setState(ok ? { kind: 'signed-out' } : { kind: 'error' });
     });
@@ -73,7 +77,7 @@ export function HomePage() {
       )}
       {state.kind === 'signed-in' && (
         <>
-          <p role="status">{t('home.signed-in')}</p>
+          <TrialHome />
           <p className={styles['muted']}>
             {t(state.appLock ? 'home.app-lock-on' : 'home.app-lock-off')}
           </p>

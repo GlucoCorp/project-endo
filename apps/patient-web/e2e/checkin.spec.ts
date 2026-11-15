@@ -1,0 +1,270 @@
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { fileURLToPath } from 'node:url';
+import { expect, test, type BrowserContext, type Page } from '@playwright/test';
+import { ServiceTokenSigner, WorkloadTokenSigner, generateServiceKeyPair } from '@endo/service-kit';
+import { buildBff } from '@endo/bff-patient/app';
+import { DevSessionStore, SESSION_COOKIE } from '@endo/bff-patient/sessions';
+import { loadAppShell } from '@endo/bff-patient/app-shell';
+
+/**
+ * M2 in a real browser (REQ-002, REQ-003, REQ-007; spec 14): the real patient BFF serves the built
+ * app; only the core API is a stand-in. She sets her goal, does a check-in where she reports a red
+ * flag (the urgent screen shows before anything is sent), then does one offline: it is kept
+ * encrypted on the phone and sent when she is back online. Quick exit destroys the queue.
+ */
+const DIST = fileURLToPath(new URL('../dist/', import.meta.url));
+const EPISODE = '01900000-0000-7000-8000-0000000000e5';
+const PATIENT = {
+  sub: '01900000-0000-7000-8000-0000000000e1',
+  role: 'patient' as const,
+  org_id: '01900000-0000-7000-8000-0000000000e3',
+  patient_id: '01900000-0000-7000-8000-0000000000e2',
+};
+const sessions = new DevSessionStore('test');
+let bff: Awaited<ReturnType<typeof buildBff>>;
+let origin = '';
+let violations: string[] = [];
+
+const api = {
+  status: 'draft' as 'draft' | 'active',
+  goal: null as string | null,
+  openWeeks: [1] as number[],
+  done: [] as number[],
+  calls: [] as { path: string; key: string | null; body: Record<string, unknown> }[],
+};
+const content = {
+  draft: true,
+  instrument_version: '1.0.0',
+  text: {
+    Q1: 'On your worst day this week, how bad was the pain?',
+    Q2: 'Did pain stop you?',
+    Q3: 'This week, did you manage: {goal}?',
+    Q5: 'Side effects?',
+    Q6: 'How much?',
+    Q7: 'On how many days did you take it as prescribed?',
+    Q8: 'Did anything get in the way?',
+  },
+  options: {
+    Q2: ['none', 'some_days'],
+    Q3: ['yes', 'no'],
+    Q5: ['synthetic_effect_a'],
+    Q6: ['a_little'],
+    Q8: ['none', 'cost'],
+  },
+  review_weeks: [4],
+  red_flags: [
+    { id: 'RF1', text: 'Soaking through a pad', routes_to: null },
+    { id: 'RF3', text: 'Sudden severe pain', routes_to: null },
+  ],
+  goals: [{ code: 'synthetic_goal_a', text: 'Synthetic goal A (placeholder)' }],
+};
+const episode = () => ({
+  id: EPISODE,
+  status: api.status,
+  treatment: {
+    system: 'urn:endo:synthetic',
+    code: 'SYNTH-DAILY',
+    display: 'Synthetic daily tablet (placeholder)',
+  },
+  dose_text: '1 tablet daily',
+  adherence_mode: 'daily',
+  start_date: '2026-11-01',
+  review_date: '2027-01-24',
+  review_interval_weeks: 12,
+  goal: api.goal ? { template_code: 'synthetic_goal_a', text: api.goal } : null,
+  check_ins: api.done.map((w) => ({ week_index: w, is_late: false })),
+  open_weeks: api.openWeeks.filter((w) => !api.done.includes(w)),
+});
+function fakeApi(url: URL, init: RequestInit): Response {
+  const reply = (status: number, b: unknown) =>
+    new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
+  const body = init.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
+  api.calls.push({
+    path: url.pathname,
+    key: new Headers(init.headers).get('idempotency-key'),
+    body,
+  });
+  if (url.pathname === '/v1/me/episodes') return reply(200, { episodes: [episode()] });
+  if (url.pathname === '/v1/me/checkin-content') return reply(200, content);
+  if (url.pathname.endsWith('/confirm')) {
+    api.status = 'active';
+    api.goal = 'Synthetic goal A (placeholder)';
+    return reply(200, episode());
+  }
+  if (url.pathname.endsWith('/red-flags'))
+    return reply(201, { id: 'rf', recorded_at: new Date().toISOString() });
+  if (url.pathname.endsWith('/checkins')) {
+    api.done.push(body['week_index'] as number);
+    return reply(201, {
+      id: 'c',
+      week_index: body['week_index'],
+      open_weeks: episode().open_weeks,
+    });
+  }
+  return reply(404, {});
+}
+
+test.beforeAll(async () => {
+  const service = await generateServiceKeyPair();
+  const workload = await generateServiceKeyPair();
+  const port = await new Promise<number>((resolve) => {
+    const probe = createServer().listen(0, 'localhost', () => {
+      const p = (probe.address() as AddressInfo).port;
+      probe.close(() => {
+        resolve(p);
+      });
+    });
+  });
+  origin = `http://localhost:${String(port)}`;
+  bff = await buildBff({
+    logLevel: 'silent',
+    sessions,
+    signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
+    apiBaseUrl: 'http://api.invalid',
+    fetch: (input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+      Promise.resolve(fakeApi(new URL(input instanceof Request ? input.url : input), init ?? {})),
+    appShell: loadAppShell(DIST),
+    emergencyNumber: '112',
+    enrolment: {
+      identityBaseUrl: 'http://identity.invalid',
+      signer: new WorkloadTokenSigner(workload.privateJwk, 'bff-patient'),
+      patientOrigin: origin,
+      fetch: () => Promise.reject(new Error('unused')),
+      now: () => new Date(),
+    },
+  });
+  await bff.listen({ host: 'localhost', port });
+});
+
+test.afterAll(() => bff.close());
+
+async function signIn(context: BrowserContext, page: Page) {
+  violations = [];
+  page.on('console', (m) => {
+    if (/Content Security Policy|Trusted Type/i.test(m.text())) violations.push(m.text());
+  });
+  await context.addCookies([
+    {
+      name: SESSION_COOKIE,
+      value: await sessions.createPatient(PATIENT),
+      domain: 'localhost',
+      path: '/',
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Strict',
+    },
+  ]);
+}
+
+async function answerWeek(page: Page) {
+  await page.getByRole('button', { name: '5', exact: true }).click();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByLabel('none').check();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(
+    page.getByText('This week, did you manage: Synthetic goal A (placeholder)?'),
+  ).toBeVisible();
+  await page.getByLabel('yes').check();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'None', exact: true }).click(); // no side effects
+  await page.getByRole('button', { name: '7', exact: true }).click();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByLabel('cost').check();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await page.getByRole('button', { name: 'Save' }).click();
+}
+
+test('REQ-002, REQ-003, REQ-007 goal, a red flag, then an offline check-in synced later', async ({
+  context,
+  page,
+}) => {
+  await signIn(context, page);
+  await page.goto(`${origin}/`);
+
+  // Her goal starts the trial.
+  await expect(
+    page.getByRole('heading', { name: 'What would make this treatment worth it for you?' }),
+  ).toBeVisible();
+  await expect(
+    page.getByText('Draft wording, not yet approved by clinicians.', { exact: false }),
+  ).toBeVisible();
+  await page.getByLabel('Synthetic goal A (placeholder)').check();
+  await page.getByRole('button', { name: 'Start this treatment' }).click();
+  await expect(page.getByText('“Synthetic goal A (placeholder)”')).toBeVisible();
+  const confirm = api.calls.find((c) => c.path.endsWith('/confirm'));
+  expect(confirm?.body['goal']).toEqual({ template_code: 'synthetic_goal_a' });
+  expect(typeof confirm?.body['time_zone']).toBe('string');
+
+  // Week 1: red flags first, never skippable; reporting one shows the urgent screen at once.
+  await page.getByRole('button', { name: 'Start this week’s check-in' }).click();
+  await expect(page.getByText('1 of 7')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Next' })).toBeDisabled();
+  await page.getByLabel('Sudden severe pain').check();
+  await page.getByRole('button', { name: 'Next' }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Get urgent care now' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Call 112' })).toHaveAttribute('href', 'tel:112');
+  await expect
+    .poll(() => api.calls.filter((c) => c.path.endsWith('/red-flags')).length)
+    .toBeGreaterThan(0);
+  await page.getByRole('button', { name: 'I understand' }).click();
+  await answerWeek(page);
+  await expect(page.getByText('Saved.')).toBeVisible();
+  const week1 = api.calls.find((c) => c.path.endsWith('/checkins'));
+  expect(week1?.body['answers']).toEqual({
+    red_flags: ['RF3'],
+    Q1: 5,
+    Q2: 'none',
+    Q3: 'yes',
+    Q5: [],
+    Q7: 7,
+    Q8: ['cost'],
+  });
+  // The early report and the check-in share one derived key: every red-flag call uses it.
+  const rfKeys = new Set(api.calls.filter((c) => c.path.endsWith('/red-flags')).map((c) => c.key));
+  expect(rfKeys.size).toBe(1);
+
+  // Week 2 offline: kept on the phone, encrypted, then sent when she is back online.
+  api.openWeeks = [1, 2];
+  await page.reload();
+  await page.getByRole('button', { name: 'Start this week’s check-in' }).click();
+  await page.getByRole('button', { name: 'None of these' }).click();
+  await context.setOffline(true);
+  await answerWeek(page);
+  await expect(page.getByText('Saved on this phone.', { exact: false })).toBeVisible();
+  const stored = await page.evaluate(
+    () =>
+      new Promise<{ entries: number; extractable: boolean | null; plain: boolean }>((resolve) => {
+        const req = indexedDB.open('endo-offline');
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(['entries', 'keys'], 'readonly');
+          const all = tx.objectStore('entries').getAll();
+          const key = tx.objectStore('keys').get('queue');
+          tx.oncomplete = () => {
+            const entries = all.result as { data: ArrayBuffer }[];
+            const text = entries.map((e) => new TextDecoder().decode(e.data)).join('');
+            resolve({
+              entries: entries.length,
+              extractable: (key.result as CryptoKey | undefined)?.extractable ?? null,
+              plain: text.includes('week_index'),
+            });
+          };
+        };
+      }),
+  );
+  expect(stored).toEqual({ entries: 1, extractable: false, plain: false });
+  const before = api.calls.filter((c) => c.path.endsWith('/checkins')).length;
+  await context.setOffline(false);
+  await page.evaluate(() => window.dispatchEvent(new Event('online')));
+  await expect
+    .poll(() => api.calls.filter((c) => c.path.endsWith('/checkins')).length)
+    .toBe(before + 1);
+  expect(api.done).toEqual([1, 2]);
+
+  // Quick exit: the screen goes, the session ends, the queue and its key are destroyed.
+  await page.getByRole('button', { name: 'Quick exit' }).click();
+  await expect(page).toHaveURL('about:blank');
+  expect(violations).toEqual([]);
+});
