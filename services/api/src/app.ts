@@ -35,6 +35,7 @@ import { registerVerdictRoutes } from './routes/verdicts.ts';
 import { registerReminderRoutes } from './routes/reminders.ts';
 import { registerReviewRoutes, type ReviewRouteDeps } from './routes/reviews.ts';
 import { registerHistoryRoutes, type HistoryRouteDeps } from './routes/history.ts';
+import { registerDataRightsRoutes, type DataRightsRouteDeps } from './routes/data-rights.ts';
 import type { ReminderStore } from '@endo/clinical-store';
 import type { FieldCipher } from '@endo/crypto';
 import type { VerdictService } from './verdicts.ts';
@@ -135,6 +136,8 @@ export interface ApiDeps {
   readonly verdicts?: VerdictService;
   /** Her history, sharing and access log (M4). Only with a clinical database (fail closed). */
   readonly history?: Omit<HistoryRouteDeps, 'onCommitted' | 'writer'>;
+  /** Export and deletion (M5, REQ-009). Only with a clinical database (fail closed). */
+  readonly dataRights?: Omit<DataRightsRouteDeps, 'onCommitted' | 'consents' | 'now'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
   readonly reviews?: Omit<ReviewRouteDeps, 'onCommitted' | 'now' | 'audit'>;
   /** Weekly reminders (spec 15): her subscriptions. Only with a clinical database. */
@@ -192,6 +195,13 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
     });
   if (deps.history)
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
+  if (deps.dataRights)
+    registerDataRightsRoutes(app, {
+      ...deps.dataRights,
+      onCommitted,
+      consents: deps.consents,
+      now: deps.now,
+    });
   if (deps.reminders)
     registerReminderRoutes(app, {
       reminders: deps.reminders.store,

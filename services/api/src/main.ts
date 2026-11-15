@@ -42,6 +42,7 @@ import {
   type ReminderStore,
   type ReviewStore,
   type ShareLinkStore,
+  PostgresDeletionStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -222,6 +223,7 @@ async function main(): Promise<void> {
   let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let verdicts: VerdictService | undefined;
   let links: ShareLinkStore | undefined;
+  let deletions: PostgresDeletionStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -250,6 +252,7 @@ async function main(): Promise<void> {
     consents = new PostgresConsentStore(db);
     verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
     links = new PostgresShareLinkStore(db);
+    deletions = new PostgresDeletionStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -380,6 +383,19 @@ async function main(): Promise<void> {
             episodes: reviews.episodes,
             reviews: reviews.reviews,
             links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
+    ...(reviews && links && deletions
+      ? {
+          dataRights: {
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            deletions,
             audit: auditStore,
             content,
             cipherFor: reviews.cipherFor,
