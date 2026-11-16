@@ -15,6 +15,7 @@ import {
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
   PostgresReportingStore,
+  PostgresIntegrationStore,
   monthsBack,
   PostgresShareLinkStore,
   PostgresReviewStore,
@@ -1454,6 +1455,53 @@ describe.skipIf(!url)(
         await expect(reporting.monthly(ORG_A, 'today', 12, 7)).rejects.toThrow(TypeError);
         expect(monthsBack('2026-01-15', 1)).toBe('2025-12-01');
         expect(monthsBack('2026-11-15', 11)).toBe('2025-12-01');
+      });
+    });
+
+    describe('M7 record-system integration clients (migration 0017)', () => {
+      it('keeps public keys per organisation, resolves by client id, and has a kill switch', async () => {
+        const integrations = new PostgresIntegrationStore(apiDb);
+        const adminId = randomUUID();
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+          [adminId, ORG_A, randomUUID()],
+        );
+        const clientId = randomBytes(18).toString('base64url');
+        const jwks = {
+          keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y', alg: 'ES384', kid: 'k1' }],
+        };
+        const base = {
+          id: randomUUID(),
+          orgId: ORG_A,
+          clientId,
+          name: 'Synthetic record system',
+          jwks,
+          scopes: ['system/Patient.rs'],
+          auditEvent: audit('integration.created'),
+        };
+        expect(await integrations.create({ ...base, createdBy: CLIN_A })).toBe('not_admin');
+        const made = await integrations.create({ ...base, createdBy: adminId });
+        expect(made).toMatchObject({ clientId, active: true, scopes: ['system/Patient.rs'] });
+        expect((await integrations.list(ORG_A)).map((c) => c.clientId)).toContain(clientId);
+        expect(await integrations.list(ORG_B)).toEqual([]);
+        expect(await integrations.resolve(clientId)).toMatchObject({
+          orgId: ORG_A,
+          jwks,
+          active: true,
+        });
+        expect(await integrations.resolve('nobody-nobody-nobody-00')).toBeNull();
+        const id = made === 'not_admin' ? '' : made.id;
+        const toggle = (active: boolean, actorId = adminId, orgId = ORG_A) =>
+          integrations.setActive({ orgId, id, active, actorId, auditEvent: audit('x') });
+        expect(await toggle(false, CLIN_A)).toBe(false);
+        expect(await toggle(false, adminId, ORG_B)).toBe(false);
+        expect(await toggle(false)).toBe(true);
+        expect((await integrations.resolve(clientId))?.active).toBe(false);
+        await expect(
+          asApi((c) =>
+            c.query('UPDATE integration_client SET jwks = $1 WHERE id = $2', ['{}', id]),
+          ),
+        ).rejects.toThrow(/permission denied/);
       });
     });
 

@@ -38,6 +38,7 @@ import { registerHistoryRoutes, type HistoryRouteDeps } from './routes/history.t
 import { registerDataRightsRoutes, type DataRightsRouteDeps } from './routes/data-rights.ts';
 import { registerOrgAdminRoutes, type OrgAdminRouteDeps } from './routes/org-admin.ts';
 import { registerDashboardRoutes, type DashboardRouteDeps } from './routes/dashboard.ts';
+import { registerIntegrationRoutes, type IntegrationRouteDeps } from './routes/integrations.ts';
 import type { ReminderStore } from '@endo/clinical-store';
 import type { FieldCipher } from '@endo/crypto';
 import type { VerdictService } from './verdicts.ts';
@@ -146,6 +147,8 @@ export interface ApiDeps {
   readonly orgAdmin?: Omit<OrgAdminRouteDeps, 'onCommitted'>;
   /** The aggregate dashboard (M5, REQ-011). Only with a clinical database (fail closed). */
   readonly dashboard?: Omit<DashboardRouteDeps, 'now'>;
+  /** Record-system integrations (M7). Only with a clinical database (fail closed). */
+  readonly integrations?: Omit<IntegrationRouteDeps, 'onCommitted' | 'consents' | 'now' | 'writer'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
   readonly reviews?: Omit<ReviewRouteDeps, 'onCommitted' | 'now' | 'audit'>;
   /** Weekly reminders (spec 15): her subscriptions. Only with a clinical database. */
@@ -205,6 +208,14 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
   if (deps.orgAdmin) registerOrgAdminRoutes(app, { ...deps.orgAdmin, onCommitted });
   if (deps.dashboard) registerDashboardRoutes(app, { ...deps.dashboard, now: deps.now });
+  if (deps.integrations)
+    registerIntegrationRoutes(app, {
+      ...deps.integrations,
+      onCommitted,
+      consents: deps.consents,
+      now: deps.now,
+      writer: deps.audit,
+    });
   if (deps.dataRights)
     registerDataRightsRoutes(app, {
       ...deps.dataRights,

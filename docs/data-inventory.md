@@ -317,6 +317,22 @@ Row-level security; single use, at most 7 days, revocable. No patient data and n
 | `staff_invitation.claimed_clinician_id` | The membership it created (opaque clinician id)          | as above                                                        | as above                                                                   | S1          |
 | `staff_invitation.revoked_at`           | When the admin stopped it                                | as above                                                        | as above                                                                   | S0          |
 
+### Integration clients — `packages/clinical-store/migrations/0017` (M7)
+
+Row-level security; public keys only; no patient data. Switched on and off by the organisation admin (ADR-0030).
+
+| Column                          | Purpose                                              | Legal basis                                                         | Retention                                                                 | Sensitivity |
+| ------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------- | ----------- |
+| `integration_client.id`         | Client identifier                                    | Contract with the organisation: record-system integration (spec 16) | While the integration exists (switched off, it stays for the audit trail) | S0          |
+| `integration_client.org_id`     | Organisation (row-level security)                    | as above                                                            | as above                                                                  | S0          |
+| `integration_client.client_id`  | SMART client_id given to the record system           | as above                                                            | as above                                                                  | S1          |
+| `integration_client.name`       | Admin label for the system                           | as above                                                            | as above                                                                  | S0          |
+| `integration_client.jwks`       | The record system’s public keys (never private keys) | as above                                                            | as above                                                                  | S1          |
+| `integration_client.scopes`     | What it may read (system/*.rs)                       | as above                                                            | as above                                                                  | S0          |
+| `integration_client.active`     | Kill switch                                          | as above                                                            | as above                                                                  | S0          |
+| `integration_client.created_by` | Admin who registered it (opaque clinician id)        | as above                                                            | as above                                                                  | S1          |
+| `integration_client.created_at` | When registered                                      | as above                                                            | as above                                                                  | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

@@ -207,6 +207,18 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0017: record-system integration clients (M7). */
+  integration_client: {
+    id: string;
+    org_id: string;
+    client_id: string;
+    name: string;
+    jwks: unknown;
+    scopes: string[];
+    active: Generated<boolean>;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
   /** Migration 0016: staff invitations (REQ-010). */
   staff_invitation: {
     id: string;

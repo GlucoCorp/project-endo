@@ -46,6 +46,7 @@ import {
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
   PostgresReportingStore,
+  PostgresIntegrationStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -106,6 +107,8 @@ const Config = z.object({
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
   API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The integration service's workload key (M7): client resolution and FHIR reads only. */
+  API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The patient BFF's workload key: a receiver's view of a share link (REQ-008), nothing else. */
   API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
@@ -230,6 +233,7 @@ async function main(): Promise<void> {
   let orgAdmin: PostgresOrgAdminStore | undefined;
   let staffInvitations: PostgresStaffInvitationStore | undefined;
   let reporting: PostgresReportingStore | undefined;
+  let integrations: PostgresIntegrationStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -262,6 +266,7 @@ async function main(): Promise<void> {
     orgAdmin = new PostgresOrgAdminStore(db);
     staffInvitations = new PostgresStaffInvitationStore(db);
     reporting = new PostgresReportingStore(db);
+    integrations = new PostgresIntegrationStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -346,6 +351,14 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      ...(config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            integration: {
+              publicJwk: config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.integration.resolve', 'api.fhir.read'],
+            },
+          }
+        : {}),
       ...(config.API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK
         ? {
             identity: {
@@ -406,6 +419,19 @@ async function main(): Promise<void> {
       : {}),
     ...(orgAdmin && staffInvitations ? { orgAdmin: { orgAdmin, staffInvitations } } : {}),
     ...(reporting ? { dashboard: { reporting } } : {}),
+    ...(integrations && reviews && links
+      ? {
+          integrations: {
+            integrations,
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
     ...(reviews && links && deletions
       ? {
           dataRights: {
