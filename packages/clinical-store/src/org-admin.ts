@@ -1,4 +1,4 @@
-import type { Kysely } from 'kysely';
+import type { Kysely, Transaction } from 'kysely';
 import { withOrg } from './org-scope.ts';
 import type { ClinicalDatabase } from './schema.ts';
 
@@ -19,7 +19,48 @@ export interface OrgMember {
   readonly createdAt: Date;
 }
 
-export type MemberChangeOutcome = 'changed' | 'unchanged' | 'not_found' | 'last_admin';
+export type MemberChangeOutcome =
+  | 'changed'
+  | 'unchanged'
+  | 'not_found'
+  | 'last_admin'
+  /** The acting admin is no longer an active admin (checked inside the write). */
+  | 'not_admin';
+
+/**
+ * Serialises membership changes per organisation (REQ-010): concurrent changes see each other's
+ * result, so two admins cannot remove each other, and the acting admin is re-checked inside the
+ * same transaction as the change.
+ */
+export async function lockOrgMembership(
+  trx: Transaction<ClinicalDatabase>,
+  orgId: string,
+): Promise<void> {
+  await trx
+    .selectNoFrom((eb) =>
+      eb
+        .fn('pg_advisory_xact_lock', [
+          eb.fn('hashtextextended', [eb.val(`org_membership:${orgId}`), eb.lit(0)]),
+        ])
+        .as('locked'),
+    )
+    .execute();
+}
+
+/** True if `clinicianId` is an active org_admin of the organisation in scope. */
+export async function isActiveAdmin(
+  trx: Transaction<ClinicalDatabase>,
+  clinicianId: string,
+): Promise<boolean> {
+  const r = await trx
+    .selectFrom('clinician')
+    .select('id')
+    .where('id', '=', clinicianId)
+    .where('role', '=', 'org_admin')
+    .where('active', '=', true)
+    .executeTakeFirst();
+  return r !== undefined;
+}
 
 /** Organisation admin (REQ-010): settings and members, always inside one organisation. */
 export interface OrgAdminStore {
@@ -36,6 +77,8 @@ export interface OrgAdminStore {
   /** Role and active flag; refused if it would leave the organisation without an active admin. */
   changeMember(c: {
     readonly orgId: string;
+    /** The admin making the change, re-checked inside the write. */
+    readonly actorId: string;
     readonly clinicianId: string;
     readonly role: 'clinician' | 'org_admin';
     readonly active: boolean;
@@ -125,6 +168,8 @@ export class PostgresOrgAdminStore implements OrgAdminStore {
   ): Promise<MemberChangeOutcome> {
     try {
       return await withOrg(this.#db, c.orgId, async (trx) => {
+        await lockOrgMembership(trx, c.orgId);
+        if (!(await isActiveAdmin(trx, c.actorId))) return 'not_admin' as const;
         const before = await trx
           .selectFrom('clinician')
           .select(['role', 'active'])

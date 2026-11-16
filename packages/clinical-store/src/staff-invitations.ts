@@ -1,4 +1,5 @@
 import type { Kysely } from 'kysely';
+import { isActiveAdmin, lockOrgMembership } from './org-admin.ts';
 import { withOrg } from './org-scope.ts';
 import type { ClinicalDatabase } from './schema.ts';
 
@@ -27,7 +28,7 @@ export interface StaffInvitationStore {
     readonly createdBy: string;
     readonly days: number;
     readonly auditEvent: Audit;
-  }): Promise<StaffInvitation>;
+  }): Promise<StaffInvitation | 'not_admin'>;
   /** The latest 100, newest first. */
   list(orgId: string): Promise<StaffInvitation[]>;
   /** False if it is not this organisation's, or already used or stopped. */
@@ -69,8 +70,11 @@ export class PostgresStaffInvitationStore implements StaffInvitationStore {
     this.#db = db;
   }
 
-  create(i: Parameters<StaffInvitationStore['create']>[0]): Promise<StaffInvitation> {
+  create(i: Parameters<StaffInvitationStore['create']>[0]): Promise<StaffInvitation | 'not_admin'> {
     return withOrg(this.#db, i.orgId, async (trx) => {
+      // The maker must still be an active admin, checked inside this write (REQ-010).
+      await lockOrgMembership(trx, i.orgId);
+      if (!(await isActiveAdmin(trx, i.createdBy))) return 'not_admin' as const;
       const row = await trx
         .insertInto('staff_invitation')
         .values({

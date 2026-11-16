@@ -704,11 +704,17 @@ describe('REQ-010 a staff invitation claimed at sign-in', () => {
     expect(joinCookie).toContain(`__Host-endo_join=${HASH}`);
     expect(joinCookie).toContain('Max-Age=600');
     expect(joinCookie).not.toContain(TOKEN);
-    const { cookie, state } = await ctx.start();
-    const res = await ctx.callback(`code=c1&state=${state}`, `${cookie}; __Host-endo_join=${HASH}`);
+    // The invitation belongs to the sign-in started with it: the cookie moves into its state.
+    const first = await ctx.start(`__Host-endo_join=${HASH}`);
+    expect(String(first.res.headers['set-cookie'])).toContain('__Host-endo_join=; Path=/');
+    // Another attempt in the same browser (another tab) does not get it.
+    const other = await ctx.start();
+    expect((await ctx.callback(`code=c2&state=${other.state}`, other.cookie)).statusCode).toBe(200);
+    expect(claimed).toEqual([]);
+    ctx.answer(first.nonce);
+    const res = await ctx.callback(`code=c1&state=${first.state}`, first.cookie);
     expect(res.statusCode).toBe(200);
     expect(claimed).toEqual([[HASH, PERSON]]);
-    expect(String(res.headers['set-cookie'])).toContain('__Host-endo_join=; Path=/');
   });
 
   it('refuses a cross-site or malformed join, and ignores a malformed cookie', async () => {
@@ -737,8 +743,8 @@ describe('REQ-010 a staff invitation claimed at sign-in', () => {
         )
       ).statusCode,
     ).toBe(400);
-    const { cookie, state } = await ctx.start();
-    const res = await ctx.callback(`code=c1&state=${state}`, `${cookie}; __Host-endo_join=nope`);
+    const { cookie, state } = await ctx.start('__Host-endo_join=nope');
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
     expect(res.statusCode).toBe(200); // an existing member signs in as usual
     expect(claimed).toEqual([]);
   });
