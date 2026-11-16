@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { AuditEventInput } from '@endo/audit';
-import type { EhrLinkStore } from '@endo/clinical-store';
+import { AuditEventInput, type AuditEventInputType } from '@endo/audit';
+import type { ConsentStore, EhrLinkStore } from '@endo/clinical-store';
 import { uuidv7 } from '@endo/domain';
 import { ProblemError } from '@endo/service-kit';
 
@@ -12,6 +12,8 @@ import { ProblemError } from '@endo/service-kit';
  */
 export interface EhrLinkRouteDeps {
   readonly ehrLinks: EhrLinkStore;
+  readonly consents: ConsentStore;
+  readonly writer: { write(e: AuditEventInputType): Promise<unknown> };
   readonly onCommitted: () => void;
 }
 
@@ -56,7 +58,26 @@ export function registerEhrLinkRoutes(app: FastifyInstance, deps: EhrLinkRouteDe
       const { orgId } = org(request);
       const { link_hash } = request.body as { link_hash: string };
       const patientId = await deps.ehrLinks.resolve(orgId, link_hash);
-      if (!patientId) throw new ProblemError(404, 'ehr_link.not_found', 'Not linked yet.');
+      // Only while she shares with the care team (Codex r8): after a withdrawal the link reveals
+      // nothing, the same answer as no link.
+      const shares =
+        patientId !== null &&
+        (await deps.consents.current(orgId, patientId)).some(
+          (c) => c.purpose === 'share_with_care_team' && c.status === 'granted',
+        );
+      if (!patientId || !shares)
+        throw new ProblemError(404, 'ehr_link.not_found', 'Not linked yet.');
+      // Audited against her record before it is disclosed (her access log shows it).
+      await deps.writer.write({
+        actor: { id: request.subject?.id ?? null, role: request.subject?.role ?? 'clinician' },
+        action: 'ehr_link.resolved',
+        resource: { type: 'patient_record', id: patientId },
+        org_id: orgId,
+        purpose_of_use: 'treatment',
+        outcome: 'success',
+        reason: null,
+        request_id: request.id,
+      });
       return { patient_id: patientId };
     },
   );

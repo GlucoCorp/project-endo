@@ -7,6 +7,11 @@ import { readCookie } from './sessions.ts';
 export interface SmartIssuer {
   readonly iss: string;
   readonly clientId: string;
+  /**
+   * Origins its authorize and token endpoints may be on (default: the issuer's own origin).
+   * Discovery metadata naming any other host is refused (SSRF, open redirect: Codex r8).
+   */
+  readonly endpointOrigins?: readonly string[];
 }
 
 export interface SmartDeps {
@@ -77,7 +82,7 @@ interface Attempt {
  */
 export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void {
   const attempts = new Expiring<Attempt>(deps.now, deps.maxPending);
-  const contexts = new Expiring<{ linkHash: string }>(deps.now);
+  const contexts = new Expiring<{ linkHash: string; binding: string }>(deps.now);
   const redirectUri = `${deps.portalOrigin}/smart/callback`;
   const fail = (): never => {
     throw new ProblemError(400, 'smart.launch_failed', 'The launch did not complete. Try again.');
@@ -95,14 +100,12 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
       return null;
     }
   };
-  const sameScheme = (url: unknown, iss: string): url is string => {
+  const allowedEndpoint = (url: unknown, issuer: SmartIssuer): url is string => {
     if (typeof url !== 'string') return false;
     try {
       const u = new URL(url);
-      return (
-        u.protocol === new URL(iss).protocol &&
-        (u.protocol === 'https:' || u.hostname === 'localhost')
-      );
+      const origins = issuer.endpointOrigins ?? [new URL(issuer.iss).origin];
+      return origins.includes(u.origin) && (u.protocol === 'https:' || u.hostname === 'localhost');
     } catch {
       return false;
     }
@@ -134,7 +137,7 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
       );
       const authorize = conf?.['authorization_endpoint'];
       const token = conf?.['token_endpoint'];
-      if (!sameScheme(authorize, issuer.iss) || !sameScheme(token, issuer.iss)) return fail();
+      if (!allowedEndpoint(authorize, issuer) || !allowedEndpoint(token, issuer)) return fail();
       const binding = readCookie(request.headers.cookie, SMART_COOKIE) ?? b64url(randomBytes(32));
       const state = b64url(randomBytes(32));
       const verifier = b64url(randomBytes(32));
@@ -210,7 +213,8 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
       if (typeof patient !== 'string' || !/^[A-Za-z0-9.-]{1,64}$/.test(patient)) return fail();
       const handle = b64url(randomBytes(32));
       const linkHash = createHash('sha256').update(`${a.iss}|${patient}`).digest('hex');
-      if (!contexts.add(handle, { linkHash })) return fail();
+      // Bound to the browser that completed the launch: a handle sent to someone else is useless.
+      if (!contexts.add(handle, { linkHash, binding })) return fail();
       // The handle travels in the fragment: never sent to a server or kept in its logs.
       return reply
         .type('text/html; charset=utf-8')
@@ -259,9 +263,11 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
     }
     return { res, reply };
   };
-  const contextOf = (handle: unknown) => {
+  const contextOf = (request: FastifyRequest, handle: unknown) => {
     const c = typeof handle === 'string' ? contexts.get(handle) : null;
-    if (!c)
+    // The launch must have been completed in this browser (Codex r8: no handle injection).
+    const binding = readCookie(request.headers.cookie, SMART_COOKIE);
+    if (!c || !binding || binding !== c.binding)
       throw new ProblemError(
         404,
         'smart.launch_expired',
@@ -280,7 +286,7 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
     '/v1/smart/context',
     { config: { auth: { kind: 'session' } }, bodyLimit: 256, schema: { body: handleBody } },
     async (request, reply) => {
-      const c = contextOf((request.body as { handle: string }).handle);
+      const c = contextOf(request, (request.body as { handle: string }).handle);
       const { res } = await asClinician(request, reply, '/v1/ehr-links/resolve', {
         link_hash: c.linkHash,
       });
@@ -311,13 +317,14 @@ export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void
     },
     async (request, reply) => {
       const b = request.body as { handle: string; patient_id: string };
-      const c = contextOf(b.handle);
+      const c = contextOf(request, b.handle);
       const { res } = await asClinician(request, reply, `/v1/patients/${b.patient_id}/ehr-links`, {
         link_hash: c.linkHash,
       });
       if (res.status === 409)
         throw new ProblemError(409, 'ehr_link.exists', 'This record is already linked.');
       if (!res.ok) throw new ProblemError(403, 'authz.denied', 'You do not have access to this.');
+      contexts.take(b.handle); // used: a launch links once
       return reply.code(201).send({ linked: true, patient_id: b.patient_id });
     },
   );

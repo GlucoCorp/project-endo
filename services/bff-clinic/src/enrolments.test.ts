@@ -33,7 +33,7 @@ const json = (status: number, body: unknown) =>
 async function setup(
   api: (req: Request) => Response | Promise<Response>,
   confirmsPerMinute = 10,
-  smartIssuers?: { iss: string; clientId: string }[],
+  smartIssuers?: { iss: string; clientId: string; endpointOrigins?: string[] }[],
   smartMaxPending?: number,
 ) {
   const keys = await generateServiceKeyPair();
@@ -443,30 +443,51 @@ describe('M7 SMART App Launch (spec 16.2)', () => {
       url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L1`,
     });
     const state2 = new URL(String(again.headers.location)).searchParams.get('state') ?? '';
+    const browser = String(again.headers['set-cookie']).split(';')[0] ?? binding;
     const back = await app.inject({
       url: `/smart/callback?code=code-1&state=${state2}`,
-      headers: { cookie: String(again.headers['set-cookie']).split(';')[0] ?? binding },
+      headers: { cookie: browser },
     });
     expect(back.statusCode).toBe(200);
     const handle = /#launch=([A-Za-z0-9_-]{43})/.exec(back.body)?.[1] ?? '';
     expect(handle).not.toBe('');
     expect(back.body).not.toContain(EHR_PATIENT);
     expect(back.body).not.toContain('ehr-token');
-    // The clinician's own session: not linked yet, then linked once, then found.
-    const post = (url: string, payload: object) =>
+    // The clinician's own session, in the browser that completed the launch.
+    const post = (url: string, payload: object, cookie = `${active}; ${browser}`) =>
       app.inject({
         method: 'POST',
         url,
-        headers: { cookie: active, origin: ORIGIN, 'x-csrf-token': activeCsrf },
+        headers: { cookie, origin: ORIGIN, 'x-csrf-token': activeCsrf },
         payload,
       });
+    // A handle sent to another browser (Codex r8: launch injection) is useless there.
+    expect((await post('/v1/smart/context', { handle }, active)).statusCode).toBe(404);
+    expect((await post('/v1/smart/link', { handle, patient_id: PATIENT }, active)).statusCode).toBe(
+      404,
+    );
     expect((await post('/v1/smart/context', { handle })).json()).toEqual({ linked: false });
     expect((await post('/v1/smart/link', { handle, patient_id: PATIENT })).statusCode).toBe(201);
-    expect((await post('/v1/smart/link', { handle, patient_id: PATIENT })).statusCode).toBe(409);
-    expect((await post('/v1/smart/context', { handle })).json()).toEqual({
+    // Used: the same handle cannot link again.
+    expect((await post('/v1/smart/link', { handle, patient_id: PATIENT })).statusCode).toBe(404);
+    // A new launch of the same record finds the link; linking it again is refused.
+    const third = await app.inject({
+      url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L2`,
+      headers: { cookie: browser },
+    });
+    const state3 = new URL(String(third.headers.location)).searchParams.get('state') ?? '';
+    const back3 = await app.inject({
+      url: `/smart/callback?code=code-1&state=${state3}`,
+      headers: { cookie: browser },
+    });
+    const handle3 = /#launch=([A-Za-z0-9_-]{43})/.exec(back3.body)?.[1] ?? '';
+    expect((await post('/v1/smart/context', { handle: handle3 })).json()).toEqual({
       linked: true,
       patient_id: PATIENT,
     });
+    expect(
+      (await post('/v1/smart/link', { handle: handle3, patient_id: PATIENT })).statusCode,
+    ).toBe(409);
     expect((await post('/v1/smart/context', { handle: 'x'.repeat(43) })).statusCode).toBe(404);
     // Only the hash ever reached the API.
     expect(seen.some((r) => r.url.includes(EHR_PATIENT))).toBe(false);
@@ -492,20 +513,44 @@ describe('M7 SMART App Launch: what goes wrong', () => {
   const ISS = 'https://ehr.test/fhir';
   const launchAndReturn = async (
     app: Awaited<ReturnType<typeof setup>>['app'],
-  ): Promise<{ status: number; body: string }> => {
+  ): Promise<{ status: number; body: string; cookie: string }> => {
     const start = await app.inject({
       url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L`,
     });
-    if (start.statusCode !== 302) return { status: start.statusCode, body: start.body };
+    if (start.statusCode !== 302) return { status: start.statusCode, body: start.body, cookie: '' };
     const state = new URL(String(start.headers.location)).searchParams.get('state') ?? '';
+    const cookie = String(start.headers['set-cookie']).split(';')[0] ?? '';
     const back = await app.inject({
       url: `/smart/callback?code=c&state=${state}`,
-      headers: { cookie: String(start.headers['set-cookie']).split(';')[0] ?? '' },
+      headers: { cookie },
     });
-    return { status: back.statusCode, body: back.body };
+    return { status: back.statusCode, body: back.body, cookie };
   };
   const discovery = (authorize: string, token = 'https://ehr.test/token') =>
     json(200, { authorization_endpoint: authorize, token_endpoint: token });
+
+  it('refuses endpoints on a host the issuer was not configured with (SSRF, redirect)', async () => {
+    const foreign = await setup(() => discovery('https://evil.test/authorize'), 10, [
+      { iss: ISS, clientId: 'c' },
+    ]);
+    expect((await launchAndReturn(foreign.app)).status).toBe(400);
+    const internalToken = await setup(
+      () => discovery('https://ehr.test/authorize', 'https://10.0.0.5/token'),
+      10,
+      [{ iss: ISS, clientId: 'c' }],
+    );
+    expect((await launchAndReturn(internalToken.app)).status).toBe(400);
+    const vendor = 'https://login.ehr-vendor.test';
+    const listed = await setup(
+      (req) =>
+        req.url.endsWith('/token')
+          ? json(200, { patient: 'p1' })
+          : discovery(`${vendor}/authorize`, `${vendor}/token`),
+      10,
+      [{ iss: ISS, clientId: 'c', endpointOrigins: [vendor] }],
+    );
+    expect((await launchAndReturn(listed.app)).status).toBe(200);
+  });
 
   it('refuses endpoints on another scheme or not URLs, and a token without a patient', async () => {
     const insecure = await setup(() => discovery('http://ehr.test/authorize'), 10, [
@@ -559,13 +604,17 @@ describe('M7 SMART App Launch: what goes wrong', () => {
       10,
       [{ iss: ISS, clientId: 'c' }],
     );
-    const handle =
-      /#launch=([A-Za-z0-9_-]{43})/.exec((await launchAndReturn(s.app)).body)?.[1] ?? '';
+    const launched = await launchAndReturn(s.app);
+    const handle = /#launch=([A-Za-z0-9_-]{43})/.exec(launched.body)?.[1] ?? '';
     const post = (url: string, payload: object) =>
       s.app.inject({
         method: 'POST',
         url,
-        headers: { cookie: s.active, origin: ORIGIN, 'x-csrf-token': s.activeCsrf },
+        headers: {
+          cookie: `${s.active}; ${launched.cookie}`,
+          origin: ORIGIN,
+          'x-csrf-token': s.activeCsrf,
+        },
         payload,
       });
     expect((await post('/v1/smart/context', { handle })).statusCode).toBe(403);

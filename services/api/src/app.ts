@@ -150,7 +150,7 @@ export interface ApiDeps {
   /** The aggregate dashboard (M5, REQ-011). Only with a clinical database (fail closed). */
   readonly dashboard?: Omit<DashboardRouteDeps, 'now'>;
   /** SMART launch patient links (M7). Only with a clinical database (fail closed). */
-  readonly ehrLinks?: Omit<EhrLinkRouteDeps, 'onCommitted'>;
+  readonly ehrLinks?: Omit<EhrLinkRouteDeps, 'onCommitted' | 'consents' | 'writer'>;
   /** Record-system integrations (M7). Only with a clinical database (fail closed). */
   readonly integrations?: Omit<IntegrationRouteDeps, 'onCommitted' | 'consents' | 'now' | 'writer'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
@@ -212,7 +212,13 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
   if (deps.orgAdmin) registerOrgAdminRoutes(app, { ...deps.orgAdmin, onCommitted });
   if (deps.dashboard) registerDashboardRoutes(app, { ...deps.dashboard, now: deps.now });
-  if (deps.ehrLinks) registerEhrLinkRoutes(app, { ...deps.ehrLinks, onCommitted });
+  if (deps.ehrLinks)
+    registerEhrLinkRoutes(app, {
+      ...deps.ehrLinks,
+      onCommitted,
+      consents: deps.consents,
+      writer: deps.audit,
+    });
   if (deps.integrations)
     registerIntegrationRoutes(app, {
       ...deps.integrations,
