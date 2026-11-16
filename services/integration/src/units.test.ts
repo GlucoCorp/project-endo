@@ -9,7 +9,6 @@ import { ApiUnavailableError, HttpApi } from './api-client.ts';
 import {
   AccessTokens,
   AuthError,
-  SeenAssertions,
   grantScopes,
   verifyClientAssertion,
   type Client,
@@ -66,6 +65,26 @@ describe('M7 HttpApi: the integration service asks the API with its own key', ()
     await expect(api.resolveClient('c'.repeat(24))).rejects.toBeInstanceOf(ApiUnavailableError);
   });
 
+  it('reserves an assertion id through the API; anything unexpected fails closed', async () => {
+    const answers = [
+      json(200, { first_use: true }),
+      json(200, { first_use: false }),
+      json(500, {}),
+    ];
+    const { api, seen } = await make(() => answers.shift() ?? json(500, {}));
+    const exp = new Date('2026-11-16T10:04:00Z');
+    expect(await api.reserveAssertion('c'.repeat(24), 'j', exp)).toBe(true);
+    expect(seen[0]).toMatchObject({
+      path: '/internal/v1/integration/assertions/reserve',
+      scopes: ['api.integration.resolve'],
+      body: { client_id: 'c'.repeat(24), jti: 'j', expires_at: '2026-11-16T10:04:00.000Z' },
+    });
+    expect(await api.reserveAssertion('c'.repeat(24), 'j', exp)).toBe(false);
+    await expect(api.reserveAssertion('c'.repeat(24), 'j', exp)).rejects.toBeInstanceOf(
+      ApiUnavailableError,
+    );
+  });
+
   it('reads a patient with api.fhir.read; refused is null; errors and network fail closed', async () => {
     const answers: (Response | Error)[] = [
       json(200, { resourceType: 'Bundle' }),
@@ -94,26 +113,6 @@ describe('M7 HttpApi: the integration service asks the API with its own key', ()
 });
 
 describe('M7 SMART helpers', () => {
-  it('remembers each assertion id until it expires, within a bound', () => {
-    let t = 0;
-    const seen = new SeenAssertions(() => t, 10);
-    expect(seen.firstUse('c', 'j1', 100)).toBe(true);
-    expect(seen.firstUse('c', 'j1', 100)).toBe(false);
-    expect(seen.firstUse('d', 'j1', 100)).toBe(true); // per client
-    t = 200;
-    expect(seen.firstUse('c', 'j1', 300)).toBe(true); // forgotten after expiry
-    for (let i = 0; i < 10; i += 1) seen.firstUse('c', String(i), 1_000_000);
-    expect(seen.firstUse('c', 'overflow', 1_000_000)).toBe(false); // bounded: refused
-  });
-
-  it('treats an id as new once it has expired, even before the next pruning', () => {
-    let t = 1000;
-    const seen = new SeenAssertions(() => t);
-    expect(seen.firstUse('c', 'j', 1001)).toBe(true);
-    t = 1500; // within the pruning interval, past the id's expiry
-    expect(seen.firstUse('c', 'j', 2000)).toBe(true);
-  });
-
   it('grants only registered scopes, and refuses none', () => {
     expect(grantScopes('a b', ['b'])).toEqual(['b']);
     expect(() => grantScopes('', ['b'])).toThrow(AuthError);
@@ -142,7 +141,7 @@ describe('M7 SMART helpers', () => {
       active: true,
     };
     const header = Buffer.from(JSON.stringify({ alg: 'ES256', kid: 'k1' })).toString('base64url');
-    const seen = new SeenAssertions(() => 0);
+    const seen = () => Promise.resolve(true);
     await expect(
       verifyClientAssertion(`${header}.e30.x`, 'c', client, 'https://t', seen, 0),
     ).rejects.toThrow(AuthError);

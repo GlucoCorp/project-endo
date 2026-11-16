@@ -67,6 +67,13 @@ class FakeIntegrations implements IntegrationStore {
     Object.assign(r, { active: c.active });
     return Promise.resolve(true);
   }
+  readonly seen = new Set<string>();
+  reserveAssertion(clientId: string, jti: string) {
+    const k = `${clientId}/${jti}`;
+    if (this.seen.has(k)) return Promise.resolve(false);
+    this.seen.add(k);
+    return Promise.resolve(true);
+  }
   resolve(clientId: string) {
     const r = this.rows.find((x) => x.clientId === clientId);
     return Promise.resolve(
@@ -249,6 +256,14 @@ describe('M7 the integration service reads through the API (spec 9.3, 16.4)', ()
         })
       ).statusCode,
     ).toBe(404);
+    const reserve = () =>
+      internal('/internal/v1/integration/assertions/reserve', 'api.integration.resolve', {
+        client_id,
+        jti: 'j1',
+        expires_at: '2026-11-16T10:04:00Z',
+      });
+    expect((await reserve()).json()).toEqual({ first_use: true });
+    expect((await reserve()).json()).toEqual({ first_use: false });
     const read = (patient_id: string, org_id = ORG) =>
       internal('/internal/v1/fhir/patient', 'api.fhir.read', { org_id, patient_id, client_id });
     const res = await read(PATIENT);

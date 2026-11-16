@@ -46,6 +46,8 @@ export interface IntegrationStore {
   }): Promise<boolean>;
   /** Cross-organisation, by client_id: for the integration service only. */
   resolve(clientId: string): Promise<ResolvedClient | null>;
+  /** True the first time this assertion id is used (until it expires): replay protection. */
+  reserveAssertion(clientId: string, jti: string, expiresAt: Date): Promise<boolean>;
 }
 
 const COLUMNS = ['id', 'client_id', 'name', 'scopes', 'active', 'created_at'] as const;
@@ -121,6 +123,21 @@ export class PostgresIntegrationStore implements IntegrationStore {
         .execute();
       return true;
     });
+  }
+
+  async reserveAssertion(clientId: string, jti: string, expiresAt: Date): Promise<boolean> {
+    const r = await this.#db
+      .selectNoFrom((eb) =>
+        eb
+          .fn<boolean>('integration_assertion_reserve', [
+            eb.val(clientId),
+            eb.val(jti),
+            eb.val(expiresAt),
+          ])
+          .as('first'),
+      )
+      .executeTakeFirstOrThrow();
+    return r.first;
   }
 
   async resolve(clientId: string): Promise<ResolvedClient | null> {

@@ -19,33 +19,6 @@ export class AuthError extends Error {
   }
 }
 
-/** Assertion ids seen until they expire (SMART Backend Services: each jti used once). */
-export class SeenAssertions {
-  readonly #seen = new Map<string, number>();
-  readonly #now: () => number;
-  readonly #max: number;
-  #prunedAt = Number.NEGATIVE_INFINITY;
-  constructor(now: () => number, max = 100_000) {
-    this.#now = now;
-    this.#max = max;
-  }
-  /** False if this (client, jti) was used before; remembers it until `expiresAt`. */
-  firstUse(clientId: string, jti: string, expiresAt: number): boolean {
-    const t = this.#now();
-    // Expired ids are dropped at most once a second, so a burst costs no more than the bound.
-    if (t - this.#prunedAt >= 1000) {
-      for (const [k, exp] of this.#seen) if (exp < t) this.#seen.delete(k);
-      this.#prunedAt = t;
-    }
-    const key = `${clientId}\u0000${jti}`;
-    const known = this.#seen.get(key);
-    if (known !== undefined && known >= t) return false;
-    if (this.#seen.size >= this.#max) return false; // bounded: refuse rather than forget
-    this.#seen.set(key, expiresAt);
-    return true;
-  }
-}
-
 /**
  * Verifies a SMART Backend Services client assertion (private_key_jwt): signed with one of the
  * client's registered public keys (ES384 or RS384, chosen by `kid`), iss = sub = client_id,
@@ -56,7 +29,8 @@ export async function verifyClientAssertion(
   clientId: string,
   client: Client,
   tokenUrl: string,
-  seen: SeenAssertions,
+  /** Reserves (client, jti) until it expires; false if used before (shared, durable). */
+  reserve: (clientId: string, jti: string, expiresAt: Date) => Promise<boolean>,
   nowMs: number,
 ): Promise<void> {
   let kid: string | undefined;
@@ -85,7 +59,7 @@ export async function verifyClientAssertion(
   }
   const exp = (payload.exp ?? 0) * 1000;
   if (exp - nowMs > 5 * 60_000) throw new AuthError('invalid_client');
-  if (typeof payload.jti !== 'string' || !seen.firstUse(clientId, payload.jti, exp))
+  if (typeof payload.jti !== 'string' || !(await reserve(clientId, payload.jti, new Date(exp))))
     throw new AuthError('invalid_client');
 }
 
