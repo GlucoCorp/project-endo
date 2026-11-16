@@ -9,7 +9,7 @@ import {
   type Resource,
   type Subject,
 } from '@endo/authz';
-import type { AuditWriter } from '@endo/audit';
+import { AUDIT_UUID, type AuditWriter } from '@endo/audit';
 import type {
   ConsentStore,
   IdempotentInvitationStore,
@@ -49,7 +49,8 @@ import { registerCoordinatorRoutes, type EnrolmentCoordination } from './routes/
 import type { IdentityEnrolment } from './identity-client.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** Path ids are checked with the audit trail's own validator (Codex r7). */
+const UUID_RE = AUDIT_UUID;
 
 /**
  * Every route declares exactly one of these in `config.policy` (spec 2.5, 10.4). A route without

@@ -17,7 +17,15 @@
 
 import { spawn } from 'node:child_process';
 import { createDecipheriv, createHash } from 'node:crypto';
-import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
+import {
+  createReadStream,
+  createWriteStream,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { parseArgs, psql, readKey, splitCommand } from './pg-tools.mjs';
@@ -71,19 +79,51 @@ psql(exec, user, 'postgres', 'CREATE DATABASE :"scratch"', { scratch });
 let restoreOk = false;
 try {
   if (fileHash === manifest.sha256) {
-    const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(manifest.iv, 'base64'));
-    decipher.setAuthTag(Buffer.from(manifest.tag, 'base64'));
-    const [cmd, ...cmdArgs] = [...exec, 'pg_restore', '-U', user, '-d', scratch, '--exit-on-error'];
-    const restore = spawn(cmd, cmdArgs, { stdio: ['pipe', 'ignore', 'inherit'] });
-    const exited = new Promise((resolve) => restore.on('close', resolve));
+    // Decrypt completely first: GCM proves the data only at the end, so nothing reaches
+    // pg_restore before the auth tag has been verified. The plaintext lives in a private
+    // temporary directory and is removed whatever happens.
+    const dir = mkdtempSync(join(tmpdir(), 'endo-drill-'));
+    const plain = join(dir, 'dump');
     try {
-      await pipeline(createReadStream(dumpPath), decipher, restore.stdin);
-      restoreOk = (await exited) === 0;
-    } catch {
-      restoreOk = false; // a wrong key or a changed file fails the auth tag
+      const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(manifest.iv, 'base64'));
+      decipher.setAuthTag(Buffer.from(manifest.tag, 'base64'));
+      let verified = false;
+      try {
+        await pipeline(
+          createReadStream(dumpPath),
+          decipher,
+          createWriteStream(plain, { mode: 0o600 }),
+        );
+        verified = true;
+      } catch {
+        verified = false; // a wrong key or a changed file fails the auth tag
+      }
+      check('Decrypted and the auth tag verified before restoring', verified, '');
+      if (verified) {
+        const [cmd, ...cmdArgs] = [
+          ...exec,
+          'pg_restore',
+          '-U',
+          user,
+          '-d',
+          scratch,
+          '--exit-on-error',
+        ];
+        // pg_restore's own output is withheld: its errors can quote rows.
+        const restore = spawn(cmd, cmdArgs, { stdio: ['pipe', 'ignore', 'ignore'] });
+        const exited = new Promise((resolve) => restore.on('close', resolve));
+        try {
+          await pipeline(createReadStream(plain), restore.stdin);
+          restoreOk = (await exited) === 0;
+        } catch {
+          restoreOk = false;
+        }
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
   }
-  check('Decrypted (auth tag verified) and restored with pg_restore', restoreOk, '');
+  check('Restored with pg_restore', restoreOk, '');
 
   if (restoreOk) {
     // 1. Row counts.

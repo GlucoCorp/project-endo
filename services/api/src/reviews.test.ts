@@ -329,6 +329,12 @@ describe('spec 9.1 malformed ids in a path', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json<{ type: string }>().type).toContain('request.invalid_id');
     expect((await audited()).length).toBe(before);
+    // A UUID of another variant (fourth group not 8, 9, a or b) is refused the same way.
+    const odd = await call(
+      'GET',
+      `/v1/patients/01900000-0000-7000-0000-0000000000a1/episodes/${EPISODE}/review`,
+    );
+    expect(odd.statusCode).toBe(400);
   });
 });
 
