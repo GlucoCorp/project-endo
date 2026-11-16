@@ -39,13 +39,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient, identity]
+        service: [api, bff-patient, bff-clinic, identity, integration]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build
-        run: docker build --build-arg SERVICE=${{ matrix.service }} -t endo-${{ matrix.service }}:ci .
+        run: |
+          case "${{ matrix.service }}" in
+            bff-patient) web=patient-web ;;
+            bff-clinic) web=clinic-web ;;
+            *) web="" ;;
+          esac
+          docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
+            -t endo-${{ matrix.service }}:ci .
       - name: Smoke test (read-only filesystem, all capabilities dropped, non-root)
         env:
           SERVICE: ${{ matrix.service }}
@@ -60,10 +67,26 @@ jobs:
           elif [ "$SERVICE" = identity ]; then
             docker run -d --name smoke "${common[@]}" -e IDENTITY_PORT=8080 -e IDENTITY_HOST=0.0.0.0 \
               -e IDENTITY_IDP_ISSUER=http://localhost:18080/realms/endo-dev endo-identity:ci
+          elif [ "$SERVICE" = bff-clinic ]; then
+            k=http://127.0.0.1:9
+            docker run -d --name smoke "${common[@]}" -e BFF_CLINIC_PORT=8080 -e BFF_CLINIC_HOST=0.0.0.0 \
+              -e BFF_CLINIC_OIDC_ISSUER=$k/realms/endo -e BFF_CLINIC_OIDC_AUTHORIZATION_ENDPOINT=$k/auth \
+              -e BFF_CLINIC_OIDC_TOKEN_ENDPOINT=$k/token -e BFF_CLINIC_OIDC_JWKS_URI=$k/certs \
+              -e BFF_CLINIC_OIDC_CLIENT_SECRET=smoke-test-secret-not-used-anywhere-0001 \
+              -e BFF_CLINIC_OIDC_REDIRECT_URI=http://127.0.0.1:18000/auth/callback \
+              -e BFF_CLINIC_OIDC_END_SESSION_ENDPOINT=$k/logout \
+              -e BFF_CLINIC_OIDC_POST_LOGOUT_REDIRECT_URI=http://127.0.0.1:18000/ \
+              -e BFF_CLINIC_IDENTITY_BASE_URL=$k -e BFF_CLINIC_API_BASE_URL=$k \
+              -e BFF_CLINIC_WORKLOAD_PRIVATE_KEY_JWK="$BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK" \
+              -e BFF_CLINIC_PORTAL_ORIGIN=http://127.0.0.1:18000 -e BFF_CLINIC_APP_DIR=/app/web endo-bff-clinic:ci
+          elif [ "$SERVICE" = integration ]; then
+            docker run -d --name smoke "${common[@]}" -e INTEGRATION_PORT=8080 -e INTEGRATION_HOST=0.0.0.0 \
+              -e INTEGRATION_BASE_URL=http://127.0.0.1:18000 -e INTEGRATION_API_BASE_URL=http://127.0.0.1:9 \
+              -e INTEGRATION_WORKLOAD_PRIVATE_KEY_JWK="$BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK" endo-integration:ci
           else
             docker run -d --name smoke "${common[@]}" -e BFF_PATIENT_PORT=8080 -e BFF_PATIENT_HOST=0.0.0.0 \
               -e BFF_PATIENT_DEV_SESSIONS_ENABLED=true -e BFF_PATIENT_API_BASE_URL=http://127.0.0.1:9 \
-              -e BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK endo-bff-patient:ci
+              -e BFF_PATIENT_SERVICE_TOKEN_PRIVATE_KEY_JWK -e BFF_PATIENT_APP_DIR=/app/web endo-bff-patient:ci
           fi
           for _ in $(seq 1 30); do curl -sf http://127.0.0.1:18000/healthz && break; sleep 1; done
           curl -sf http://127.0.0.1:18000/healthz | grep -q '"ok"'
@@ -102,7 +125,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient, identity]
+        service: [api, bff-patient, bff-clinic, identity, integration]
     env:
       IMAGE: ghcr.io/glucocorp/endo-${{ matrix.service }}
     steps:
@@ -116,7 +139,14 @@ jobs:
           cosign-release: v3.0.6
 
       - name: Build
-        run: docker build --build-arg SERVICE=${{ matrix.service }} -t "$IMAGE:sha-$GITHUB_SHA" .
+        run: |
+          case "${{ matrix.service }}" in
+            bff-patient) web=patient-web ;;
+            bff-clinic) web=clinic-web ;;
+            *) web="" ;;
+          esac
+          docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
+            -t "$IMAGE:sha-$GITHUB_SHA" .
       - name: Vulnerabilities (Trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
