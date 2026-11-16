@@ -300,6 +300,23 @@ Row-level security; changed by the organisation admin only, each change audited.
 | `org_settings.updated_at`                    | When last changed (database clock)                | as above                                                                | as above                                | S0          |
 | `org_settings.updated_by`                    | Which admin changed them (opaque clinician id)    | as above                                                                | as above                                | S1          |
 
+### Staff invitations — `packages/clinical-store/migrations/0016` (M5)
+
+Row-level security; single use, at most 7 days, revocable. No patient data and no names (those stay in the identity vault).
+
+| Column                                  | Purpose                                                  | Legal basis                                                     | Retention                                                                  | Sensitivity |
+| --------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------- |
+| `staff_invitation.id`                   | Invitation identifier                                    | Legitimate interest: managing the organisation’s team (REQ-010) | While the organisation uses the service (the audit trail keeps who joined) | S0          |
+| `staff_invitation.org_id`               | Organisation (row-level security)                        | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.role`                 | Role the colleague will have                             | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.token_hash`           | SHA-256 of the link token; the token is only in the link | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.created_by`           | Admin who made it (opaque clinician id)                  | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.created_at`           | When made (database clock)                               | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.expires_at`           | When it stops working (at most 7 days)                   | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.claimed_at`           | When accepted                                            | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.claimed_clinician_id` | The membership it created (opaque clinician id)          | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.revoked_at`           | When the admin stopped it                                | as above                                                        | as above                                                                   | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

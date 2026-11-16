@@ -205,6 +205,19 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0016: staff invitations (REQ-010). */
+  staff_invitation: {
+    id: string;
+    org_id: string;
+    role: 'clinician' | 'org_admin';
+    token_hash: string;
+    created_by: string;
+    created_at: Generated<Date>;
+    expires_at: Date;
+    claimed_at: Generated<Date | null>;
+    claimed_clinician_id: Generated<string | null>;
+    revoked_at: Date | null;
+  };
   /** Migration 0015: organisation settings (REQ-010). */
   org_settings: {
     org_id: string;

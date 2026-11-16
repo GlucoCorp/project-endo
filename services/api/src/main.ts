@@ -44,6 +44,7 @@ import {
   type ShareLinkStore,
   PostgresDeletionStore,
   PostgresOrgAdminStore,
+  PostgresStaffInvitationStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -226,6 +227,7 @@ async function main(): Promise<void> {
   let links: ShareLinkStore | undefined;
   let deletions: PostgresDeletionStore | undefined;
   let orgAdmin: PostgresOrgAdminStore | undefined;
+  let staffInvitations: PostgresStaffInvitationStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -256,6 +258,7 @@ async function main(): Promise<void> {
     links = new PostgresShareLinkStore(db);
     deletions = new PostgresDeletionStore(db);
     orgAdmin = new PostgresOrgAdminStore(db);
+    staffInvitations = new PostgresStaffInvitationStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -336,7 +339,7 @@ async function main(): Promise<void> {
         ? {
             'bff-clinic': {
               publicJwk: config.API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK,
-              scopes: ['api.membership.resolve'],
+              scopes: ['api.membership.resolve', 'api.staff.join'],
             },
           }
         : {}),
@@ -398,7 +401,7 @@ async function main(): Promise<void> {
           },
         }
       : {}),
-    ...(orgAdmin ? { orgAdmin: { orgAdmin } } : {}),
+    ...(orgAdmin && staffInvitations ? { orgAdmin: { orgAdmin, staffInvitations } } : {}),
     ...(reviews && links && deletions
       ? {
           dataRights: {

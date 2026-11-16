@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Admin, parseSettings } from './admin.ts';
+import { Admin, joinToken, parseSettings, startJoin } from './admin.ts';
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 function fake(responses: (Response | Error)[]) {
@@ -75,5 +75,54 @@ describe('REQ-010 organisation admin logic', () => {
       code: 'org.last_admin',
     });
     expect(await admin.change('c', 'org_admin', true)).toEqual({ kind: 'refused', code: '' });
+  });
+});
+
+describe('REQ-010 staff invitations in the portal', () => {
+  it('makes a link with the token in its fragment, lists and stops invitations', async () => {
+    const T = 'K'.repeat(43);
+    const { admin, calls } = fake([
+      json(201, { token: T, expires_at: '2026-11-23T00:00:00Z' }),
+      json(201, { expires_at: 'x' }),
+      json(403, { type: 'https://errors.endo/authz.denied' }),
+      json(200, { invitations: [{ id: 'i', status: 'open' }] }),
+      json(500),
+      new Response(null, { status: 204 }),
+      json(404),
+      new TypeError('x'),
+    ]);
+    expect(await admin.invite('clinician', 'https://clinic.test')).toEqual({
+      kind: 'ok',
+      value: { url: `https://clinic.test/join#${T}`, expiresAt: '2026-11-23T00:00:00Z' },
+    });
+    expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({ role: 'clinician' });
+    expect(await admin.invite('clinician', 'x')).toEqual({ kind: 'error' });
+    expect(await admin.invite('clinician', 'x')).toEqual({ kind: 'refused', code: 'authz.denied' });
+    expect(await admin.invitations()).toHaveLength(1);
+    expect(await admin.invitations()).toBeNull();
+    expect(await admin.stopInvitation('i')).toBe(true);
+    expect(calls[5]?.url).toBe('/v1/org/staff-invitations/i/revoke');
+    expect(await admin.stopInvitation('i')).toBe(false);
+    expect(await admin.stopInvitation('i')).toBe(false);
+  });
+
+  it('reads the join token from the fragment and hands it to the BFF', async () => {
+    expect(joinToken(`#${'K'.repeat(43)}`)).toBe('K'.repeat(43));
+    expect(joinToken('#short')).toBeNull();
+    const calls: RequestInit[] = [];
+    const answers: (Response | Error)[] = [
+      new Response(null, { status: 204 }),
+      new Response(null, { status: 400 }),
+      new TypeError('x'),
+    ];
+    const f = ((_u: string, init?: RequestInit) => {
+      calls.push(init ?? {});
+      const r = answers.shift() ?? new Response(null, { status: 500 });
+      return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
+    }) as unknown as typeof fetch;
+    expect(await startJoin(f, 'K'.repeat(43))).toBe(true);
+    expect(JSON.parse(calls[0]?.body as string)).toEqual({ token: 'K'.repeat(43) });
+    expect(await startJoin(f, 'K'.repeat(43))).toBe(false);
+    expect(await startJoin(f, 'K'.repeat(43))).toBe(false);
   });
 });

@@ -31,7 +31,10 @@ describe('HttpResolver (ADR-0019 section 4)', () => {
         'bff-clinic': { publicJwk: keys.publicJwk, scopes: ['identity.subject.resolve'] },
       }),
       api: new WorkloadTokenVerifier('api', {
-        'bff-clinic': { publicJwk: keys.publicJwk, scopes: ['api.membership.resolve'] },
+        'bff-clinic': {
+          publicJwk: keys.publicJwk,
+          scopes: ['api.membership.resolve', 'api.staff.join'],
+        },
       }),
     };
     const fetchStub = (async (url: string, init?: RequestInit) => {
@@ -49,6 +52,22 @@ describe('HttpResolver (ADR-0019 section 4)', () => {
     });
     return { resolver, seen };
   };
+
+  it('REQ-010 claims a staff invitation with the api.staff.join scope', async () => {
+    const statuses = [200, 404, 409, 500];
+    const { resolver, seen } = await make(
+      () => new Response('{}', { status: statuses.shift() ?? 500 }),
+    );
+    const hash = 'a'.repeat(64);
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('claimed');
+    expect(seen[0]).toEqual({
+      url: 'https://api.test/internal/v1/staff-invitations/claim',
+      scopes: ['api.staff.join'],
+    });
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('unavailable');
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('unavailable');
+    await expect(resolver.claimStaff(hash, PERSON)).rejects.toBeInstanceOf(ResolverError);
+  });
 
   it('resolves a person and memberships, each call with its own audience and single scope', async () => {
     const { resolver, seen } = await make((url) =>

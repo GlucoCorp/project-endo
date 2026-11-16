@@ -42,11 +42,17 @@ import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
-export const PORTAL_PATHS = ['/', '/enrolments', '/reviews', '/admin'] as const;
+export const PORTAL_PATHS = ['/', '/enrolments', '/reviews', '/admin', '/join'] as const;
+
+/**
+ * REQ-010 staff invitation in progress: the SHA-256 of the link token, for 10 minutes, until the
+ * sign-in callback claims it. Lax: Keycloak's return is a cross-site navigation.
+ */
+export const JOIN_COOKIE = '__Host-endo_join';
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
-  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' }
+  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' | 'join' }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
   | { readonly kind: 'backchannel' }
@@ -70,7 +76,8 @@ declare module 'fastify' {
 export function isClinicAuth(value: unknown): value is ClinicAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
-  if (v.kind === 'public') return v.reason === 'liveness' || v.reason === 'app-shell';
+  if (v.kind === 'public')
+    return v.reason === 'liveness' || v.reason === 'app-shell' || v.reason === 'join';
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
@@ -242,6 +249,40 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     request.sessionToken = token;
   });
 
+  /**
+   * REQ-010: the join page posts the invitation token from its link's fragment; only its hash is
+   * kept, in a short-lived cookie, and the page then starts the ordinary staff sign-in.
+   */
+  app.post(
+    '/v1/join',
+    {
+      config: { auth: { kind: 'public', reason: 'join' } },
+      bodyLimit: 256,
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['token'],
+          properties: { token: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (request.headers.origin !== deps.portalOrigin)
+        throw new ProblemError(403, 'csrf.origin_mismatch', 'Request refused.');
+      const { token } = request.body as { token: string };
+      const hash = createHash('sha256').update(token).digest('hex');
+      return reply
+        .header(
+          'set-cookie',
+          `${JOIN_COOKIE}=${hash}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+        )
+        .header('cache-control', 'no-store')
+        .code(204)
+        .send();
+    },
+  );
+
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
     status: 'ok',
   }));
@@ -302,6 +343,11 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         );
         const personId = await deps.resolver.person(who.issuer, who.subject);
         if (!personId) refuse();
+        // REQ-010: a staff invitation this browser brought is claimed for the person who signed
+        // in, before memberships are read. A link that cannot be used changes nothing.
+        const join = readCookie(request.headers.cookie, JOIN_COOKIE);
+        if (join && /^[0-9a-f]{64}$/.test(join) && deps.resolver.claimStaff)
+          await deps.resolver.claimStaff(join, personId);
         const memberships = await deps.resolver.memberships(personId);
         if (memberships.length === 0) refuse();
         let token = await deps.sessions.create({
@@ -330,7 +376,10 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         // A same-origin page completes the navigation, so the Strict session cookie is sent on
         // the next request (the callback itself arrives cross-site).
         return await reply
-          .header('set-cookie', sessionCookie(token))
+          .header('set-cookie', [
+            sessionCookie(token),
+            `${JOIN_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
+          ])
           .type('text/html; charset=utf-8')
           .send(
             '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/">' +

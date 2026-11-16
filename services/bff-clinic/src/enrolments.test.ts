@@ -334,4 +334,37 @@ describe('REQ-010 the clinic desk passes organisation admin calls to the API', (
     ).toBe(404);
     expect(seen).toHaveLength(before);
   });
+
+  it('makes, lists and stops staff invitations; a stop answers 204 with no body', async () => {
+    const { app, seen, active, activeCsrf } = await setup((req) =>
+      new URL(req.url).pathname.endsWith('/revoke')
+        ? new Response(null, { status: 204 })
+        : json(201, { id: 'i', token: 'T'.repeat(43) }),
+    );
+    const post = (url: string) =>
+      app.inject({
+        method: 'POST',
+        url,
+        headers: {
+          cookie: active,
+          origin: ORIGIN,
+          'content-type': 'application/json',
+          'x-csrf-token': activeCsrf,
+          'idempotency-key': '0190a000-0000-4000-8000-000000000004',
+        },
+        payload: { role: 'clinician' },
+      });
+    expect((await post('/v1/org/staff-invitations')).statusCode).toBe(201);
+    expect(
+      (await app.inject({ url: '/v1/org/staff-invitations', headers: { cookie: active } }))
+        .statusCode,
+    ).toBe(201);
+    const id = '01900000-0000-7000-8000-0000000001d1';
+    const stop = await post(`/v1/org/staff-invitations/${id}/revoke`);
+    expect(stop.statusCode).toBe(204);
+    expect(stop.body).toBe('');
+    const before = seen.length;
+    expect((await post('/v1/org/staff-invitations/nope/revoke')).statusCode).toBe(404);
+    expect(seen).toHaveLength(before);
+  });
 });

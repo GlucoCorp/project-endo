@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { t } from '../i18n.ts';
 import { Portal } from '../portal/portal.ts';
 import styles from '../desk/desk.module.css';
-import { Admin, parseSettings, type Member } from './admin.ts';
+import { Admin, parseSettings, type Invitation, type Member } from './admin.ts';
 
 /** Organisation settings and team (REQ-010; spec 21.8). For the organisation's admins. */
 export function AdminPage() {
@@ -18,6 +18,14 @@ export function AdminPage() {
   const [message, setMessage] = useState<'saved' | 'invalid' | 'error' | null>(null);
   const [members, setMembers] = useState<readonly Member[]>([]);
   const [teamMessage, setTeamMessage] = useState<'last-admin' | 'error' | null>(null);
+  const [inviteRole, setInviteRole] = useState<Member['role']>('clinician');
+  const [invite, setInvite] = useState<{ url: string; expiresAt: string } | 'error' | null>(null);
+  const [invitations, setInvitations] = useState<readonly Invitation[]>([]);
+  const loadInvitations = () => {
+    void admin.invitations().then((i) => {
+      setInvitations(i ?? []);
+    });
+  };
 
   const loadMembers = () => {
     void admin.members().then((m) => {
@@ -38,6 +46,9 @@ export function AdminPage() {
       });
       void admin.members().then((m) => {
         setMembers(m ?? []);
+      });
+      void admin.invitations().then((i) => {
+        setInvitations(i ?? []);
       });
     });
   }, [portal, admin]);
@@ -121,6 +132,62 @@ export function AdminPage() {
         {message === 'error' && <p role="alert">{t('common.try-later')}</p>}
       </section>
 
+      <section aria-labelledby="invite-title">
+        <h2 id="invite-title">{t('admin.invite-title')}</h2>
+        <label className={styles['field']}>
+          {t('admin.invite-role')}
+          <select
+            value={inviteRole}
+            onChange={(e) => {
+              setInviteRole(e.target.value === 'org_admin' ? 'org_admin' : 'clinician');
+            }}
+          >
+            <option value="clinician">{t('admin.role-clinician')}</option>
+            <option value="org_admin">{t('admin.role-admin')}</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          className={styles['primary']}
+          onClick={() => {
+            void admin.invite(inviteRole, window.location.origin).then((r) => {
+              setInvite(r.kind === 'ok' ? r.value : 'error');
+              loadInvitations();
+            });
+          }}
+        >
+          {t('admin.invite')}
+        </button>
+        {invite === 'error' && <p role="alert">{t('common.try-later')}</p>}
+        {invite && invite !== 'error' && (
+          <div role="status">
+            <p>{t('admin.invite-made', { date: invite.expiresAt.slice(0, 10) })}</p>
+            <input readOnly value={invite.url} aria-label={t('admin.invite-link')} />
+          </div>
+        )}
+        <ul className={styles['queue']}>
+          {invitations.map((i) => (
+            <li key={i.id}>
+              {t('admin.invite-row', {
+                role: t(i.role === 'org_admin' ? 'admin.role-admin' : 'admin.role-clinician'),
+                date: i.expires_at.slice(0, 10),
+                status: i.status,
+              })}{' '}
+              {i.status === 'open' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void admin.stopInvitation(i.id).then(loadInvitations);
+                  }}
+                >
+                  {t('admin.invite-stop')}
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </section>
+
       <section aria-labelledby="team-title">
         <h2 id="team-title">{t('admin.team')}</h2>
         <ul className={styles['queue']}>
@@ -129,7 +196,7 @@ export function AdminPage() {
               {t('admin.member', {
                 ref: m.clinician_id.slice(-6),
                 since: m.since,
-                role: m.role === 'org_admin' ? 'admin' : 'clinician',
+                role: t(m.role === 'org_admin' ? 'admin.role-admin' : 'admin.role-clinician'),
                 status: t(m.active ? 'admin.active' : 'admin.inactive'),
               })}{' '}
               {m.you ? (

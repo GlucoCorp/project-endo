@@ -17,6 +17,34 @@ export interface Member {
   readonly you: boolean;
 }
 
+export interface Invitation {
+  readonly id: string;
+  readonly role: 'clinician' | 'org_admin';
+  readonly expires_at: string;
+  readonly status: 'open' | 'accepted' | 'stopped' | 'expired';
+}
+
+/** Reads the invitation token from the join link's fragment. */
+export function joinToken(hash: string): string | null {
+  const t = hash.replace(/^#/, '');
+  return /^[A-Za-z0-9_-]{43}$/.test(t) ? t : null;
+}
+
+/** Keeps the token's hash for the sign-in that follows; true when the page may go on. */
+export async function startJoin(f: typeof fetch, token: string): Promise<boolean> {
+  try {
+    const res = await f('/v1/join', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    return res.status === 204;
+  } catch {
+    return false;
+  }
+}
+
 export type Result<T> =
   | { readonly kind: 'ok'; readonly value: T }
   | { readonly kind: 'refused'; readonly code: string }
@@ -101,6 +129,46 @@ export class Admin {
 
   async members(): Promise<readonly Member[] | null> {
     return (await this.#get<{ clinicians: Member[] }>('/v1/org/clinicians'))?.clinicians ?? null;
+  }
+
+  /** Makes an invitation; the link (token in its fragment) is shown once. */
+  async invite(
+    role: Member['role'],
+    origin: string,
+  ): Promise<Result<{ url: string; expiresAt: string }>> {
+    const r = await this.#post<{ token?: unknown; expires_at?: unknown }>(
+      '/v1/org/staff-invitations',
+      { role },
+    );
+    if (r.kind !== 'ok') return r;
+    const { token, expires_at } = r.value;
+    if (typeof token !== 'string' || typeof expires_at !== 'string') return { kind: 'error' };
+    return { kind: 'ok', value: { url: `${origin}/join#${token}`, expiresAt: expires_at } };
+  }
+
+  async invitations(): Promise<readonly Invitation[] | null> {
+    return (
+      (await this.#get<{ invitations: Invitation[] }>('/v1/org/staff-invitations'))?.invitations ??
+      null
+    );
+  }
+
+  async stopInvitation(id: string): Promise<boolean> {
+    try {
+      const res = await this.#fetch(`/v1/org/staff-invitations/${encodeURIComponent(id)}/revoke`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'content-type': 'application/json',
+          'x-csrf-token': this.#csrf(),
+          'idempotency-key': crypto.randomUUID(),
+        },
+        body: '{}',
+      });
+      return res.status === 204;
+    } catch {
+      return false;
+    }
   }
 
   change(id: string, role: Member['role'], active: boolean): Promise<Result<unknown>> {

@@ -13,6 +13,7 @@ import {
   PostgresVerdictStore,
   PostgresDeletionStore,
   PostgresOrgAdminStore,
+  PostgresStaffInvitationStore,
   PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
@@ -1261,6 +1262,90 @@ describe.skipIf(!url)(
           asApi((c) =>
             c.query('UPDATE clinician SET identity_ref = $1 WHERE id = $2', [randomUUID(), CLIN_A]),
           ),
+        ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('REQ-010 staff invitations (migration 0016)', () => {
+      it('makes a colleague a member once, by the token hash, for at most 7 days', async () => {
+        const invites = new PostgresStaffInvitationStore(apiDb);
+        const hash = createHash('sha256').update(randomUUID()).digest('hex');
+        const inv = await invites.create({
+          id: randomUUID(),
+          orgId: ORG_A,
+          role: 'clinician',
+          tokenHash: hash,
+          createdBy: CLIN_A,
+          days: 30,
+          auditEvent: audit('staff_invitation.created'),
+        });
+        const days = (inv.expiresAt.getTime() - inv.createdAt.getTime()) / 86_400_000;
+        expect(days).toBeLessThanOrEqual(7.0001);
+        expect((await invites.list(ORG_A)).map((i) => i.id)).toContain(inv.id);
+        expect(await invites.list(ORG_B)).toEqual([]);
+        const person = randomUUID();
+        const clinicianId = randomUUID();
+        const claim = (tokenHash: string, identityRef = person, id = clinicianId) =>
+          invites.claim({
+            tokenHash,
+            identityRef,
+            clinicianId: id,
+            auditEvent: audit('staff_invitation.claimed'),
+          });
+        expect(await claim('0'.repeat(64))).toEqual({ outcome: 'unavailable' });
+        expect(await claim(hash)).toEqual({ outcome: 'claimed', orgId: ORG_A, role: 'clinician' });
+        // Used once.
+        expect(await claim(hash, randomUUID(), randomUUID())).toEqual({ outcome: 'unavailable' });
+        const m = (
+          await admin.query('SELECT org_id, role, active FROM clinician WHERE identity_ref = $1', [
+            person,
+          ])
+        ).rows;
+        expect(m).toEqual([{ org_id: ORG_A, role: 'clinician', active: true }]);
+        const claimedEvent = await admin.query<{ event: unknown }>(
+          `SELECT event FROM audit_outbox WHERE event->'resource'->>'id' = $1`,
+          [inv.id],
+        );
+        expect(claimedEvent.rows[0]?.event).toMatchObject({ org_id: ORG_A });
+        // A second invitation for someone already in the organisation.
+        const again = createHash('sha256').update(randomUUID()).digest('hex');
+        await invites.create({
+          id: randomUUID(),
+          orgId: ORG_A,
+          role: 'org_admin',
+          tokenHash: again,
+          createdBy: CLIN_A,
+          days: 7,
+          auditEvent: audit('x'),
+        });
+        expect(await claim(again, person, randomUUID())).toEqual({ outcome: 'already_member' });
+        // Stopped links cannot be claimed; a used one cannot be stopped.
+        const stopped = await invites.create({
+          id: randomUUID(),
+          orgId: ORG_A,
+          role: 'clinician',
+          tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
+          createdBy: CLIN_A,
+          days: 7,
+          auditEvent: audit('x'),
+        });
+        expect(await invites.revoke(ORG_B, stopped.id, audit('x'))).toBe(false);
+        expect(await invites.revoke(ORG_A, stopped.id, audit('staff_invitation.revoked'))).toBe(
+          true,
+        );
+        expect(await invites.revoke(ORG_A, stopped.id, audit('x'))).toBe(false);
+        expect(await invites.revoke(ORG_A, inv.id, audit('x'))).toBe(false);
+        // The API role cannot add members or read token hashes directly.
+        await expect(
+          asApi((c) =>
+            c.query(
+              `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+              [randomUUID(), ORG_A, randomUUID()],
+            ),
+          ),
+        ).rejects.toThrow(/permission denied/);
+        await expect(
+          asApi((c) => c.query('SELECT token_hash FROM staff_invitation')),
         ).rejects.toThrow(/permission denied/);
       });
     });

@@ -1,6 +1,12 @@
+import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AuditEventInput } from '@endo/audit';
-import type { OrgAdminStore, OrgSettings } from '@endo/clinical-store';
+import type {
+  OrgAdminStore,
+  OrgSettings,
+  StaffInvitation,
+  StaffInvitationStore,
+} from '@endo/clinical-store';
 import { uuidv7 } from '@endo/domain';
 import { ProblemError } from '@endo/service-kit';
 
@@ -15,6 +21,8 @@ import { ProblemError } from '@endo/service-kit';
  */
 export interface OrgAdminRouteDeps {
   readonly orgAdmin: OrgAdminStore;
+  /** Staff invitations; the claim is a workload route for the clinic BFF (`api.staff.join`). */
+  readonly staffInvitations?: StaffInvitationStore;
   readonly onCommitted: () => void;
 }
 
@@ -198,6 +206,153 @@ export function registerOrgAdminRoutes(app: FastifyInstance, deps: OrgAdminRoute
         throw new ProblemError(409, 'org.last_admin', 'The organisation needs an active admin.');
       if (r === 'changed') deps.onCommitted();
       return { clinician_id: id, role: b.role, active: b.active };
+    },
+  );
+
+  const invitations = deps.staffInvitations;
+  if (!invitations) return;
+  const invitationBody = (i: StaffInvitation) => ({
+    id: i.id,
+    role: i.role,
+    created_at: i.createdAt.toISOString(),
+    expires_at: i.expiresAt.toISOString(),
+    status: i.claimedAt
+      ? 'accepted'
+      : i.revokedAt
+        ? 'stopped'
+        : i.expiresAt.getTime() <= Date.now()
+          ? 'expired'
+          : 'open',
+  });
+
+  /** REQ-010: invite a colleague. The token is returned once; only its SHA-256 is stored. */
+  app.post(
+    '/v1/org/staff-invitations',
+    {
+      config: { policy: policy('org.clinicians.manage', 'staff_invitation') },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['role'],
+          properties: {
+            role: { type: 'string', enum: ['clinician', 'org_admin'] },
+            days: { type: 'integer', minimum: 1, maximum: 7 },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { orgId, clinicianId } = org(request);
+      const b = request.body as { role: 'clinician' | 'org_admin'; days?: number };
+      const token = randomBytes(32).toString('base64url');
+      const id = uuidv7();
+      const i = await invitations.create({
+        id,
+        orgId,
+        role: b.role,
+        tokenHash: createHash('sha256').update(token).digest('hex'),
+        createdBy: clinicianId,
+        days: b.days ?? 7,
+        auditEvent: audit(request, 'staff_invitation.created', 'staff_invitation', id, orgId),
+      });
+      deps.onCommitted();
+      return reply
+        .code(201)
+        .header('cache-control', 'no-store')
+        .send({ ...invitationBody(i), token });
+    },
+  );
+
+  app.get(
+    '/v1/org/staff-invitations',
+    { config: { policy: policy('org.clinicians.manage', 'staff_invitation') } },
+    async (request) => ({
+      invitations: (await invitations.list(org(request).orgId)).map(invitationBody),
+    }),
+  );
+
+  app.post(
+    '/v1/org/staff-invitations/:id/revoke',
+    {
+      config: { policy: policy('org.clinicians.manage', 'staff_invitation') },
+      schema: {
+        params: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id'],
+          properties: { id: { type: 'string', pattern: UUID } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { orgId } = org(request);
+      const { id } = request.params as { id: string };
+      const ok = await invitations.revoke(
+        orgId,
+        id,
+        audit(request, 'staff_invitation.revoked', 'staff_invitation', id, orgId),
+      );
+      if (!ok) throw new ProblemError(404, 'staff_invitation.not_open', 'Not found.');
+      deps.onCommitted();
+      return reply.code(204).send();
+    },
+  );
+
+  /**
+   * The clinic BFF, after a staff sign-in that resolved to `person_id`, claims the invitation the
+   * browser brought (as a hash). One answer for every link that cannot be used.
+   */
+  app.post(
+    '/internal/v1/staff-invitations/claim',
+    {
+      config: {
+        policy: {
+          kind: 'workload',
+          scope: 'api.staff.join',
+          action: 'staff_invitation.claim',
+          resourceType: 'staff_invitation',
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['token_hash', 'person_id'],
+          properties: {
+            token_hash: { type: 'string', pattern: '^[0-9a-f]{64}$' },
+            person_id: { type: 'string', pattern: UUID },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const b = request.body as { token_hash: string; person_id: string };
+      const r = await invitations.claim({
+        tokenHash: b.token_hash,
+        identityRef: b.person_id,
+        clinicianId: uuidv7(),
+        auditEvent: {
+          id: uuidv7(),
+          ...AuditEventInput.parse({
+            actor: { id: b.person_id, role: 'clinician' },
+            action: 'staff_invitation.claimed',
+            // The database fills in the organisation and the invitation.
+            resource: { type: 'staff_invitation', id: null },
+            org_id: null,
+            purpose_of_use: 'operations',
+            outcome: 'success',
+            reason: null,
+            request_id: request.id,
+          }),
+        },
+      });
+      if (r.outcome !== 'claimed')
+        throw r.outcome === 'already_member'
+          ? new ProblemError(409, 'staff_invitation.already_member', 'Already a member.')
+          : new ProblemError(404, 'staff_invitation.unavailable', 'This link cannot be used.');
+      deps.onCommitted();
+      return { org_id: r.orgId, role: r.role };
     },
   );
 }

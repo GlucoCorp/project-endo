@@ -36,6 +36,7 @@ async function setup(
     tokenStatus?: number;
     /** Status the stand-in Keycloak answers refresh grants with (default 200). */
     refreshStatus?: () => number;
+    claimStaff?: Resolver['claimStaff'];
   } = {},
 ) {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
@@ -84,6 +85,7 @@ async function setup(
       Promise.resolve(
         opts.membershipReads?.shift() ?? opts.memberships ?? [{ orgId: ORG_A, role: 'clinician' }],
       ),
+    ...(opts.claimStaff ? { claimStaff: opts.claimStaff } : {}),
   };
   const sessions = new InMemoryClinicSessions('test', () => clock);
   const app = await buildClinicBff({
@@ -676,5 +678,68 @@ describe('Codex review, slice 6: logout token strictness', () => {
     const res = await post(new URLSearchParams({ logout_token: token, extension: 'x' }).toString());
     expect(res.statusCode).toBe(200);
     expect(await alive()).toBe(false);
+  });
+});
+
+describe('REQ-010 a staff invitation claimed at sign-in', () => {
+  const TOKEN = 'J'.repeat(43);
+  const HASH = createHash('sha256').update(TOKEN).digest('hex');
+
+  it('keeps only the hash of the link token, then claims it for the person who signed in', async () => {
+    const claimed: [string, string][] = [];
+    const ctx = await setup({
+      claimStaff: (hash, person) => {
+        claimed.push([hash, person]);
+        return Promise.resolve('claimed');
+      },
+    });
+    const join = await ctx.app.inject({
+      method: 'POST',
+      url: '/v1/join',
+      headers: { origin: 'https://clinic.test', 'content-type': 'application/json' },
+      payload: { token: TOKEN },
+    });
+    expect(join.statusCode).toBe(204);
+    const joinCookie = String(join.headers['set-cookie']);
+    expect(joinCookie).toContain(`__Host-endo_join=${HASH}`);
+    expect(joinCookie).toContain('Max-Age=600');
+    expect(joinCookie).not.toContain(TOKEN);
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, `${cookie}; __Host-endo_join=${HASH}`);
+    expect(res.statusCode).toBe(200);
+    expect(claimed).toEqual([[HASH, PERSON]]);
+    expect(String(res.headers['set-cookie'])).toContain('__Host-endo_join=; Path=/');
+  });
+
+  it('refuses a cross-site or malformed join, and ignores a malformed cookie', async () => {
+    const claimed: string[] = [];
+    const ctx = await setup({
+      claimStaff: (hash) => {
+        claimed.push(hash);
+        return Promise.resolve('unavailable');
+      },
+    });
+    const post = (headers: Record<string, string>, payload: object) =>
+      ctx.app.inject({ method: 'POST', url: '/v1/join', headers, payload });
+    expect(
+      (
+        await post(
+          { origin: 'https://evil.test', 'content-type': 'application/json' },
+          { token: TOKEN },
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await post(
+          { origin: 'https://clinic.test', 'content-type': 'application/json' },
+          { token: 'short' },
+        )
+      ).statusCode,
+    ).toBe(400);
+    const { cookie, state } = await ctx.start();
+    const res = await ctx.callback(`code=c1&state=${state}`, `${cookie}; __Host-endo_join=nope`);
+    expect(res.statusCode).toBe(200); // an existing member signs in as usual
+    expect(claimed).toEqual([]);
   });
 });
