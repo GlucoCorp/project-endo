@@ -478,6 +478,23 @@ The clinical store's reservation of an invitation, acknowledged for a transactio
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
 
+## Sessions (`sessions` database) — `packages/session-store/migrations` (ADR-0033)
+
+Reached only by the BFFs (`endo_sessions_app`). Rows end with the session: at most 12 hours, and expired rows are swept every 10 minutes.
+
+| Column                         | Purpose                                                                                                                                                                    | Legal basis                                          | Retention                                 | Sensitivity |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------- | ----------- |
+| `browser_session.token_hash`   | SHA-256 of the session cookie; the token itself is never stored                                                                                                            | Security of processing: keeping her signed in safely | Until the session ends (at most 12 hours) | S1          |
+| `browser_session.kind`         | patient, consent-pending or clinic                                                                                                                                         | as above                                             | as above                                  | S0          |
+| `browser_session.doc`          | What the BFF keeps: opaque person and patient ids, role, organisation, the sealed Keycloak refresh token and ID token (clinic), CSRF token, app-lock state; no health data | as above                                             | as above                                  | S2          |
+| `browser_session.issuer`       | Keycloak issuer, for back-channel logout                                                                                                                                   | as above                                             | as above                                  | S0          |
+| `browser_session.sid`          | Keycloak session id, for back-channel logout                                                                                                                               | as above                                             | as above                                  | S1          |
+| `browser_session.subject`      | Keycloak subject, for back-channel logout                                                                                                                                  | as above                                             | as above                                  | S1          |
+| `browser_session.idle_ms`      | Idle limit (15 or 30 minutes)                                                                                                                                              | as above                                             | as above                                  | S0          |
+| `browser_session.absolute_ms`  | Absolute limit (1 or 12 hours)                                                                                                                                             | as above                                             | as above                                  | S0          |
+| `browser_session.created_at`   | When the session started (database clock)                                                                                                                                  | as above                                             | as above                                  | S0          |
+| `browser_session.last_seen_at` | Last activity (database clock)                                                                                                                                             | as above                                             | as above                                  | S0          |
+
 ## Other stores
 
 Not yet created. Entries are added in the same PR as each migration (spec 0 rule 9).

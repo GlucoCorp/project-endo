@@ -7,10 +7,10 @@
 
 locals {
   pg_instances = var.profile == "local" ? {
-    main = ["clinical", "identity", "audit", "keycloak"]
+    main = ["clinical", "identity", "audit", "keycloak", "sessions"]
     } : {
     clinical = ["clinical"]
-    identity = ["identity", "keycloak"]
+    identity = ["identity", "keycloak", "sessions"]
     audit    = ["audit"]
   }
 
@@ -55,6 +55,24 @@ resource "random_password" "identity_api" {
 resource "random_password" "identity_relay" {
   length  = 32
   special = false
+}
+
+# ADR-0033: one login per BFF for the sessions database.
+resource "random_password" "bff_sessions" {
+  for_each = toset(["bff_patient", "bff_clinic"])
+  length   = 32
+  special  = false
+}
+
+resource "kubernetes_secret_v1" "bff_sessions_url" {
+  for_each = random_password.bff_sessions
+  metadata {
+    name      = "db-sessions-${replace(each.key, "_", "-")}"
+    namespace = local.ns
+  }
+  data = {
+    url = "postgres://${each.key}_sessions:${each.value.result}@postgres-${local.pg_host_of["sessions"]}.${local.ns}.svc:5432/sessions"
+  }
 }
 
 resource "kubernetes_secret_v1" "identity_api_url" {
@@ -104,6 +122,10 @@ resource "kubernetes_secret_v1" "pg_bootstrap" {
     contains(each.value, "identity") ? {
       IDENTITY_API_PASSWORD   = random_password.identity_api.result
       IDENTITY_RELAY_PASSWORD = random_password.identity_relay.result
+    } : {},
+    contains(each.value, "sessions") ? {
+      BFF_PATIENT_SESSIONS_PASSWORD = random_password.bff_sessions["bff_patient"].result
+      BFF_CLINIC_SESSIONS_PASSWORD  = random_password.bff_sessions["bff_clinic"].result
     } : {},
   )
 }

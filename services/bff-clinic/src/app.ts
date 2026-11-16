@@ -38,7 +38,7 @@ import {
   SESSION_COOKIE,
   readCookie,
   type ClinicSession,
-  type InMemoryClinicSessions,
+  type ClinicSessionStore,
 } from './sessions.ts';
 import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
@@ -138,7 +138,7 @@ export interface ClinicBffDeps {
   readonly transactions: TransactionStore;
   /** Logout-token ids already used (replay protection). */
   readonly logoutTokens: SeenTokenIds;
-  readonly sessions: InMemoryClinicSessions;
+  readonly sessions: ClinicSessionStore;
   readonly resolver: Resolver;
   /** Seals the Keycloak refresh token held in each session. */
   readonly sealer: EnvelopeSealer;

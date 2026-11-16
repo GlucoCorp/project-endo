@@ -6,7 +6,15 @@ import { createRemoteJWKSet } from 'jose';
 import { TransactionStore } from '@endo/oidc';
 import { buildBff } from './app.ts';
 import { loadAppShell } from './app-shell.ts';
-import { DevSessionStore, SESSION_COOKIE } from './sessions.ts';
+import {
+  DevSessionStore,
+  SESSION_COOKIE,
+  type ConsentSessions,
+  type SessionResolver,
+} from './sessions.ts';
+import { PostgresPatientSessions } from './pg-sessions.ts';
+import { SessionTable, type SessionDatabase } from '@endo/session-store';
+import { createDb, createPool } from '@endo/db';
 
 const PrivateJwk = z.string().transform((s, ctx) => {
   try {
@@ -20,6 +28,8 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 });
 
 const Config = z.object({
+  // ADR-0033: durable sessions (a member of endo_sessions_app). Required in staging and production.
+  BFF_PATIENT_SESSION_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   BFF_PATIENT_PORT: z.coerce.number().int().min(1).max(65535),
@@ -80,18 +90,31 @@ const Config = z.object({
 async function main(): Promise<void> {
   const config = loadConfig(Config, process.env);
 
-  // Real sessions (passkeys, M1) are not built yet. Until then only dev sessions exist, and those
-  // are refused outside dev/test by DevSessionStore itself.
-  if (config.BFF_PATIENT_DEV_SESSIONS_ENABLED !== 'true') {
-    throw new Error('No session provider configured.');
+  // ADR-0033: durable sessions when configured; otherwise dev sessions, which DevSessionStore
+  // itself refuses outside dev/test.
+  let sessions: SessionResolver & ConsentSessions;
+  let devToken: string | null = null;
+  if (config.BFF_PATIENT_SESSION_DATABASE_URL) {
+    const table = new SessionTable(
+      createDb<SessionDatabase>(
+        createPool(config.BFF_PATIENT_SESSION_DATABASE_URL, {
+          applicationName: 'endo-bff-patient-sessions',
+        }),
+      ),
+    );
+    // Expired rows are removed every 10 minutes (reads already refuse them).
+    setInterval(() => {
+      table.sweep().catch(() => process.stderr.write('session sweep failed\n'));
+    }, 600_000).unref();
+    sessions = new PostgresPatientSessions(table);
+  } else {
+    if (config.BFF_PATIENT_DEV_SESSIONS_ENABLED !== 'true') {
+      throw new Error('No session provider configured.');
+    }
+    const dev = new DevSessionStore(config.ENDO_ENV);
+    devToken = dev.create({ sub: uuidv7(), role: 'patient', org_id: null, patient_id: uuidv7() });
+    sessions = dev;
   }
-  const sessions = new DevSessionStore(config.ENDO_ENV);
-  const devToken = sessions.create({
-    sub: uuidv7(),
-    role: 'patient',
-    org_id: null,
-    patient_id: uuidv7(),
-  });
 
   const enrolmentSettings = [
     config.BFF_PATIENT_IDENTITY_BASE_URL,
@@ -178,7 +201,8 @@ async function main(): Promise<void> {
   }
   await app.listen({ host: config.BFF_PATIENT_HOST, port: config.BFF_PATIENT_PORT });
   // Dev only: a synthetic patient session for manual testing. Written to stdout, never the logger.
-  process.stdout.write(`[dev] synthetic patient session cookie: ${SESSION_COOKIE}=${devToken}\n`);
+  if (devToken)
+    process.stdout.write(`[dev] synthetic patient session cookie: ${SESSION_COOKIE}=${devToken}\n`);
 }
 
 main().catch((error: unknown) => {

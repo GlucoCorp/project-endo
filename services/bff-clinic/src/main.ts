@@ -11,7 +11,10 @@ import {
 import { buildClinicBff } from './app.ts';
 import { SeenTokenIds, TransactionStore } from './oidc.ts';
 import { HttpResolver } from './resolve.ts';
-import { InMemoryClinicSessions } from './sessions.ts';
+import { InMemoryClinicSessions, type ClinicSessionStore } from './sessions.ts';
+import { PostgresClinicSessions } from './pg-sessions.ts';
+import { SessionTable, type SessionDatabase } from '@endo/session-store';
+import { createDb, createPool } from '@endo/db';
 
 const PrivateJwk = z.string().transform((s, ctx) => {
   try {
@@ -26,6 +29,9 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 const HttpUrl = z.url({ protocol: /^https?$/ });
 
 const Config = z.object({
+  // ADR-0033: durable sessions (a member of endo_sessions_app). Without it the in-memory store is
+  // used, which refuses staging and production.
+  BFF_CLINIC_SESSION_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
   // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
   // refuses staging and production (fail closed).
   ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
@@ -96,6 +102,25 @@ async function main(): Promise<void> {
     throw new Error('bff-clinic has no durable session store yet; refusing to start.');
   }
 
+  let sessionTable: SessionTable | null = null;
+  if (config.BFF_CLINIC_SESSION_DATABASE_URL) {
+    sessionTable = new SessionTable(
+      createDb<SessionDatabase>(
+        createPool(config.BFF_CLINIC_SESSION_DATABASE_URL, {
+          applicationName: 'endo-bff-clinic-sessions',
+        }),
+      ),
+    );
+    const table = sessionTable;
+    // Expired rows are removed every 10 minutes (reads already refuse them).
+    setInterval(() => {
+      table.sweep().catch(() => process.stderr.write('session sweep failed\n'));
+    }, 600_000).unref();
+  }
+  const sessions: ClinicSessionStore = sessionTable
+    ? new PostgresClinicSessions(sessionTable)
+    : new InMemoryClinicSessions(config.ENDO_ENV);
+
   const app = await buildClinicBff({
     logLevel: config.ENDO_LOG_LEVEL,
     oidc: {
@@ -127,7 +152,7 @@ async function main(): Promise<void> {
         : new DevKeyManager(config.ENDO_ENV),
       'kms/identity',
     ),
-    sessions: new InMemoryClinicSessions(config.ENDO_ENV),
+    sessions,
     resolver: new HttpResolver({
       identityBaseUrl: config.BFF_CLINIC_IDENTITY_BASE_URL,
       apiBaseUrl: config.BFF_CLINIC_API_BASE_URL,
