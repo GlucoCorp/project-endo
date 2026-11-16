@@ -94,12 +94,18 @@ BEGIN
     DECLARE
       v_erased boolean;
     BEGIN
+      -- Under the key lifecycle lock: no key can be created or shredded meanwhile.
+      PERFORM person_key_lock(p_person);
       SELECT deleted_at IS NOT NULL INTO v_erased FROM person WHERE id = p_person FOR UPDATE;
       IF v_erased IS NULL THEN
         -- Already purged if her key tombstone remains; otherwise unknown.
         RETURN EXISTS (SELECT FROM person_key_shredded WHERE person_id = p_person);
       END IF;
-      IF NOT v_erased THEN
+      -- Erased means shredded: the tombstone exists and no key is left (deleted_at alone is not
+      -- enough, since the application role can set it).
+      IF NOT v_erased
+         OR NOT EXISTS (SELECT FROM person_key_shredded WHERE person_id = p_person)
+         OR EXISTS (SELECT FROM person_key WHERE person_id = p_person) THEN
         RETURN false;
       END IF;
       PERFORM set_config('endo.purge_person', p_person::text, true);
