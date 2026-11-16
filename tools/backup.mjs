@@ -16,7 +16,7 @@ import { createWriteStream, mkdirSync, readFileSync, writeFileSync } from 'node:
 import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Transform } from 'node:stream';
-import { parseArgs, psql, readKey, splitCommand } from './pg-tools.mjs';
+import { PsqlSession, parseArgs, readKey, splitCommand } from './pg-tools.mjs';
 
 const opts = parseArgs(process.argv.slice(2));
 const arg = (name) => {
@@ -55,10 +55,17 @@ const COUNT_ROWS = [
   '  ORDER BY 1',
 ].join('\n');
 
-// Row counts first, from the same server (a consistency check for the drill, not a guarantee:
-// pg_dump takes its own snapshot).
+// One snapshot for both the counts and the dump: a session holds a repeatable-read transaction,
+// exports its snapshot, counts inside it, and pg_dump reads the same snapshot.
+const session = new PsqlSession(exec, user, db);
+await session.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;');
+const snapshot = (await session.query('SELECT pg_export_snapshot();')).trim();
+if (!/^[0-9A-F-]+$/i.test(snapshot)) {
+  process.stderr.write('could not export a snapshot\n');
+  process.exit(1);
+}
 const counts = Object.fromEntries(
-  psql(exec, user, db, COUNT_ROWS)
+  (await session.query(`${COUNT_ROWS};`))
     .split('\n')
     .filter(Boolean)
     .map((line) => {
@@ -70,8 +77,18 @@ const counts = Object.fromEntries(
 const iv = randomBytes(12);
 const cipher = createCipheriv('aes-256-gcm', key, iv);
 const hash = createHash('sha256');
-const [cmd, ...cmdArgs] = [...exec, 'pg_dump', '-U', user, '-d', db, '-Fc'];
-const dump = spawn(cmd, cmdArgs, { stdio: ['ignore', 'pipe', 'inherit'] });
+const [cmd, ...cmdArgs] = [
+  ...exec,
+  'pg_dump',
+  '-U',
+  user,
+  '-d',
+  db,
+  '-Fc',
+  `--snapshot=${snapshot}`,
+];
+// pg_dump's error output is withheld: it can quote data.
+const dump = spawn(cmd, cmdArgs, { stdio: ['ignore', 'pipe', 'ignore'] });
 const exited = new Promise((resolve) => dump.on('close', resolve));
 await pipeline(
   dump.stdout,
@@ -85,6 +102,8 @@ await pipeline(
   createWriteStream(dumpPath, { mode: 0o600 }),
 );
 const code = await exited;
+await session.query('COMMIT;');
+session.close();
 if (code !== 0) {
   process.stderr.write(`pg_dump failed (exit ${String(code)})\n`);
   process.exit(1);
