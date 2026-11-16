@@ -196,12 +196,15 @@ export function registerOrgAdminRoutes(app: FastifyInstance, deps: OrgAdminRoute
         throw new ProblemError(409, 'org.own_membership', 'Ask another admin to change yours.');
       const r = await deps.orgAdmin.changeMember({
         orgId,
+        actorId: clinicianId,
         clinicianId: id,
         role: b.role,
         active: b.active,
         auditEvent: audit(request, 'org.clinician.changed', 'clinician', id, orgId),
       });
       if (r === 'not_found') throw new ProblemError(404, 'clinician.not_found', 'Not found.');
+      if (r === 'not_admin')
+        throw new ProblemError(403, 'authz.role_not_permitted', 'Not allowed.');
       if (r === 'last_admin')
         throw new ProblemError(409, 'org.last_admin', 'The organisation needs an active admin.');
       if (r === 'changed') deps.onCommitted();
