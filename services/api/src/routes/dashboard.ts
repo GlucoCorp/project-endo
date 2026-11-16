@@ -24,7 +24,7 @@ const cell = (n: number) => (n < MIN_CELL ? null : n);
 /**
  * Suppresses small cells (REQ-011), and the cells that would reveal one by subtraction: on-time
  * reviews when the late ones (due minus on time) are a small non-zero number, and a series total
- * when exactly one of its months is suppressed.
+ * when any of its months is suppressed (or when its own late count would be small).
  */
 export function suppress(rows: readonly MonthlyCounts[]) {
   const months = rows.map((r) => {
@@ -40,7 +40,8 @@ export function suppress(rows: readonly MonthlyCounts[]) {
   const total = (pick: (r: MonthlyCounts) => number, shown: (number | null)[]) => {
     const hidden = shown.filter((v) => v === null).length;
     const sum = rows.reduce((a, r) => a + pick(r), 0);
-    return hidden === 1 ? null : cell(sum);
+    // Any hidden month hides its total: otherwise totals minus the shown months reveal it.
+    return hidden > 0 ? null : cell(sum);
   };
   return {
     months,
@@ -53,10 +54,16 @@ export function suppress(rows: readonly MonthlyCounts[]) {
         (r) => r.reviewsDue,
         months.map((m) => m.reviews_due),
       ),
-      reviews_on_time: total(
-        (r) => r.reviewsOnTime,
-        months.map((m) => m.reviews_on_time),
-      ),
+      reviews_on_time: (() => {
+        const due = rows.reduce((x, r) => x + r.reviewsDue, 0);
+        const late = due - rows.reduce((x, r) => x + r.reviewsOnTime, 0);
+        return late > 0 && late < MIN_CELL
+          ? null
+          : total(
+              (r) => r.reviewsOnTime,
+              months.map((m) => m.reviews_on_time),
+            );
+      })(),
     },
   };
 }

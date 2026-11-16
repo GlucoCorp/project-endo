@@ -82,6 +82,8 @@ export interface ClinicalDatabase {
     purpose: ConsentPurpose;
     status: ConsentStatus;
     version: number;
+    /** Assigned by the database; the latest per patient and purpose is the current decision. */
+    seq: Generated<string>;
     decided_at: Generated<Date>;
     /** Migration 0007: when she chose, at enrolment only; shortly before `decided_at`. */
     chosen_at: Date | null;

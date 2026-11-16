@@ -1394,9 +1394,14 @@ describe.skipIf(!url)(
     describe('REQ-011 aggregate counts (consented patients only)', () => {
       it('counts treatments started and reviews on time, only with org_aggregate_reporting', async () => {
         const reporting = new PostgresReportingStore(apiDb);
-        const before = await reporting.monthly(ORG_A, day(0), 12, 7);
+        // Completed months only: seen from next month, this month is the last one.
+        const nextMonth = monthsBack(day(0), -1);
+        const before = await reporting.monthly(ORG_A, nextMonth, 12, 7);
         expect(before).toHaveLength(12);
         expect(before.at(-1)?.month).toBe(`${day(0).slice(0, 7)}-01`);
+        expect((await reporting.monthly(ORG_A, day(0), 12, 7)).at(-1)?.month).not.toBe(
+          `${day(0).slice(0, 7)}-01`,
+        );
         // A consenting patient with a confirmed treatment this month, and one who did not consent.
         const yes = randomUUID();
         const no = randomUUID();
@@ -1430,11 +1435,20 @@ describe.skipIf(!url)(
             auditEvent: audit('x'),
           });
         }
-        const after = await reporting.monthly(ORG_A, day(0), 12, 7);
+        const after = await reporting.monthly(ORG_A, nextMonth, 12, 7);
         expect((after.at(-1)?.episodesStarted ?? 0) - (before.at(-1)?.episodesStarted ?? 0)).toBe(
           1,
         );
-        expect(await reporting.monthly(ORG_B, day(0), 12, 7)).toEqual(
+        // She withdraws later: the month already counted does not change (no differencing).
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+           VALUES ($1, $2, $3, 'org_aggregate_reporting', 'revoked', 1)`,
+          [randomUUID(), yes, ORG_A],
+        );
+        expect((await reporting.monthly(ORG_A, nextMonth, 12, 7)).at(-1)?.episodesStarted).toBe(
+          after.at(-1)?.episodesStarted,
+        );
+        expect(await reporting.monthly(ORG_B, nextMonth, 12, 7)).toEqual(
           before.map((b) => ({ ...b, episodesStarted: 0, reviewsDue: 0, reviewsOnTime: 0 })),
         );
         await expect(reporting.monthly(ORG_A, 'today', 12, 7)).rejects.toThrow(TypeError);

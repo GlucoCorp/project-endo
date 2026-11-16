@@ -16,10 +16,11 @@ describe('REQ-011 monthly buckets', () => {
         { review_date: '2026-11-01', decided_at: null }, // not decided
         { review_date: '2024-01-01', decided_at: null }, // outside the window
       ],
-      '2026-11-16',
+      '2026-12-16',
       2,
       7,
     );
+    // The two completed months before December.
     expect(rows).toEqual([
       { month: '2026-10-01', episodesStarted: 1, reviewsDue: 2, reviewsOnTime: 1 },
       { month: '2026-11-01', episodesStarted: 1, reviewsDue: 1, reviewsOnTime: 0 },
