@@ -189,6 +189,12 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     }
     // Not erased yet: nothing is removed.
     expect(await store.purge(id)).toBe(false);
+    // Marked deleted without shredding (the application role can set deleted_at): still refused.
+    await db.updateTable('person').set({ deleted_at: new Date() }).where('id', '=', id).execute();
+    expect(await store.purge(id)).toBe(false);
+    expect(
+      (await admin.query('SELECT 1 FROM person_key WHERE person_id = $1', [id])).rowCount,
+    ).toBe(1);
     expect((await admin.query('SELECT 1 FROM person WHERE id = $1', [id])).rowCount).toBe(1);
     await store.erase(id);
     expect(await store.purge(id)).toBe(true);
