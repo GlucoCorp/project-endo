@@ -62,13 +62,20 @@ export const JOIN_COOKIE = '__Host-endo_join';
 export class PendingJoins {
   readonly #m = new Map<string, { hash: string; at: number }>();
   readonly #now: () => number;
-  constructor(now: () => number) {
+  readonly #max: number;
+  #prunedAt = Number.NEGATIVE_INFINITY;
+  constructor(now: () => number, max = 10_000) {
     this.#now = now;
+    this.#max = max;
   }
   add(state: string, hash: string): void {
     const t = this.#now();
-    for (const [k, v] of this.#m) if (t - v.at > TRANSACTION_TTL_MS) this.#m.delete(k);
-    if (this.#m.size >= 10_000) return; // bounded: an attempt without a join still signs in
+    // Pruned at most once a second, so a burst of sign-ins costs no more than the bound.
+    if (t - this.#prunedAt >= 1000) {
+      for (const [k, v] of this.#m) if (t - v.at > TRANSACTION_TTL_MS) this.#m.delete(k);
+      this.#prunedAt = t;
+    }
+    if (this.#m.size >= this.#max) return; // bounded: an attempt without a join still signs in
     this.#m.set(state, { hash, at: t });
   }
   take(state: string): string | null {
