@@ -170,4 +170,9 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
       return pass(request, reply, 'POST', `/v1/org/staff-invitations/${id}/revoke`);
     },
   );
+
+  // REQ-011: the aggregate dashboard of the session's organisation (never one the browser names).
+  app.get('/v1/dashboard', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', `/v1/orgs/${request.session?.active?.orgId ?? 'none'}/dashboard`),
+  );
 }

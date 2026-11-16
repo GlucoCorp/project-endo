@@ -42,7 +42,14 @@ import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
-export const PORTAL_PATHS = ['/', '/enrolments', '/reviews', '/admin', '/join'] as const;
+export const PORTAL_PATHS = [
+  '/',
+  '/enrolments',
+  '/reviews',
+  '/admin',
+  '/join',
+  '/dashboard',
+] as const;
 
 /**
  * REQ-010 staff invitation in progress: the SHA-256 of the link token, for 10 minutes, until the

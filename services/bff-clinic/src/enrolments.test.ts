@@ -368,3 +368,15 @@ describe('REQ-010 the clinic desk passes organisation admin calls to the API', (
     expect(seen).toHaveLength(before);
   });
 });
+
+describe('REQ-011 the dashboard of the session organisation', () => {
+  it('asks the API for the active organisation, never one the browser names', async () => {
+    const { app, seen, active } = await setup(() => json(200, { months: [] }));
+    expect(
+      (await app.inject({ url: '/v1/dashboard', headers: { cookie: active } })).statusCode,
+    ).toBe(200);
+    expect(new URL(seen[seen.length - 1]?.url ?? 'http://x').pathname).toMatch(
+      /^\/v1\/orgs\/[0-9a-f-]{36}\/dashboard$/,
+    );
+  });
+});

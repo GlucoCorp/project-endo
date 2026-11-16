@@ -45,6 +45,7 @@ import {
   PostgresDeletionStore,
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
+  PostgresReportingStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
@@ -228,6 +229,7 @@ async function main(): Promise<void> {
   let deletions: PostgresDeletionStore | undefined;
   let orgAdmin: PostgresOrgAdminStore | undefined;
   let staffInvitations: PostgresStaffInvitationStore | undefined;
+  let reporting: PostgresReportingStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -259,6 +261,7 @@ async function main(): Promise<void> {
     deletions = new PostgresDeletionStore(db);
     orgAdmin = new PostgresOrgAdminStore(db);
     staffInvitations = new PostgresStaffInvitationStore(db);
+    reporting = new PostgresReportingStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -402,6 +405,7 @@ async function main(): Promise<void> {
         }
       : {}),
     ...(orgAdmin && staffInvitations ? { orgAdmin: { orgAdmin, staffInvitations } } : {}),
+    ...(reporting ? { dashboard: { reporting } } : {}),
     ...(reviews && links && deletions
       ? {
           dataRights: {

@@ -207,6 +207,17 @@ export const en = {
   'admin.invite-link': 'Invitation link',
   'admin.invite-row': '{role} invitation until {date}: {status}',
   'admin.invite-stop': 'Stop',
+  'dashboard.title': 'Organisation dashboard',
+  'dashboard.lead':
+    'Counts for the last 12 months, from patients who agreed to aggregate reporting. Numbers under {min} are hidden, with any figure that would reveal them.',
+  'dashboard.month': 'Month',
+  'dashboard.started': 'Treatments started',
+  'dashboard.due': 'Reviews due',
+  'dashboard.on-time': 'Reviewed within {days} days',
+  'dashboard.total': 'Last 12 months',
+  'dashboard.hidden': 'fewer than {min}',
+  'dashboard.shadow':
+    'Verdict figures appear once verdicts are cleared for use in care; they are being checked against clinicians’ judgement now.',
   'join.title': 'Join your clinic team',
   'join.lead': 'Sign in with your staff passkey to accept the invitation.',
   'join.invalid': 'This invitation link cannot be used. Ask your clinic admin for a new one.',

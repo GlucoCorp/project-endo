@@ -14,6 +14,8 @@ import {
   PostgresDeletionStore,
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
+  PostgresReportingStore,
+  monthsBack,
   PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
@@ -1347,6 +1349,58 @@ describe.skipIf(!url)(
         await expect(
           asApi((c) => c.query('SELECT token_hash FROM staff_invitation')),
         ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('REQ-011 aggregate counts (consented patients only)', () => {
+      it('counts treatments started and reviews on time, only with org_aggregate_reporting', async () => {
+        const reporting = new PostgresReportingStore(apiDb);
+        const before = await reporting.monthly(ORG_A, day(0), 12, 7);
+        expect(before).toHaveLength(12);
+        expect(before.at(-1)?.month).toBe(`${day(0).slice(0, 7)}-01`);
+        // A consenting patient with a confirmed treatment this month, and one who did not consent.
+        const yes = randomUUID();
+        const no = randomUUID();
+        for (const [p, status] of [
+          [yes, 'granted'],
+          [no, 'revoked'],
+        ] as const) {
+          await admin.query(
+            'INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3)',
+            [p, ORG_A, randomUUID()],
+          );
+          await admin.query(
+            `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+             VALUES ($1, $2, $3, 'org_aggregate_reporting', $4, 1)`,
+            [randomUUID(), p, ORG_A, status],
+          );
+          await admin.query(
+            `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+             VALUES ($1, $2, $3, 'share_with_care_team', 'granted', 1)`,
+            [randomUUID(), p, ORG_A],
+          );
+          const e = await mk({ patientId: p, startDate: day(0) });
+          await store.confirm({
+            orgId: ORG_A,
+            patientId: p,
+            episodeId: e.id,
+            confirmKey: randomUUID(),
+            goalId: randomUUID(),
+            goal: { templateCode: 'synthetic_goal_a' },
+            timeZone: 'UTC',
+            auditEvent: audit('x'),
+          });
+        }
+        const after = await reporting.monthly(ORG_A, day(0), 12, 7);
+        expect((after.at(-1)?.episodesStarted ?? 0) - (before.at(-1)?.episodesStarted ?? 0)).toBe(
+          1,
+        );
+        expect(await reporting.monthly(ORG_B, day(0), 12, 7)).toEqual(
+          before.map((b) => ({ ...b, episodesStarted: 0, reviewsDue: 0, reviewsOnTime: 0 })),
+        );
+        await expect(reporting.monthly(ORG_A, 'today', 12, 7)).rejects.toThrow(TypeError);
+        expect(monthsBack('2026-01-15', 1)).toBe('2025-12-01');
+        expect(monthsBack('2026-11-15', 11)).toBe('2025-12-01');
       });
     });
 

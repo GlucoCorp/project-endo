@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { Admin, joinToken, parseSettings, startJoin } from './admin.ts';
+import { Admin, dashboard, joinToken, parseSettings, startJoin } from './admin.ts';
 
 const json = (status: number, body: unknown = {}) => new Response(JSON.stringify(body), { status });
 function fake(responses: (Response | Error)[]) {
@@ -124,5 +124,25 @@ describe('REQ-010 staff invitations in the portal', () => {
     expect(JSON.parse(calls[0]?.body as string)).toEqual({ token: 'K'.repeat(43) });
     expect(await startJoin(f, 'K'.repeat(43))).toBe(false);
     expect(await startJoin(f, 'K'.repeat(43))).toBe(false);
+  });
+});
+
+describe('REQ-011 dashboard client', () => {
+  it('reads the dashboard, or null', async () => {
+    const answers: (Response | Error)[] = [
+      new Response(JSON.stringify({ min_cell: 10 }), { status: 200 }),
+      new Response('{}', { status: 403 }),
+      new TypeError('x'),
+    ];
+    const urls: string[] = [];
+    const f = ((u: string) => {
+      urls.push(u);
+      const r = answers.shift() ?? new Response(null, { status: 500 });
+      return r instanceof Error ? Promise.reject(r) : Promise.resolve(r);
+    }) as unknown as typeof fetch;
+    expect(await dashboard(f)).toEqual({ min_cell: 10 });
+    expect(urls[0]).toBe('/v1/dashboard');
+    expect(await dashboard(f)).toBeNull();
+    expect(await dashboard(f)).toBeNull();
   });
 });
