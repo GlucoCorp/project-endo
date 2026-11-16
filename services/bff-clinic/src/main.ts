@@ -26,6 +26,27 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 const HttpUrl = z.url({ protocol: /^https?$/ });
 
 const Config = z.object({
+  // M7, spec 16.2: record systems allowed to launch the portal, as [{"iss": ..., "client_id": ...}].
+  BFF_CLINIC_SMART_ISSUERS: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        return z
+          .array(
+            z.object({
+              iss: z.url({ protocol: /^https?$/ }),
+              client_id: z.string().min(1).max(256),
+            }),
+          )
+          .max(20)
+          .parse(JSON.parse(s))
+          .map((i) => ({ iss: i.iss, clientId: i.client_id }));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   // Spec 12.7: where vulnerability reports go (mailto: or https:), and the disclosure policy.
   ENDO_SECURITY_CONTACT: z
     .string()
@@ -99,6 +120,7 @@ async function main(): Promise<void> {
     fetch,
     now: () => new Date(),
     portalOrigin: config.BFF_CLINIC_PORTAL_ORIGIN,
+    ...(config.BFF_CLINIC_SMART_ISSUERS ? { smartIssuers: config.BFF_CLINIC_SMART_ISSUERS } : {}),
     securityContact: config.ENDO_SECURITY_CONTACT
       ? { contact: config.ENDO_SECURITY_CONTACT, policy: config.ENDO_SECURITY_POLICY_URL ?? null }
       : null,

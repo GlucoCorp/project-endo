@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 import { createLocalJWKSet } from 'jose';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
@@ -29,7 +30,11 @@ const CONFIG: OidcConfig = {
 const json = (status: number, body: unknown) =>
   new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 
-async function setup(api: (req: Request) => Response | Promise<Response>, confirmsPerMinute = 10) {
+async function setup(
+  api: (req: Request) => Response | Promise<Response>,
+  confirmsPerMinute = 10,
+  smartIssuers?: { iss: string; clientId: string }[],
+) {
   const keys = await generateServiceKeyPair();
   const seen: Request[] = [];
   const sessions = new InMemoryClinicSessions('test');
@@ -49,6 +54,7 @@ async function setup(api: (req: Request) => Response | Promise<Response>, confir
     fetch: () => Promise.reject(new Error('unused')),
     now: () => new Date(),
     portalOrigin: ORIGIN,
+    ...(smartIssuers ? { smartIssuers } : {}),
     enrolment: {
       apiBaseUrl: 'http://api.internal',
       signer: new ServiceTokenSigner(keys.privateJwk, 'bff-clinic'),
@@ -378,5 +384,182 @@ describe('REQ-011 the dashboard of the session organisation', () => {
     expect(new URL(seen[seen.length - 1]?.url ?? 'http://x').pathname).toMatch(
       /^\/v1\/orgs\/[0-9a-f-]{36}\/dashboard$/,
     );
+  });
+});
+
+describe('M7 SMART App Launch (spec 16.2)', () => {
+  const ISS = 'https://ehr.test/fhir';
+  const EHR_PATIENT = 'ehr-patient-42';
+  const PATIENT = '01900000-0000-7000-8000-0000000000a1';
+  const LINK = createHash('sha256').update(`${ISS}|${EHR_PATIENT}`).digest('hex');
+  let linked: string | null = null;
+  const ehrAndApi = async (req: Request) => {
+    const url = new URL(req.url);
+    if (url.href === `${ISS}/.well-known/smart-configuration`)
+      return json(200, {
+        authorization_endpoint: 'https://ehr.test/authorize',
+        token_endpoint: 'https://ehr.test/token',
+      });
+    if (url.href === 'https://ehr.test/token') {
+      const form = new URLSearchParams(await req.text());
+      if (form.get('code') !== 'code-1' || !form.get('code_verifier')) return json(400, {});
+      return json(200, { access_token: 'ehr-token', token_type: 'Bearer', patient: EHR_PATIENT });
+    }
+    if (url.pathname === '/v1/ehr-links/resolve')
+      return linked ? json(200, { patient_id: linked }) : json(404, {});
+    if (url.pathname === `/v1/patients/${PATIENT}/ehr-links`) {
+      const b = (await req.json()) as { link_hash: string };
+      if (b.link_hash !== LINK) return json(400, {});
+      if (linked) return json(409, {});
+      linked = PATIENT;
+      return json(201, { patient_id: PATIENT });
+    }
+    return json(404, {});
+  };
+
+  it('completes the launch server-side, keeps only a hash, and lets the clinician link once', async () => {
+    linked = null;
+    const { app, seen, active, activeCsrf } = await setup(ehrAndApi, 10, [
+      { iss: ISS, clientId: 'endo-client' },
+    ]);
+    const start = await app.inject({
+      url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L1`,
+    });
+    expect(start.statusCode).toBe(302);
+    const to = new URL(String(start.headers.location));
+    expect(to.origin + to.pathname).toBe('https://ehr.test/authorize');
+    expect(to.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(to.searchParams.get('aud')).toBe(ISS);
+    expect(to.searchParams.get('launch')).toBe('L1');
+    const state = to.searchParams.get('state') ?? '';
+    const binding = String(start.headers['set-cookie']).split(';')[0] ?? '';
+    // Another browser (no binding cookie) cannot complete it.
+    expect(
+      (await app.inject({ url: `/smart/callback?code=code-1&state=${state}` })).statusCode,
+    ).toBe(400);
+    const again = await app.inject({
+      url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L1`,
+    });
+    const state2 = new URL(String(again.headers.location)).searchParams.get('state') ?? '';
+    const back = await app.inject({
+      url: `/smart/callback?code=code-1&state=${state2}`,
+      headers: { cookie: String(again.headers['set-cookie']).split(';')[0] ?? binding },
+    });
+    expect(back.statusCode).toBe(200);
+    const handle = /#launch=([A-Za-z0-9_-]{43})/.exec(back.body)?.[1] ?? '';
+    expect(handle).not.toBe('');
+    expect(back.body).not.toContain(EHR_PATIENT);
+    expect(back.body).not.toContain('ehr-token');
+    // The clinician's own session: not linked yet, then linked once, then found.
+    const post = (url: string, payload: object) =>
+      app.inject({
+        method: 'POST',
+        url,
+        headers: { cookie: active, origin: ORIGIN, 'x-csrf-token': activeCsrf },
+        payload,
+      });
+    expect((await post('/v1/smart/context', { handle })).json()).toEqual({ linked: false });
+    expect((await post('/v1/smart/link', { handle, patient_id: PATIENT })).statusCode).toBe(201);
+    expect((await post('/v1/smart/link', { handle, patient_id: PATIENT })).statusCode).toBe(409);
+    expect((await post('/v1/smart/context', { handle })).json()).toEqual({
+      linked: true,
+      patient_id: PATIENT,
+    });
+    expect((await post('/v1/smart/context', { handle: 'x'.repeat(43) })).statusCode).toBe(404);
+    // Only the hash ever reached the API.
+    expect(seen.some((r) => r.url.includes(EHR_PATIENT))).toBe(false);
+  });
+
+  it('refuses an issuer not on the list and a record system that misbehaves', async () => {
+    const { app } = await setup(ehrAndApi, 10, [{ iss: ISS, clientId: 'endo-client' }]);
+    expect(
+      (await app.inject({ url: '/smart/launch?iss=https%3A%2F%2Fevil.test&launch=L' })).statusCode,
+    ).toBe(400);
+    const bad = await setup(() => json(500, {}), 10, [{ iss: ISS, clientId: 'endo-client' }]);
+    expect(
+      (await bad.app.inject({ url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L` }))
+        .statusCode,
+    ).toBe(400);
+    expect(
+      (await app.inject({ url: '/smart/callback?error=access_denied&state=x' })).statusCode,
+    ).toBe(400);
+  });
+});
+
+describe('M7 SMART App Launch: what goes wrong', () => {
+  const ISS = 'https://ehr.test/fhir';
+  const launchAndReturn = async (
+    app: Awaited<ReturnType<typeof setup>>['app'],
+  ): Promise<{ status: number; body: string }> => {
+    const start = await app.inject({
+      url: `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L`,
+    });
+    if (start.statusCode !== 302) return { status: start.statusCode, body: start.body };
+    const state = new URL(String(start.headers.location)).searchParams.get('state') ?? '';
+    const back = await app.inject({
+      url: `/smart/callback?code=c&state=${state}`,
+      headers: { cookie: String(start.headers['set-cookie']).split(';')[0] ?? '' },
+    });
+    return { status: back.statusCode, body: back.body };
+  };
+  const discovery = (authorize: string, token = 'https://ehr.test/token') =>
+    json(200, { authorization_endpoint: authorize, token_endpoint: token });
+
+  it('refuses endpoints on another scheme or not URLs, and a token without a patient', async () => {
+    const insecure = await setup(() => discovery('http://ehr.test/authorize'), 10, [
+      { iss: ISS, clientId: 'c' },
+    ]);
+    expect((await launchAndReturn(insecure.app)).status).toBe(400);
+    const garbage = await setup(() => discovery('not a url'), 10, [{ iss: ISS, clientId: 'c' }]);
+    const unreachable = await setup(
+      () => {
+        throw new TypeError('network');
+      },
+      10,
+      [{ iss: ISS, clientId: 'c' }],
+    );
+    expect((await launchAndReturn(unreachable.app)).status).toBe(400);
+    expect((await launchAndReturn(garbage.app)).status).toBe(400);
+    const noPatient = await setup(
+      (req) =>
+        req.url.endsWith('/token')
+          ? json(200, { access_token: 't' })
+          : discovery('https://ehr.test/authorize'),
+      10,
+      [{ iss: ISS, clientId: 'c' }],
+    );
+    expect((await launchAndReturn(noPatient.app)).status).toBe(400);
+  });
+
+  it('answers 403 when the API refuses and 502 when it cannot be reached', async () => {
+    let apiDown = false;
+    const s = await setup(
+      (req) => {
+        const url = new URL(req.url);
+        if (url.pathname.endsWith('smart-configuration'))
+          return discovery('https://ehr.test/authorize');
+        if (url.href === 'https://ehr.test/token') return json(200, { patient: 'p1' });
+        if (apiDown) throw new TypeError('network');
+        return json(500, {});
+      },
+      10,
+      [{ iss: ISS, clientId: 'c' }],
+    );
+    const handle =
+      /#launch=([A-Za-z0-9_-]{43})/.exec((await launchAndReturn(s.app)).body)?.[1] ?? '';
+    const post = (url: string, payload: object) =>
+      s.app.inject({
+        method: 'POST',
+        url,
+        headers: { cookie: s.active, origin: ORIGIN, 'x-csrf-token': s.activeCsrf },
+        payload,
+      });
+    expect((await post('/v1/smart/context', { handle })).statusCode).toBe(403);
+    expect(
+      (await post('/v1/smart/link', { handle, patient_id: '01900000-0000-7000-8000-0000000000a1' }))
+        .statusCode,
+    ).toBe(403);
+    apiDown = true;
+    expect((await post('/v1/smart/context', { handle })).statusCode).toBe(502);
   });
 });

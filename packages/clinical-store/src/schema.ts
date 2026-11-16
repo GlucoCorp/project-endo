@@ -207,6 +207,15 @@ export interface ClinicalDatabase {
     request_hash: string;
     decided_at: Generated<Date>;
   };
+  /** Migration 0018: SMART launch patient links (M7). */
+  ehr_patient_link: {
+    id: string;
+    org_id: string;
+    link_hash: string;
+    patient_id: string;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
   /** Migration 0017: record-system integration clients (M7). */
   integration_client: {
     id: string;

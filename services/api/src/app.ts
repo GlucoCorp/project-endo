@@ -39,6 +39,7 @@ import { registerDataRightsRoutes, type DataRightsRouteDeps } from './routes/dat
 import { registerOrgAdminRoutes, type OrgAdminRouteDeps } from './routes/org-admin.ts';
 import { registerDashboardRoutes, type DashboardRouteDeps } from './routes/dashboard.ts';
 import { registerIntegrationRoutes, type IntegrationRouteDeps } from './routes/integrations.ts';
+import { registerEhrLinkRoutes, type EhrLinkRouteDeps } from './routes/ehr-links.ts';
 import type { ReminderStore } from '@endo/clinical-store';
 import type { FieldCipher } from '@endo/crypto';
 import type { VerdictService } from './verdicts.ts';
@@ -147,6 +148,8 @@ export interface ApiDeps {
   readonly orgAdmin?: Omit<OrgAdminRouteDeps, 'onCommitted'>;
   /** The aggregate dashboard (M5, REQ-011). Only with a clinical database (fail closed). */
   readonly dashboard?: Omit<DashboardRouteDeps, 'now'>;
+  /** SMART launch patient links (M7). Only with a clinical database (fail closed). */
+  readonly ehrLinks?: Omit<EhrLinkRouteDeps, 'onCommitted'>;
   /** Record-system integrations (M7). Only with a clinical database (fail closed). */
   readonly integrations?: Omit<IntegrationRouteDeps, 'onCommitted' | 'consents' | 'now' | 'writer'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
@@ -208,6 +211,7 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
   if (deps.orgAdmin) registerOrgAdminRoutes(app, { ...deps.orgAdmin, onCommitted });
   if (deps.dashboard) registerDashboardRoutes(app, { ...deps.dashboard, now: deps.now });
+  if (deps.ehrLinks) registerEhrLinkRoutes(app, { ...deps.ehrLinks, onCommitted });
   if (deps.integrations)
     registerIntegrationRoutes(app, {
       ...deps.integrations,

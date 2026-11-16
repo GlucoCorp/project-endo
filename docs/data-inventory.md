@@ -333,6 +333,19 @@ Row-level security; public keys only; no patient data. Switched on and off by th
 | `integration_client.created_by` | Admin who registered it (opaque clinician id)        | as above                                                            | as above                                                                  | S1          |
 | `integration_client.created_at` | When registered                                      | as above                                                            | as above                                                                  | S0          |
 
+### SMART launch patient links — `packages/clinical-store/migrations/0018` (M7)
+
+Row-level security; one link per record-system patient per organisation; erased with her record.
+
+| Column                        | Purpose                                                              | Legal basis                                                                               | Retention                                     | Sensitivity |
+| ----------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- | ----------- |
+| `ehr_patient_link.id`         | Link identifier                                                      | Provision of care by the clinic (spec 16.2); made by a clinician for a consenting patient | With her record (removed by erasure, REQ-009) | S0          |
+| `ehr_patient_link.org_id`     | Organisation (row-level security)                                    | as above                                                                                  | as above                                      | S0          |
+| `ehr_patient_link.link_hash`  | SHA-256 of record-system issuer and patient id; never the identifier | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.patient_id` | Her pseudonymous record                                              | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_by` | Clinician who linked it (opaque id)                                  | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_at` | When linked                                                          | as above                                                                                  | as above                                      | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

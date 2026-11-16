@@ -16,6 +16,7 @@ import {
   PostgresStaffInvitationStore,
   PostgresReportingStore,
   PostgresIntegrationStore,
+  PostgresEhrLinkStore,
   monthsBack,
   PostgresShareLinkStore,
   PostgresReviewStore,
@@ -1020,6 +1021,14 @@ describe.skipIf(!url)(
         } finally {
           setup.release();
         }
+        await new PostgresEhrLinkStore(apiDb).link({
+          id: randomUUID(),
+          orgId: ORG_A,
+          linkHash: createHash('sha256').update(`ehr|${pat}`).digest('hex'),
+          patientId: pat,
+          clinicianId: CLIN_A,
+          auditEvent: audit('x'),
+        });
         const e = await mk({ patientId: pat, startDate: day(-6) });
         const keys = new PostgresPatientKeyStore(apiDb, ORG_A);
         const cipher = new FieldCipher(new DevKeyManager('test'), keys);
@@ -1138,6 +1147,7 @@ describe.skipIf(!url)(
           'SELECT 1 FROM red_flag_event WHERE patient_id = $1',
           'SELECT 1 FROM check_in WHERE patient_id = $1',
           'SELECT 1 FROM consent WHERE patient_id = $1',
+          'SELECT 1 FROM ehr_patient_link WHERE patient_id = $1',
         ])
           expect((await admin.query(q, [pat])).rowCount).toBe(0);
         expect(
@@ -1501,6 +1511,30 @@ describe.skipIf(!url)(
           asApi((c) =>
             c.query('UPDATE integration_client SET jwks = $1 WHERE id = $2', ['{}', id]),
           ),
+        ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('M7 SMART launch patient links (migration 0018)', () => {
+      it('links a record-system patient once, by hash only, per organisation', async () => {
+        const links = new PostgresEhrLinkStore(apiDb);
+        const hash = createHash('sha256').update(`https://ehr.test|${randomUUID()}`).digest('hex');
+        expect(await links.resolve(ORG_A, hash)).toBeNull();
+        const link = (patientId: string) =>
+          links.link({
+            id: randomUUID(),
+            orgId: ORG_A,
+            linkHash: hash,
+            patientId,
+            clinicianId: CLIN_A,
+            auditEvent: audit('ehr_link.created'),
+          });
+        expect(await link(PAT_A)).toBe('linked');
+        expect(await link(PAT_A2)).toBe('exists');
+        expect(await links.resolve(ORG_A, hash)).toBe(PAT_A);
+        expect(await links.resolve(ORG_B, hash)).toBeNull();
+        await expect(
+          asApi((c) => c.query('DELETE FROM ehr_patient_link WHERE link_hash = $1', [hash])),
         ).rejects.toThrow(/permission denied/);
       });
     });
