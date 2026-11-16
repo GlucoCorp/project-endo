@@ -32,7 +32,7 @@ FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a3698
 ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 WORKDIR /repo
 RUN corepack enable && mkdir -p /web
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY packages/ packages/
 COPY services/ services/
 COPY apps/ apps/

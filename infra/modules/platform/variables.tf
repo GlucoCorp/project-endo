@@ -65,3 +65,34 @@ variable "mail_from" {
   type        = string
   default     = "no-reply@localhost"
 }
+
+# ADR-0034: the application services. Off by default (platform only). Images are pinned by digest;
+# make the "app-keys" Secret first: node tools/app-keys.mjs --namespace <ns> | kubectl apply -f -
+variable "apps" {
+  type = object({
+    enabled     = optional(bool, false)
+    environment = optional(string, "dev")
+    images = optional(object({
+      api         = string
+      identity    = string
+      bff_patient = string
+      bff_clinic  = string
+      integration = string
+    }), { api = "", identity = "", bff_patient = "", bff_clinic = "", integration = "" })
+    ruleset_path         = optional(string, "/app/clinical/rulesets/ruleset.1.0.0.json")
+    ruleset_public_keys  = optional(string)
+    integration_base_url = optional(string, "http://localhost:3003")
+    security_contact     = optional(string)
+    emergency_number     = optional(string)
+    vapid_subject        = optional(string)
+    smart_issuers = optional(list(object({
+      iss       = string
+      client_id = string
+    })), [])
+  })
+  default = {}
+  validation {
+    condition     = contains(["dev", "test", "staging", "production"], var.apps.environment)
+    error_message = "apps.environment must be dev, test, staging or production."
+  }
+}

@@ -2,7 +2,8 @@
 # - shared profile: separate instances for clinical, identity (+ Keycloak) and audit data (spec 2.4).
 # - local profile: one instance with separate databases and roles, to fit a small dev machine.
 # Every database is owned by its own role and closed to PUBLIC. Login roles (audit_api,
-# clinical_api, clinical_relay, identity_api, identity_relay) are members of their store's group
+# clinical_api, clinical_jobs, clinical_relay, identity_api, identity_relay, the BFFs' session
+# logins) are members of their store's group
 # role and can connect only to their own database. The pg_roles Job keeps all of this in place.
 
 locals {
@@ -45,6 +46,21 @@ resource "random_password" "clinical_api" {
 resource "random_password" "clinical_relay" {
   length  = 32
   special = false
+}
+
+resource "random_password" "clinical_jobs" {
+  length  = 32
+  special = false
+}
+
+resource "kubernetes_secret_v1" "clinical_jobs_url" {
+  metadata {
+    name      = "db-clinical-jobs"
+    namespace = local.ns
+  }
+  data = {
+    url = "postgres://clinical_jobs:${random_password.clinical_jobs.result}@postgres-${local.pg_host_of["clinical"]}.${local.ns}.svc:5432/clinical"
+  }
 }
 
 resource "random_password" "identity_api" {
@@ -118,6 +134,7 @@ resource "kubernetes_secret_v1" "pg_bootstrap" {
     contains(each.value, "clinical") ? {
       CLINICAL_API_PASSWORD   = random_password.clinical_api.result
       CLINICAL_RELAY_PASSWORD = random_password.clinical_relay.result
+      CLINICAL_JOBS_PASSWORD  = random_password.clinical_jobs.result
     } : {},
     contains(each.value, "identity") ? {
       IDENTITY_API_PASSWORD   = random_password.identity_api.result
