@@ -43,12 +43,13 @@ async function setup() {
       auditEvent: { id: randomUUID() },
     },
   ]);
+  const auditStore = new InMemoryAuditStore();
   const app = await buildApi({
     logLevel: 'silent',
     verifier: new ServiceTokenVerifier('api', {
       'bff-clinic': { publicJwk: keys.publicJwk, roles: ['clinician', 'org_admin'] },
     }),
-    audit: new AuditWriter(new InMemoryAuditStore()),
+    audit: new AuditWriter(auditStore),
     invitations: new InMemoryIdempotentInvitationStore(),
     memberships: new InMemoryMembershipStore().add(ORG, REF, {
       clinicianId: randomUUID(),
@@ -71,12 +72,12 @@ async function setup() {
       },
       payload,
     });
-  return { post };
+  return { post, consents, auditStore };
 }
 
 describe('M7 SMART launch patient links (spec 16.2)', () => {
   it('links once with her care-team consent, then resolves; by hash only', async () => {
-    const { post } = await setup();
+    const { post, consents, auditStore } = await setup();
     expect((await post('/v1/ehr-links/resolve', { link_hash: HASH })).statusCode).toBe(404);
     expect(
       (await post(`/v1/patients/${NO_CONSENT}/ehr-links`, { link_hash: HASH })).statusCode,
@@ -91,5 +92,23 @@ describe('M7 SMART launch patient links (spec 16.2)', () => {
       patient_id: PATIENT,
     });
     expect((await post('/v1/ehr-links/resolve', { link_hash: 'MRN-12345' })).statusCode).toBe(400);
+    // Each resolve is audited against her record.
+    expect(await auditStore.readRange(1, 100)).toContainEqual(
+      expect.objectContaining({
+        action: 'ehr_link.resolved',
+        resource: { type: 'patient_record', id: PATIENT },
+      }),
+    );
+    // After she withdraws care-team sharing, the link reveals nothing (Codex r8).
+    await consents.record({
+      id: randomUUID(),
+      orgId: ORG,
+      patientId: PATIENT,
+      purpose: 'share_with_care_team',
+      status: 'revoked',
+      version: 1,
+      auditEvent: { id: randomUUID() },
+    });
+    expect((await post('/v1/ehr-links/resolve', { link_hash: HASH })).statusCode).toBe(404);
   });
 });
