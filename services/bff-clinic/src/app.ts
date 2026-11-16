@@ -11,6 +11,7 @@ import {
   registerAppShell,
   type AppShell,
   registerProblemHandlers,
+  securityTxt,
   requestIdFrom,
 } from '@endo/service-kit';
 import {
@@ -79,7 +80,10 @@ export class PendingJoins {
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
-  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' | 'join' }
+  | {
+      readonly kind: 'public';
+      readonly reason: 'liveness' | 'app-shell' | 'join' | 'security-txt';
+    }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
   | { readonly kind: 'backchannel' }
@@ -104,7 +108,12 @@ export function isClinicAuth(value: unknown): value is ClinicAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
   if (v.kind === 'public')
-    return v.reason === 'liveness' || v.reason === 'app-shell' || v.reason === 'join';
+    return (
+      v.reason === 'liveness' ||
+      v.reason === 'app-shell' ||
+      v.reason === 'join' ||
+      v.reason === 'security-txt'
+    );
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
@@ -134,6 +143,8 @@ export interface ClinicBffDeps {
   readonly appShell?: AppShell;
   /** Clinic enrolment (ADR-0021 slice 3). Without it those routes do not exist. */
   readonly enrolment?: ClinicEnrolmentDeps;
+  /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
+  readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -308,6 +319,18 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         .header('cache-control', 'no-store')
         .code(204)
         .send();
+    },
+  );
+
+  app.get(
+    '/.well-known/security.txt',
+    { config: { auth: { kind: 'public', reason: 'security-txt' } } },
+    (_request, reply) => {
+      const c = deps.securityContact;
+      if (!c) throw new ProblemError(404, 'not_found', 'Not found.');
+      return reply
+        .type('text/plain; charset=utf-8')
+        .send(securityTxt({ contact: c.contact, policy: c.policy ?? null, now: deps.now() }));
     },
   );
 

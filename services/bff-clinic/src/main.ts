@@ -2,7 +2,12 @@ import { createRemoteJWKSet } from 'jose';
 import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
 import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
-import { ServiceTokenSigner, WorkloadTokenSigner, loadAppShell } from '@endo/service-kit';
+import {
+  ServiceTokenSigner,
+  WorkloadTokenSigner,
+  isSecurityContact,
+  loadAppShell,
+} from '@endo/service-kit';
 import { buildClinicBff } from './app.ts';
 import { SeenTokenIds, TransactionStore } from './oidc.ts';
 import { HttpResolver } from './resolve.ts';
@@ -21,6 +26,12 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 const HttpUrl = z.url({ protocol: /^https?$/ });
 
 const Config = z.object({
+  // Spec 12.7: where vulnerability reports go (mailto: or https:), and the disclosure policy.
+  ENDO_SECURITY_CONTACT: z
+    .string()
+    .refine((v) => isSecurityContact(v))
+    .optional(),
+  ENDO_SECURITY_POLICY_URL: z.url({ protocol: /^https$/ }).optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   BFF_CLINIC_PORT: z.coerce.number().int().min(1).max(65535),
@@ -88,6 +99,9 @@ async function main(): Promise<void> {
     fetch,
     now: () => new Date(),
     portalOrigin: config.BFF_CLINIC_PORTAL_ORIGIN,
+    securityContact: config.ENDO_SECURITY_CONTACT
+      ? { contact: config.ENDO_SECURITY_CONTACT, policy: config.ENDO_SECURITY_POLICY_URL ?? null }
+      : null,
     ...(config.BFF_CLINIC_APP_DIR ? { appShell: loadAppShell(config.BFF_CLINIC_APP_DIR) } : {}),
     ...(config.BFF_CLINIC_SERVICE_TOKEN_PRIVATE_KEY_JWK
       ? {

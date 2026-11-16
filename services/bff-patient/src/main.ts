@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { Environment, loadConfig } from '@endo/config';
 import { uuidv7 } from '@endo/domain';
-import { ServiceTokenSigner, WorkloadTokenSigner } from '@endo/service-kit';
+import { ServiceTokenSigner, WorkloadTokenSigner, isSecurityContact } from '@endo/service-kit';
 import { createRemoteJWKSet } from 'jose';
 import { TransactionStore } from '@endo/oidc';
 import { buildBff } from './app.ts';
@@ -32,6 +32,12 @@ const Config = z.object({
     .string()
     .regex(/^[A-Za-z0-9_-]{87}$/)
     .optional(),
+  // Spec 12.7: where vulnerability reports go (mailto: or https:), and the disclosure policy.
+  ENDO_SECURITY_CONTACT: z
+    .string()
+    .refine((v) => isSecurityContact(v))
+    .optional(),
+  ENDO_SECURITY_POLICY_URL: z.url({ protocol: /^https$/ }).optional(),
   BFF_PATIENT_EMERGENCY_NUMBER: z
     .string()
     .regex(/^\+?[0-9]{2,15}$/)
@@ -143,6 +149,9 @@ async function main(): Promise<void> {
     fetch,
     rateLimitPerMinute: config.BFF_PATIENT_RATE_LIMIT_PER_MINUTE,
     emergencyNumber: config.BFF_PATIENT_EMERGENCY_NUMBER ?? null,
+    securityContact: config.ENDO_SECURITY_CONTACT
+      ? { contact: config.ENDO_SECURITY_CONTACT, policy: config.ENDO_SECURITY_POLICY_URL ?? null }
+      : null,
     vapidPublicKey: config.BFF_PATIENT_VAPID_PUBLIC_KEY ?? null,
     ...(config.BFF_PATIENT_APP_DIR ? { appShell: loadAppShell(config.BFF_PATIENT_APP_DIR) } : {}),
     ...(config.BFF_PATIENT_IDENTITY_BASE_URL &&

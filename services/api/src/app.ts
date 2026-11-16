@@ -48,6 +48,8 @@ import { registerCoordinatorRoutes, type EnrolmentCoordination } from './routes/
 import type { IdentityEnrolment } from './identity-client.ts';
 import { registerHealthRoutes } from './routes/health.ts';
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /**
  * Every route declares exactly one of these in `config.policy` (spec 2.5, 10.4). A route without
  * one cannot be registered: the service refuses to start.
@@ -332,6 +334,11 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     }
 
     const resource = policy.resource(request, subject);
+    // The policy runs before schema validation: an id taken from the path that is not a UUID is
+    // refused here, before it can reach authorisation or the audit trail (which takes UUIDs only).
+    for (const v of [resource.id, resource.orgId, resource.patientId])
+      if (typeof v === 'string' && !UUID_RE.test(v))
+        throw new ProblemError(400, 'request.invalid_id', 'Request refused.');
     const context: AuthzContext = {
       now: deps.now(),
       // Current decisions, read on every request, so a withdrawal takes effect immediately.

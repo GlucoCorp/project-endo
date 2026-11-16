@@ -9,6 +9,7 @@ import {
   rateLimitedError,
   registerProblemHandlers,
   requestIdFrom,
+  securityTxt,
   type ServiceClaims,
   type ServiceTokenSigner,
 } from '@endo/service-kit';
@@ -38,7 +39,8 @@ export type BffAuth =
   | { readonly kind: 'enrolment' }
   | {
       readonly kind: 'public';
-      readonly reason: 'liveness' | 'app-shell' | 'sign-out' | 'sign-in' | 'shared-view';
+      readonly reason:
+        'liveness' | 'app-shell' | 'sign-out' | 'sign-in' | 'shared-view' | 'security-txt';
     };
 
 declare module 'fastify' {
@@ -66,6 +68,7 @@ export function isBffAuth(value: unknown): value is BffAuth {
         v.reason === 'app-shell' ||
         v.reason === 'sign-out' ||
         v.reason === 'shared-view' ||
+        v.reason === 'security-txt' ||
         v.reason === 'sign-in'))
   );
 }
@@ -93,6 +96,8 @@ export interface BffDeps {
   readonly vapidPublicKey?: string | null;
   /** The clock for the recent-sign-in check (milliseconds); the session store's own by default. */
   readonly now?: () => number;
+  /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
+  readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
 }
 
 /** Spec 10.1 re-authentication window (Section 24 item 37). */
@@ -182,6 +187,18 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
 export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   const app = await createBffInstance(deps);
   const timeoutMs = deps.upstreamTimeoutMs ?? 5000;
+
+  app.get(
+    '/.well-known/security.txt',
+    { config: { auth: { kind: 'public', reason: 'security-txt' } } },
+    (_request, reply) => {
+      const c = deps.securityContact;
+      if (!c) throw new ProblemError(404, 'not_found', 'Not found.');
+      return reply
+        .type('text/plain; charset=utf-8')
+        .send(securityTxt({ contact: c.contact, policy: c.policy ?? null, now: new Date() }));
+    },
+  );
 
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
     status: 'ok',
