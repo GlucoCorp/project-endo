@@ -1289,16 +1289,34 @@ describe.skipIf(!url)(
     describe('REQ-010 staff invitations (migration 0016)', () => {
       it('makes a colleague a member once, by the token hash, for at most 7 days', async () => {
         const invites = new PostgresStaffInvitationStore(apiDb);
+        const inviter = randomUUID();
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+          [inviter, ORG_A, randomUUID()],
+        );
+        // A clinician (not an admin) cannot make one, whatever the API thought.
+        expect(
+          await invites.create({
+            id: randomUUID(),
+            orgId: ORG_A,
+            role: 'org_admin',
+            tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
+            createdBy: CLIN_A,
+            days: 7,
+            auditEvent: audit('x'),
+          }),
+        ).toBe('not_admin');
         const hash = createHash('sha256').update(randomUUID()).digest('hex');
         const inv = await invites.create({
           id: randomUUID(),
           orgId: ORG_A,
           role: 'clinician',
           tokenHash: hash,
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 30,
           auditEvent: audit('staff_invitation.created'),
         });
+        if (inv === 'not_admin') throw new Error('expected an invitation');
         const days = (inv.expiresAt.getTime() - inv.createdAt.getTime()) / 86_400_000;
         expect(days).toBeLessThanOrEqual(7.0001);
         expect((await invites.list(ORG_A)).map((i) => i.id)).toContain(inv.id);
@@ -1334,7 +1352,7 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           role: 'org_admin',
           tokenHash: again,
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 7,
           auditEvent: audit('x'),
         });
@@ -1345,10 +1363,11 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           role: 'clinician',
           tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 7,
           auditEvent: audit('x'),
         });
+        if (stopped === 'not_admin') throw new Error('expected an invitation');
         expect(await invites.revoke(ORG_B, stopped.id, audit('x'))).toBe(false);
         expect(await invites.revoke(ORG_A, stopped.id, audit('staff_invitation.revoked'))).toBe(
           true,

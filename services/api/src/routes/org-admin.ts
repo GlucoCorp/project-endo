@@ -259,6 +259,8 @@ export function registerOrgAdminRoutes(app: FastifyInstance, deps: OrgAdminRoute
         days: b.days ?? 7,
         auditEvent: audit(request, 'staff_invitation.created', 'staff_invitation', id, orgId),
       });
+      if (i === 'not_admin')
+        throw new ProblemError(403, 'authz.role_not_permitted', 'Not allowed.');
       deps.onCommitted();
       return reply
         .code(201)
