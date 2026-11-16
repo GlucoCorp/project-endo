@@ -1,7 +1,7 @@
 import { createRemoteJWKSet } from 'jose';
 import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
-import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
+import { DevKeyManager, OpenBaoKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   ServiceTokenSigner,
   WorkloadTokenSigner,
@@ -26,6 +26,14 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 const HttpUrl = z.url({ protocol: /^https?$/ });
 
 const Config = z.object({
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
   // M7, spec 16.2: record systems allowed to launch the portal, as [{"iss": ..., "client_id": ...}].
   BFF_CLINIC_SMART_ISSUERS: z
     .string()
@@ -109,7 +117,16 @@ async function main(): Promise<void> {
     transactions: new TransactionStore(),
     logoutTokens: new SeenTokenIds(),
     // DevKeyManager refuses deployed environments; main already refuses them too (no durable store).
-    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/identity'),
+    sealer: new EnvelopeSealer(
+      config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+        ? new OpenBaoKeyManager({
+            address: config.ENDO_KMS_OPENBAO_ADDR,
+            token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+            ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+          })
+        : new DevKeyManager(config.ENDO_ENV),
+      'kms/identity',
+    ),
     sessions: new InMemoryClinicSessions(config.ENDO_ENV),
     resolver: new HttpResolver({
       identityBaseUrl: config.BFF_CLINIC_IDENTITY_BASE_URL,

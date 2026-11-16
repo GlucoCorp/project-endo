@@ -8,7 +8,12 @@ import {
   type AuditStore,
 } from '@endo/audit';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
-import { DevKeyManager, FieldCipher, InMemoryPatientKeyStore } from '@endo/crypto';
+import {
+  DevKeyManager,
+  OpenBaoKeyManager,
+  FieldCipher,
+  InMemoryPatientKeyStore,
+} from '@endo/crypto';
 import {
   PermanentPublishError,
   createDb,
@@ -60,6 +65,14 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 });
 
 const Config = z.object({
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   IDENTITY_PORT: z.coerce.number().int().min(1).max(65535),
@@ -106,7 +119,14 @@ async function main(): Promise<void> {
 
   // DevKeyManager refuses staging and production: deployed environments need the OpenBao
   // KeyManager (infra slice) before this service can start. Fail closed.
-  const kms = new DevKeyManager(config.ENDO_ENV);
+  const kms =
+    config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+      ? new OpenBaoKeyManager({
+          address: config.ENDO_KMS_OPENBAO_ADDR,
+          token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+          ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+        })
+      : new DevKeyManager(config.ENDO_ENV);
   let persons: PersonStore;
   let enrolment: PatientRouteDeps | undefined;
   let onConsented: ((transactionId: string) => void) | undefined;
