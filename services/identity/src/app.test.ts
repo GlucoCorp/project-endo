@@ -142,6 +142,25 @@ describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => 
         recordId: id,
       }),
     ).rejects.toBeInstanceOf(KeyDestroyedError);
+    // Then purged for good; only after erasure.
+    const purge = async (who: string) =>
+      app.inject({
+        method: 'POST',
+        url: `/internal/v1/persons/${who}/purge`,
+        headers: await auth(jobsSigner, 'identity.person.erase'),
+      });
+    expect((await purge(id)).statusCode).toBe(204);
+    expect(persons.rows.has(id)).toBe(false);
+    expect((await purge(id)).statusCode).toBe(204);
+    const other = (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/v1/persons',
+        headers: await auth(apiSigner, 'identity.person.create'),
+        payload: { display_name: 'x' },
+      })
+    ).json<{ person_id: string }>().person_id;
+    expect((await purge(other)).statusCode).toBe(409);
   });
 
   it('answers 404 for an unknown person and 400 for a malformed id', async () => {

@@ -166,6 +166,56 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     expect(await store.resolvePatient('kc-patient-1')).toBeNull();
   });
 
+  it('REQ-009 purges an erased person: her links and codes go, the key tombstone stays', async () => {
+    const id = uuidv7();
+    await store.create({ id, email: `${SYNTHETIC_PHI_MARKER}@example.test`, displayName: 'x' });
+    await admin.query(
+      `INSERT INTO patient_link (person_id, patient_record_id, org_id) VALUES ($1, $2, $3)`,
+      [id, uuidv7(), uuidv7()],
+    );
+    const c = await admin.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query('SET LOCAL session_replication_role = replica');
+      await c.query(
+        `INSERT INTO email_code (id, purpose, person_id, address_index, source_index,
+           code_wrapped_key, code_mac, created_at, expires_at)
+         VALUES ($1, 'confirm', $2, $3, $3, 'k', 'm', now(), now() + interval '5 minutes')`,
+        [uuidv7(), id, 'a'.repeat(64)],
+      );
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    // Not erased yet: nothing is removed.
+    expect(await store.purge(id)).toBe(false);
+    expect((await admin.query('SELECT 1 FROM person WHERE id = $1', [id])).rowCount).toBe(1);
+    await store.erase(id);
+    expect(await store.purge(id)).toBe(true);
+    expect(await store.purge(id)).toBe(true); // already gone
+    for (const q of [
+      'SELECT 1 FROM person WHERE id = $1',
+      'SELECT 1 FROM patient_link WHERE person_id = $1',
+      'SELECT 1 FROM email_code WHERE person_id = $1',
+    ])
+      expect((await admin.query(q, [id])).rowCount).toBe(0);
+    expect(
+      (await admin.query('SELECT 1 FROM person_key_shredded WHERE person_id = $1', [id])).rowCount,
+    ).toBe(1);
+    // Her key can never be re-created.
+    await expect(
+      admin.query(`INSERT INTO person_key (person_id, wrapped) VALUES ($1, $2)`, [
+        id,
+        Buffer.alloc(32),
+      ]),
+    ).rejects.toThrow();
+    expect(await store.purge(uuidv7())).toBe(false);
+    // The identity role still cannot delete anything directly, nor codes of anyone else.
+    await expect(
+      db.deleteFrom('email_code').where('person_id', 'is', null).execute(),
+    ).rejects.toThrow(/permission denied/);
+  });
+
   it('reports an unknown person, and stores a person with no contact fields', async () => {
     expect(await store.erase(uuidv7())).toBe(false);
     const id = uuidv7();

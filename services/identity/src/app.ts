@@ -247,6 +247,37 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     },
   );
 
+  // REQ-009, ADR-0029: after erasure, her identity rows are removed for good. Jobs only.
+  app.post(
+    '/internal/v1/persons/:id/purge',
+    {
+      config: {
+        access: {
+          kind: 'workload',
+          scope: 'identity.person.erase',
+          action: 'identity.person.purge',
+          resourceId: idParam,
+        },
+      },
+      schema: {
+        params: {
+          type: 'object',
+          required: ['id'],
+          additionalProperties: false,
+          properties: { id: { type: 'string', pattern: UUID } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      if (!(await deps.persons.purge(id))) {
+        throw new ProblemError(409, 'identity.person_not_erased', 'Erase first.');
+      }
+      await auditResult(request, 'identity.person.purged', id);
+      return reply.code(204).send();
+    },
+  );
+
   // ADR-0019: which person signed in as this identity-provider subject. bff-clinic only.
   app.post(
     '/internal/v1/subjects/resolve',

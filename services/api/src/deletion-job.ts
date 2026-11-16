@@ -2,9 +2,9 @@ import type { DeletionStore } from '@endo/clinical-store';
 import type { WorkloadTokenSigner } from '@endo/service-kit';
 
 /**
- * The identity service's erasure route. It crypto-shreds her identity key and clears her sign-in
- * subject at once (her name and email are unreadable; she can no longer be resolved). Removing
- * the identity rows and her Keycloak account is a later step (Section 24 item 38).
+ * The identity service's erasure, then purge: her identity key is shredded and her sign-in
+ * subject cleared, then her identity rows are removed (ADR-0029). Her Keycloak user is removed
+ * by the operations runbook until the jobs process can do it (Section 24 item 38).
  */
 export interface IdentityErasure {
   /** True once her identity record is erased (or was already gone). */
@@ -39,7 +39,22 @@ export class HttpIdentityErasure implements IdentityErasure {
           signal: AbortSignal.timeout(5_000),
         },
       );
-      return res.status === 204 || res.status === 404;
+      if (res.status === 404) return true; // never known here, or already removed
+      if (res.status !== 204) return false;
+      // Then her identity rows go for good (person, links, codes, enrolment records).
+      const purge = await this.#fetch(
+        `${this.#url}/internal/v1/persons/${encodeURIComponent(personId)}/purge`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${await this.#signer.sign(['identity.person.erase'], 'identity')}`,
+            'x-request-id': requestId,
+          },
+          redirect: 'error',
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      return purge.status === 204;
     } catch {
       return false;
     }

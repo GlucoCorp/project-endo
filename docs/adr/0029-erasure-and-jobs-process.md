@@ -22,6 +22,6 @@ REQ-009 asks for account deletion with a 14-day grace period, then hard deletion
 
 ## Consequences
 
-- The identity step shreds her identity key and clears her sign-in subject; `identity_erased_at` records that, not removal. Hard deletion of her identity rows (person, patient links, enrolment and email-code records) and of her Keycloak user and passkey is still to do (Section 24 item 38).
+- The identity step shreds her identity key and clears her sign-in subject, then purges her identity rows (identity migration 0009: person, patient links, email codes, enrolment records; the key tombstone stays). Her Keycloak user and passkey are removed by an operator (runbook) until the jobs process has a scoped Keycloak credential (Section 24 item 38).
 - Backups keep her rows until they expire; the shredded key makes her goal text and notes unreadable there. A restore must replay `patient_key_shredded` and erased requests before serving (M6 runbook).
 - A second deletion after a cancel is a new request with a new 14 days.
