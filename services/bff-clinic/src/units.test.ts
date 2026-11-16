@@ -284,6 +284,8 @@ describe('REQ-010 invitations pending per sign-in attempt', () => {
     let t = 0;
     const joins = new PendingJoins(() => t, 3);
     joins.add('s1', 'a'.repeat(64));
+    joins.add('s1b', 'b'.repeat(64)); // within the same second: no pruning pass
+    expect(joins.take('s1b')).toBe('b'.repeat(64));
     expect(joins.take('s2')).toBeNull();
     expect(joins.take('s1')).toBe('a'.repeat(64));
     expect(joins.take('s1')).toBeNull();
