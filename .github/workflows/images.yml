@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient, bff-clinic, identity, integration]
+        service: [api, bff-patient, bff-clinic, identity, integration, keycloak]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,8 +51,13 @@ jobs:
             bff-clinic) web=clinic-web ;;
             *) web="" ;;
           esac
-          docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
-            -t endo-${{ matrix.service }}:ci .
+          if [ "${{ matrix.service }}" = keycloak ]; then
+            # ADR-0025: the extension is built and its tests run inside this build.
+            docker build -t endo-keycloak:ci services/keycloak-extension
+          else
+            docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
+              -t endo-${{ matrix.service }}:ci .
+          fi
       - name: Smoke test (read-only filesystem, all capabilities dropped, non-root)
         env:
           SERVICE: ${{ matrix.service }}
@@ -60,6 +65,18 @@ jobs:
           set -euo pipefail
           eval "$(node tools/dev-keys.mjs)"   # throwaway keys for this test only
           common=(--read-only --cap-drop ALL --security-opt no-new-privileges -p 127.0.0.1:18000:8080 -e ENDO_ENV=dev)
+          if [ "$SERVICE" = keycloak ]; then
+            # Keycloak with the extension: starts, reports ready, loads the Endo providers.
+            docker run -d --name smoke --cap-drop ALL --security-opt no-new-privileges \
+              -p 127.0.0.1:18009:9000 -e KC_HEALTH_ENABLED=true -e KC_BOOTSTRAP_ADMIN_USERNAME=smoke \
+              -e KC_BOOTSTRAP_ADMIN_PASSWORD=smoke-not-a-secret endo-keycloak:ci start-dev
+            for _ in $(seq 1 90); do curl -sf http://127.0.0.1:18009/health/ready && break; sleep 2; done
+            curl -sf http://127.0.0.1:18009/health/ready | grep -q '"UP"'
+            docker logs smoke 2>&1 | grep -q endo-enrolment
+            test "$(docker inspect smoke --format '{{.Config.User}}')" = "1000"
+            docker rm -f smoke > /dev/null
+            exit 0
+          fi
           if [ "$SERVICE" = api ]; then
             docker run -d --name smoke "${common[@]}" -e API_PORT=8080 -e API_HOST=0.0.0.0 \
               -e ENDO_CLINICAL_RULESET_PATH=/app/clinical/rulesets/ruleset.1.0.0.json \
@@ -125,7 +142,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: [api, bff-patient, bff-clinic, identity, integration]
+        service: [api, bff-patient, bff-clinic, identity, integration, keycloak]
     env:
       IMAGE: ghcr.io/glucocorp/endo-${{ matrix.service }}
     steps:
@@ -145,8 +162,12 @@ jobs:
             bff-clinic) web=clinic-web ;;
             *) web="" ;;
           esac
-          docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
-            -t "$IMAGE:sha-$GITHUB_SHA" .
+          if [ "${{ matrix.service }}" = keycloak ]; then
+            docker build -t "$IMAGE:sha-$GITHUB_SHA" services/keycloak-extension
+          else
+            docker build --build-arg SERVICE=${{ matrix.service }} --build-arg WEB_APP="$web" \
+              -t "$IMAGE:sha-$GITHUB_SHA" .
+          fi
       - name: Vulnerabilities (Trivy)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
