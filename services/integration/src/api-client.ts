@@ -5,6 +5,8 @@ import type { Client } from './smart.ts';
 export interface ApiPort {
   /** The client, or null if unknown. Throws if the API cannot be reached (fail closed). */
   resolveClient(clientId: string): Promise<Client | null>;
+  /** True the first time this assertion id is used, across instances (replay protection). */
+  reserveAssertion(clientId: string, jti: string, expiresAt: Date): Promise<boolean>;
   /** Her resources as a FHIR Bundle, or null if not shared with this organisation's care team. */
   patient(
     orgId: string,
@@ -72,6 +74,17 @@ export class HttpApi implements ApiPort {
       active: boolean;
     };
     return { id: b.id, orgId: b.org_id, jwks: b.jwks, scopes: b.scopes, active: b.active };
+  }
+
+  async reserveAssertion(clientId: string, jti: string, expiresAt: Date): Promise<boolean> {
+    const res = await this.#post(
+      '/internal/v1/integration/assertions/reserve',
+      'api.integration.resolve',
+      { client_id: clientId, jti, expires_at: expiresAt.toISOString() },
+    );
+    if (!res.ok) throw new ApiUnavailableError();
+    const b = (await res.json()) as { first_use?: unknown };
+    return b.first_use === true;
   }
 
   async patient(orgId: string, patientId: string, clientId: string) {

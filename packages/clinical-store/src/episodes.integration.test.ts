@@ -1490,6 +1490,21 @@ describe.skipIf(!url)(
           active: true,
         });
         expect(await integrations.resolve('nobody-nobody-nobody-00')).toBeNull();
+        // Each assertion id once, across instances (stored in the database).
+        const exp = new Date(Date.now() + 120_000);
+        expect(await integrations.reserveAssertion(clientId, 'jti-1', exp)).toBe(true);
+        expect(await integrations.reserveAssertion(clientId, 'jti-1', exp)).toBe(false);
+        expect(
+          await new PostgresIntegrationStore(apiDb).reserveAssertion(clientId, 'jti-1', exp),
+        ).toBe(false);
+        expect(await integrations.reserveAssertion(clientId, 'jti-2', exp)).toBe(true);
+        // Expired ids may be used again (the record is replaced).
+        const past = new Date(Date.now() - 1000);
+        expect(await integrations.reserveAssertion(clientId, 'jti-old', past)).toBe(true);
+        expect(await integrations.reserveAssertion(clientId, 'jti-old', exp)).toBe(true);
+        await expect(asApi((c) => c.query('SELECT * FROM integration_assertion'))).rejects.toThrow(
+          /permission denied/,
+        );
         const id = made === 'not_admin' ? '' : made.id;
         const toggle = (active: boolean, actorId = adminId, orgId = ORG_A) =>
           integrations.setActive({ orgId, id, active, actorId, auditEvent: audit('x') });

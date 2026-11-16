@@ -13,7 +13,6 @@ import { ApiUnavailableError, type ApiPort } from './api-client.ts';
 import {
   AccessTokens,
   AuthError,
-  SeenAssertions,
   grantScopes,
   verifyClientAssertion,
   type AccessToken,
@@ -86,7 +85,6 @@ const issueCode = (status: number) =>
  */
 export async function buildIntegration(deps: IntegrationDeps): Promise<FastifyInstance> {
   const tokenUrl = `${deps.baseUrl}/oauth/token`;
-  const seen = new SeenAssertions(deps.now);
   const tokens = new AccessTokens(deps.now);
   const app = Fastify({
     logger: loggerOptions('integration', deps.logLevel, deps.logStream),
@@ -262,7 +260,7 @@ export async function buildIntegration(deps: IntegrationDeps): Promise<FastifyIn
           clientId,
           client,
           tokenUrl,
-          seen,
+          (c, j, e) => deps.api.reserveAssertion(c, j, e),
           deps.now(),
         );
         const scopes = grantScopes(b.scope, client.scopes);

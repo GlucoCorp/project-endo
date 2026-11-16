@@ -22,7 +22,7 @@ Record systems need read access to a consenting patient's treatment record (spec
 
 ## Consequences
 
-- Access tokens and assertion ids are held in memory: one instance until a shared store exists (Section 24 item 41).
+- Assertion ids are reserved in the clinical database (migration 0019, through the API), so a replay is refused across restarts and instances. Access tokens are held in memory: a restart ends them (fails safe); several instances need a shared store (Section 24 item 41).
 - Patient ids in FHIR URLs are our pseudonymous ids (spec 5.3); record systems map them through the explicit link made at SMART launch (M7b).
 - Inferno conformance runs once the Inferno test kit is approved as a CI dependency (M7c).
 - Outbound writes (verdict Observations, PDF DocumentReferences, spec 16.4) wait until verdicts leave shadow mode.

@@ -333,6 +333,16 @@ Row-level security; public keys only; no patient data. Switched on and off by th
 | `integration_client.created_by` | Admin who registered it (opaque clinician id)        | as above                                                            | as above                                                                  | S1          |
 | `integration_client.created_at` | When registered                                      | as above                                                            | as above                                                                  | S0          |
 
+### Integration assertion ids — `packages/clinical-store/migrations/0019` (M7)
+
+No patient data; reachable only through `integration_assertion_reserve()`; expired rows are removed as new ones arrive.
+
+| Column                             | Purpose                                         | Legal basis                        | Retention                               | Sensitivity |
+| ---------------------------------- | ----------------------------------------------- | ---------------------------------- | --------------------------------------- | ----------- |
+| `integration_assertion.client_id`  | Which client used the assertion                 | Security of processing (spec 16.3) | Until the assertion expires (5 minutes) | S0          |
+| `integration_assertion.jti`        | The assertion id, used once (replay protection) | as above                           | as above                                | S0          |
+| `integration_assertion.expires_at` | Until when it is kept (at most 5 minutes)       | as above                           | as above                                | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.

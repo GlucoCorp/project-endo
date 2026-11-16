@@ -229,6 +229,43 @@ export function registerIntegrationRoutes(app: FastifyInstance, deps: Integratio
     },
   );
 
+  /** Replay protection for client assertions, shared by every integration-service instance. */
+  app.post(
+    '/internal/v1/integration/assertions/reserve',
+    {
+      config: {
+        policy: {
+          kind: 'workload',
+          scope: 'api.integration.resolve',
+          action: 'integration.assertion.reserve',
+          resourceType: 'integration_client',
+        },
+      },
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['client_id', 'jti', 'expires_at'],
+          properties: {
+            client_id: { type: 'string', pattern: '^[A-Za-z0-9_-]{22,64}$' },
+            jti: { type: 'string', minLength: 1, maxLength: 255 },
+            expires_at: { type: 'string', format: 'date-time' },
+          },
+        },
+      },
+    },
+    async (request) => {
+      const b = request.body as { client_id: string; jti: string; expires_at: string };
+      return {
+        first_use: await deps.integrations.reserveAssertion(
+          b.client_id,
+          b.jti,
+          new Date(b.expires_at),
+        ),
+      };
+    },
+  );
+
   app.post(
     '/internal/v1/fhir/patient',
     {

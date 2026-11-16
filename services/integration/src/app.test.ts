@@ -25,7 +25,15 @@ async function setup(opts: { scopes?: string[]; down?: boolean } = {}) {
   };
   const reads: string[] = [];
   const logs: string[] = [];
+  const reserved = new Set<string>();
   const api: ApiPort = {
+    reserveAssertion: (c, j) => {
+      if (opts.down) return Promise.reject(new ApiUnavailableError());
+      const k = `${c}/${j}`;
+      if (reserved.has(k)) return Promise.resolve(false);
+      reserved.add(k);
+      return Promise.resolve(true);
+    },
     resolveClient: (id) => {
       if (opts.down) return Promise.reject(new ApiUnavailableError());
       return Promise.resolve(id === CLIENT_ID ? client : null);
