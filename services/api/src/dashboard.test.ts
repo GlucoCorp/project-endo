@@ -41,8 +41,19 @@ describe('REQ-011 small-cell suppression', () => {
     ]);
     // One month hidden in a series: its total is hidden as well (no subtraction).
     expect(r.totals).toEqual({ episodes_started: null, reviews_due: 60, reviews_on_time: null });
+    // Two hidden months still hide the total (Codex r6: 240 due, 238 on time gave both away).
     const two = suppress([row('a', 3, 0, 0), row('b', 4, 0, 0), row('c', 20, 0, 0)]);
-    expect(two.totals.episodes_started).toBe(27);
+    expect(two.totals.episodes_started).toBeNull();
+    const codex = suppress([
+      ...Array.from({ length: 10 }, (_, i) => row(`m${String(i)}`, 20, 20, 20)),
+      row('x', 20, 20, 19),
+      row('y', 20, 20, 19),
+    ]);
+    expect(codex.totals).toEqual({
+      episodes_started: 240,
+      reviews_due: 240,
+      reviews_on_time: null,
+    });
     expect(two.months[0]?.reviews_on_time).toBeNull(); // nothing due: hidden, not zero
   });
 });

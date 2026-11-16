@@ -22,12 +22,14 @@ import { buildApi } from './app.ts';
 const ORG = '01900000-0000-7000-8000-00000000000a';
 const ADMIN_REF = randomUUID();
 const ADMIN_ID = randomUUID();
+const STALE_REF = randomUUID();
 
 class FakeInvitations implements StaffInvitationStore {
   rows: (StaffInvitation & { hash: string })[] = [];
   members = new Set<string>();
   audits: unknown[] = [];
   create(i: Parameters<StaffInvitationStore['create']>[0]) {
+    if (i.createdBy !== ADMIN_ID) return Promise.resolve('not_admin' as const);
     const row = {
       id: i.id,
       role: i.role,
@@ -79,11 +81,10 @@ async function setup() {
     }),
     audit: new AuditWriter(new InMemoryAuditStore()),
     invitations: new InMemoryIdempotentInvitationStore(),
-    memberships: new InMemoryMembershipStore().add(ORG, ADMIN_REF, {
-      clinicianId: ADMIN_ID,
-      role: 'org_admin',
-      active: true,
-    }),
+    memberships: new InMemoryMembershipStore()
+      .add(ORG, ADMIN_REF, { clinicianId: ADMIN_ID, role: 'org_admin', active: true })
+      // Still an admin when the request was authorised, not when the store writes.
+      .add(ORG, STALE_REF, { clinicianId: randomUUID(), role: 'org_admin', active: true }),
     sealer: new EnvelopeSealer(new DevKeyManager('test'), 'kms/clinical'),
     relayOutbox: () => Promise.resolve(),
     now: () => new Date(),
@@ -91,12 +92,12 @@ async function setup() {
     orgAdmin: { orgAdmin: {} as OrgAdminStore, staffInvitations },
   });
   const signer = new ServiceTokenSigner(keys.privateJwk, 'bff-clinic');
-  const admin = async (method: 'GET' | 'POST', url: string, payload?: object) =>
+  const admin = async (method: 'GET' | 'POST', url: string, payload?: object, sub = ADMIN_REF) =>
     app.inject({
       method,
       url,
       headers: {
-        authorization: `Bearer ${await signer.sign({ sub: ADMIN_REF, role: 'org_admin', org_id: ORG, patient_id: null }, 'api')}`,
+        authorization: `Bearer ${await signer.sign({ sub, role: 'org_admin', org_id: ORG, patient_id: null }, 'api')}`,
       },
       ...(payload ? { payload } : {}),
     });
@@ -158,6 +159,12 @@ describe('REQ-010 staff invitations', () => {
         )
       ).statusCode,
     ).toBe(401);
+  });
+
+  it('refuses a maker who is no longer an active admin when the store writes', async () => {
+    const { admin } = await setup();
+    const res = await admin('POST', '/v1/org/staff-invitations', { role: 'org_admin' }, STALE_REF);
+    expect(res.statusCode).toBe(403);
   });
 
   it('stops an open invitation once; refuses bad input', async () => {

@@ -1235,9 +1235,15 @@ describe.skipIf(!url)(
           expect.objectContaining({ clinicianId: CLIN_A }),
         );
         // Deactivate and reactivate a clinician.
-        const change = (clinicianId: string, role: 'clinician' | 'org_admin', active: boolean) =>
+        const change = (
+          clinicianId: string,
+          role: 'clinician' | 'org_admin',
+          active: boolean,
+          actorId = adminId,
+        ) =>
           orgAdmin.changeMember({
             orgId: ORG_A,
+            actorId,
             clinicianId,
             role,
             active,
@@ -1247,18 +1253,32 @@ describe.skipIf(!url)(
         expect(await change(CLIN_A, 'clinician', false)).toBe('unchanged');
         expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
         expect(await change(randomUUID(), 'clinician', true)).toBe('not_found');
+        // Someone who is not an active admin cannot change anything (checked inside the write).
+        expect(await change(CLIN_A, 'org_admin', true, CLIN_A)).toBe('not_admin');
         // The last active admin cannot be removed or demoted...
-        expect(await change(adminId, 'org_admin', false)).toBe('last_admin');
-        expect(await change(adminId, 'clinician', true)).toBe('last_admin');
+        expect(await change(adminId, 'org_admin', false, adminId)).toBe('last_admin');
         // ...but can once there is another.
         expect(await change(CLIN_A, 'org_admin', true)).toBe('changed');
-        expect(await change(adminId, 'clinician', true)).toBe('changed');
-        expect(await change(CLIN_A, 'clinician', true)).toBe('last_admin');
+        // Two admins removing each other at the same time: never both (one waits for the other).
+        const both = await Promise.all([
+          change(adminId, 'clinician', true, CLIN_A),
+          change(CLIN_A, 'clinician', true, adminId),
+        ]);
+        expect(both.filter((r) => r === 'changed')).toHaveLength(1);
+        const admins = await admin.query<{ n: string }>(
+          `SELECT count(*) AS n FROM clinician WHERE org_id = $1 AND role = 'org_admin' AND active`,
+          [ORG_A],
+        );
+        expect(Number(admins.rows[0]?.n)).toBeGreaterThanOrEqual(1);
         // Any other database error is passed on, never mistaken for a refusal.
-        await expect(change('not-a-uuid', 'clinician', true)).rejects.toThrow();
-        // Leave CLIN_A as it was for other tests.
-        expect(await change(adminId, 'org_admin', true)).toBe('changed');
-        expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
+        const stillAdmin = both[0] === 'changed' ? CLIN_A : adminId;
+        await expect(change('not-a-uuid', 'clinician', true, stillAdmin)).rejects.toThrow();
+        // Leave CLIN_A a clinician and adminId an admin, as other tests expect.
+        if (stillAdmin === CLIN_A)
+          expect(await change(adminId, 'org_admin', true, CLIN_A)).toBe('changed');
+        expect(['changed', 'unchanged']).toContain(
+          await change(CLIN_A, 'clinician', true, adminId),
+        );
         // The API role cannot change anything else about a member.
         await expect(
           asApi((c) =>
@@ -1271,16 +1291,34 @@ describe.skipIf(!url)(
     describe('REQ-010 staff invitations (migration 0016)', () => {
       it('makes a colleague a member once, by the token hash, for at most 7 days', async () => {
         const invites = new PostgresStaffInvitationStore(apiDb);
+        const inviter = randomUUID();
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+          [inviter, ORG_A, randomUUID()],
+        );
+        // A clinician (not an admin) cannot make one, whatever the API thought.
+        expect(
+          await invites.create({
+            id: randomUUID(),
+            orgId: ORG_A,
+            role: 'org_admin',
+            tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
+            createdBy: CLIN_A,
+            days: 7,
+            auditEvent: audit('x'),
+          }),
+        ).toBe('not_admin');
         const hash = createHash('sha256').update(randomUUID()).digest('hex');
         const inv = await invites.create({
           id: randomUUID(),
           orgId: ORG_A,
           role: 'clinician',
           tokenHash: hash,
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 30,
           auditEvent: audit('staff_invitation.created'),
         });
+        if (inv === 'not_admin') throw new Error('expected an invitation');
         const days = (inv.expiresAt.getTime() - inv.createdAt.getTime()) / 86_400_000;
         expect(days).toBeLessThanOrEqual(7.0001);
         expect((await invites.list(ORG_A)).map((i) => i.id)).toContain(inv.id);
@@ -1316,7 +1354,7 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           role: 'org_admin',
           tokenHash: again,
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 7,
           auditEvent: audit('x'),
         });
@@ -1327,10 +1365,11 @@ describe.skipIf(!url)(
           orgId: ORG_A,
           role: 'clinician',
           tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
-          createdBy: CLIN_A,
+          createdBy: inviter,
           days: 7,
           auditEvent: audit('x'),
         });
+        if (stopped === 'not_admin') throw new Error('expected an invitation');
         expect(await invites.revoke(ORG_B, stopped.id, audit('x'))).toBe(false);
         expect(await invites.revoke(ORG_A, stopped.id, audit('staff_invitation.revoked'))).toBe(
           true,
@@ -1355,9 +1394,14 @@ describe.skipIf(!url)(
     describe('REQ-011 aggregate counts (consented patients only)', () => {
       it('counts treatments started and reviews on time, only with org_aggregate_reporting', async () => {
         const reporting = new PostgresReportingStore(apiDb);
-        const before = await reporting.monthly(ORG_A, day(0), 12, 7);
+        // Completed months only: seen from next month, this month is the last one.
+        const nextMonth = monthsBack(day(0), -1);
+        const before = await reporting.monthly(ORG_A, nextMonth, 12, 7);
         expect(before).toHaveLength(12);
         expect(before.at(-1)?.month).toBe(`${day(0).slice(0, 7)}-01`);
+        expect((await reporting.monthly(ORG_A, day(0), 12, 7)).at(-1)?.month).not.toBe(
+          `${day(0).slice(0, 7)}-01`,
+        );
         // A consenting patient with a confirmed treatment this month, and one who did not consent.
         const yes = randomUUID();
         const no = randomUUID();
@@ -1391,11 +1435,20 @@ describe.skipIf(!url)(
             auditEvent: audit('x'),
           });
         }
-        const after = await reporting.monthly(ORG_A, day(0), 12, 7);
+        const after = await reporting.monthly(ORG_A, nextMonth, 12, 7);
         expect((after.at(-1)?.episodesStarted ?? 0) - (before.at(-1)?.episodesStarted ?? 0)).toBe(
           1,
         );
-        expect(await reporting.monthly(ORG_B, day(0), 12, 7)).toEqual(
+        // She withdraws later: the month already counted does not change (no differencing).
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+           VALUES ($1, $2, $3, 'org_aggregate_reporting', 'revoked', 1)`,
+          [randomUUID(), yes, ORG_A],
+        );
+        expect((await reporting.monthly(ORG_A, nextMonth, 12, 7)).at(-1)?.episodesStarted).toBe(
+          after.at(-1)?.episodesStarted,
+        );
+        expect(await reporting.monthly(ORG_B, nextMonth, 12, 7)).toEqual(
           before.map((b) => ({ ...b, episodesStarted: 0, reviewsDue: 0, reviewsOnTime: 0 })),
         );
         await expect(reporting.monthly(ORG_A, 'today', 12, 7)).rejects.toThrow(TypeError);

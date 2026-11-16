@@ -5,6 +5,7 @@ import {
   InMemoryConsentStore,
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
+  type MemberChangeOutcome,
   type OrgAdminStore,
   type OrgMember,
   type OrgSettings,
@@ -64,7 +65,12 @@ class FakeOrgAdmin implements OrgAdminStore {
   members() {
     return Promise.resolve(this.rows);
   }
+  force: MemberChangeOutcome | null = null;
   changeMember(c: Parameters<OrgAdminStore['changeMember']>[0]) {
+    if (this.force) return Promise.resolve(this.force);
+    const actor = this.rows.find((r) => r.clinicianId === c.actorId);
+    if (!actor || actor.role !== 'org_admin' || !actor.active)
+      return Promise.resolve('not_admin' as const);
     const m = this.rows.find((r) => r.clinicianId === c.clinicianId);
     if (!m) return Promise.resolve('not_found' as const);
     if (m.role === c.role && m.active === c.active) return Promise.resolve('unchanged' as const);
@@ -215,16 +221,20 @@ describe('REQ-010 managing clinicians', () => {
     });
     expect(own.statusCode).toBe(409);
     expect(own.json<{ type: string }>().type).toContain('org.own_membership');
-    // The last admin is protected (another admin demoting them is refused by the store).
-    orgAdmin.rows = orgAdmin.rows.map((r) =>
-      r.clinicianId === CLIN_ID ? { ...r, role: 'org_admin' } : r,
-    );
-    orgAdmin.rows = orgAdmin.rows.map((r) =>
-      r.clinicianId === ADMIN_ID ? { ...r, active: false } : r,
-    );
+    // The last admin is protected: a concurrent change can leave none, and the store refuses.
+    orgAdmin.force = 'last_admin';
     const last = await call('POST', url, { role: 'clinician', active: true });
     expect(last.statusCode).toBe(409);
     expect(last.json<{ type: string }>().type).toContain('org.last_admin');
+    orgAdmin.force = null;
+    // Removed while the request was in flight: the store re-checks the acting admin.
+    orgAdmin.rows = orgAdmin.rows.map((r) =>
+      r.clinicianId === ADMIN_ID ? { ...r, active: false } : r,
+    );
+    expect((await call('POST', url, { role: 'clinician', active: false })).statusCode).toBe(403);
+    orgAdmin.rows = orgAdmin.rows.map((r) =>
+      r.clinicianId === ADMIN_ID ? { ...r, active: true } : r,
+    );
     expect(
       (
         await call('POST', `/v1/org/clinicians/${randomUUID()}`, {

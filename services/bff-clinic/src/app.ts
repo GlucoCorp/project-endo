@@ -57,6 +57,26 @@ export const PORTAL_PATHS = [
  */
 export const JOIN_COOKIE = '__Host-endo_join';
 
+/** Invitation hashes per sign-in attempt (its `state`), for as long as an attempt lives. */
+export class PendingJoins {
+  readonly #m = new Map<string, { hash: string; at: number }>();
+  readonly #now: () => number;
+  constructor(now: () => number) {
+    this.#now = now;
+  }
+  add(state: string, hash: string): void {
+    const t = this.#now();
+    for (const [k, v] of this.#m) if (t - v.at > TRANSACTION_TTL_MS) this.#m.delete(k);
+    if (this.#m.size >= 10_000) return; // bounded: an attempt without a join still signs in
+    this.#m.set(state, { hash, at: t });
+  }
+  take(state: string): string | null {
+    const v = this.#m.get(state);
+    this.#m.delete(state);
+    return v && this.#now() - v.at <= TRANSACTION_TTL_MS ? v.hash : null;
+  }
+}
+
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
   | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' | 'join' }
@@ -149,6 +169,7 @@ function refuse(): never {
  * reach the browser; it holds only HttpOnly cookies.
  */
 export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstance> {
+  const joins = new PendingJoins(() => deps.now().getTime());
   const app = Fastify({
     logger: loggerOptions('bff-clinic', deps.logLevel, deps.logStream),
     bodyLimit: 16 * 1024,
@@ -305,9 +326,15 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       // One binding per browser, shared by its tabs; each attempt has its own state.
       const binding = readCookie(request.headers.cookie, OIDC_COOKIE) ?? newBinding();
       const tx = deps.transactions.create(binding);
-      return reply
-        .header('set-cookie', oidcCookie(binding, TRANSACTION_TTL_MS / 1000))
-        .redirect(authorizationUrl(deps.oidc, tx), 302);
+      // REQ-010: an invitation this browser brought belongs to THIS sign-in attempt only. Moved
+      // from the cookie into server-side state keyed by the attempt, and the cookie is cleared.
+      const join = readCookie(request.headers.cookie, JOIN_COOKIE);
+      const cookies = [oidcCookie(binding, TRANSACTION_TTL_MS / 1000)];
+      if (join) {
+        if (/^[0-9a-f]{64}$/.test(join)) joins.add(tx.state, join);
+        cookies.push(`${JOIN_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`);
+      }
+      return reply.header('set-cookie', cookies).redirect(authorizationUrl(deps.oidc, tx), 302);
     },
   );
 
@@ -352,9 +379,8 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         if (!personId) refuse();
         // REQ-010: a staff invitation this browser brought is claimed for the person who signed
         // in, before memberships are read. A link that cannot be used changes nothing.
-        const join = readCookie(request.headers.cookie, JOIN_COOKIE);
-        if (join && /^[0-9a-f]{64}$/.test(join) && deps.resolver.claimStaff)
-          await deps.resolver.claimStaff(join, personId);
+        const join = joins.take(tx.state);
+        if (join && deps.resolver.claimStaff) await deps.resolver.claimStaff(join, personId);
         const memberships = await deps.resolver.memberships(personId);
         if (memberships.length === 0) refuse();
         let token = await deps.sessions.create({
@@ -383,10 +409,7 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         // A same-origin page completes the navigation, so the Strict session cookie is sent on
         // the next request (the callback itself arrives cross-site).
         return await reply
-          .header('set-cookie', [
-            sessionCookie(token),
-            `${JOIN_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`,
-          ])
+          .header('set-cookie', sessionCookie(token))
           .type('text/html; charset=utf-8')
           .send(
             '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=/">' +

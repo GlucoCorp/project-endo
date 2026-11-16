@@ -277,3 +277,25 @@ describe('activation respects expiry and background requests (Codex review, slic
     expect(await s.resolve(next ?? '', { touch: false })).toBeNull();
   });
 });
+
+describe('REQ-010 invitations pending per sign-in attempt', () => {
+  it('gives each attempt its own, once, and forgets them when the attempt would expire', async () => {
+    const { PendingJoins } = await import('./app.ts');
+    let t = 0;
+    const joins = new PendingJoins(() => t);
+    joins.add('s1', 'a'.repeat(64));
+    expect(joins.take('s2')).toBeNull();
+    expect(joins.take('s1')).toBe('a'.repeat(64));
+    expect(joins.take('s1')).toBeNull();
+    joins.add('s3', 'b'.repeat(64));
+    t += TRANSACTION_TTL_MS + 1;
+    expect(joins.take('s3')).toBeNull();
+    // Old entries are pruned when new ones arrive; the map stays bounded.
+    joins.add('old', 'c'.repeat(64));
+    t += TRANSACTION_TTL_MS + 1;
+    for (let i = 0; i < 10_001; i += 1) joins.add(`s${String(i)}`, 'd'.repeat(64));
+    expect(joins.take('old')).toBeNull();
+    expect(joins.take('s10000')).toBeNull(); // over the bound: not kept
+    expect(joins.take('s0')).toBe('d'.repeat(64));
+  });
+});
