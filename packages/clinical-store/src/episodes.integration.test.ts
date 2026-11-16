@@ -1232,9 +1232,15 @@ describe.skipIf(!url)(
           expect.objectContaining({ clinicianId: CLIN_A }),
         );
         // Deactivate and reactivate a clinician.
-        const change = (clinicianId: string, role: 'clinician' | 'org_admin', active: boolean) =>
+        const change = (
+          clinicianId: string,
+          role: 'clinician' | 'org_admin',
+          active: boolean,
+          actorId = adminId,
+        ) =>
           orgAdmin.changeMember({
             orgId: ORG_A,
+            actorId,
             clinicianId,
             role,
             active,
@@ -1244,18 +1250,32 @@ describe.skipIf(!url)(
         expect(await change(CLIN_A, 'clinician', false)).toBe('unchanged');
         expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
         expect(await change(randomUUID(), 'clinician', true)).toBe('not_found');
+        // Someone who is not an active admin cannot change anything (checked inside the write).
+        expect(await change(CLIN_A, 'org_admin', true, CLIN_A)).toBe('not_admin');
         // The last active admin cannot be removed or demoted...
-        expect(await change(adminId, 'org_admin', false)).toBe('last_admin');
-        expect(await change(adminId, 'clinician', true)).toBe('last_admin');
+        expect(await change(adminId, 'org_admin', false, adminId)).toBe('last_admin');
         // ...but can once there is another.
         expect(await change(CLIN_A, 'org_admin', true)).toBe('changed');
-        expect(await change(adminId, 'clinician', true)).toBe('changed');
-        expect(await change(CLIN_A, 'clinician', true)).toBe('last_admin');
+        // Two admins removing each other at the same time: never both (one waits for the other).
+        const both = await Promise.all([
+          change(adminId, 'clinician', true, CLIN_A),
+          change(CLIN_A, 'clinician', true, adminId),
+        ]);
+        expect(both.filter((r) => r === 'changed')).toHaveLength(1);
+        const admins = await admin.query<{ n: string }>(
+          `SELECT count(*) AS n FROM clinician WHERE org_id = $1 AND role = 'org_admin' AND active`,
+          [ORG_A],
+        );
+        expect(Number(admins.rows[0]?.n)).toBeGreaterThanOrEqual(1);
         // Any other database error is passed on, never mistaken for a refusal.
-        await expect(change('not-a-uuid', 'clinician', true)).rejects.toThrow();
-        // Leave CLIN_A as it was for other tests.
-        expect(await change(adminId, 'org_admin', true)).toBe('changed');
-        expect(await change(CLIN_A, 'clinician', true)).toBe('changed');
+        const stillAdmin = both[0] === 'changed' ? CLIN_A : adminId;
+        await expect(change('not-a-uuid', 'clinician', true, stillAdmin)).rejects.toThrow();
+        // Leave CLIN_A a clinician and adminId an admin, as other tests expect.
+        if (stillAdmin === CLIN_A)
+          expect(await change(adminId, 'org_admin', true, CLIN_A)).toBe('changed');
+        expect(['changed', 'unchanged']).toContain(
+          await change(CLIN_A, 'clinician', true, adminId),
+        );
         // The API role cannot change anything else about a member.
         await expect(
           asApi((c) =>
