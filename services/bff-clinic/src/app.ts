@@ -156,6 +156,8 @@ export interface ClinicBffDeps {
   readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
   /** SMART App Launch (M7, spec 16.2): allowlisted record systems. No launch routes without. */
   readonly smartIssuers?: readonly SmartIssuer[];
+  /** Launch attempts held at once (tests lower it). */
+  readonly smartMaxPending?: number;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -587,6 +589,7 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       signer: deps.enrolment.signer,
       fetch: deps.enrolment.fetch,
       now: () => deps.now().getTime(),
+      ...(deps.smartMaxPending ? { maxPending: deps.smartMaxPending } : {}),
     });
   if (deps.appShell)
     registerAppShell(app, deps.appShell, {

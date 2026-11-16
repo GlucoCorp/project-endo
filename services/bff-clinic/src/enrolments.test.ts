@@ -34,6 +34,7 @@ async function setup(
   api: (req: Request) => Response | Promise<Response>,
   confirmsPerMinute = 10,
   smartIssuers?: { iss: string; clientId: string }[],
+  smartMaxPending?: number,
 ) {
   const keys = await generateServiceKeyPair();
   const seen: Request[] = [];
@@ -55,6 +56,7 @@ async function setup(
     now: () => new Date(),
     portalOrigin: ORIGIN,
     ...(smartIssuers ? { smartIssuers } : {}),
+    ...(smartMaxPending ? { smartMaxPending } : {}),
     enrolment: {
       apiBaseUrl: 'http://api.internal',
       signer: new ServiceTokenSigner(keys.privateJwk, 'bff-clinic'),
@@ -529,6 +531,18 @@ describe('M7 SMART App Launch: what goes wrong', () => {
       [{ iss: ISS, clientId: 'c' }],
     );
     expect((await launchAndReturn(noPatient.app)).status).toBe(400);
+  });
+
+  it('refuses new launches while too many are pending', async () => {
+    const full = await setup(
+      () => discovery('https://ehr.test/authorize'),
+      10,
+      [{ iss: ISS, clientId: 'c' }],
+      1,
+    );
+    const url = `/smart/launch?iss=${encodeURIComponent(ISS)}&launch=L`;
+    expect((await full.app.inject({ url })).statusCode).toBe(302);
+    expect((await full.app.inject({ url })).statusCode).toBe(400);
   });
 
   it('answers 403 when the API refuses and 502 when it cannot be reached', async () => {

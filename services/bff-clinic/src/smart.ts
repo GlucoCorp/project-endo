@@ -16,6 +16,8 @@ export interface SmartDeps {
   readonly signer: ServiceTokenSigner;
   readonly fetch: typeof fetch;
   readonly now: () => number;
+  /** Launch attempts held at once (default 10 000); a full store refuses new launches. */
+  readonly maxPending?: number;
 }
 
 /** Binds a launch to the browser that started it (Lax: the record system returns cross-site). */
@@ -74,7 +76,7 @@ interface Attempt {
  * Only allowlisted issuers are contacted (SSRF, spec 12.3).
  */
 export function registerSmartRoutes(app: FastifyInstance, deps: SmartDeps): void {
-  const attempts = new Expiring<Attempt>(deps.now);
+  const attempts = new Expiring<Attempt>(deps.now, deps.maxPending);
   const contexts = new Expiring<{ linkHash: string }>(deps.now);
   const redirectUri = `${deps.portalOrigin}/smart/callback`;
   const fail = (): never => {
