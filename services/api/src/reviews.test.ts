@@ -321,6 +321,23 @@ describe('REQ-005 the review queue and review', () => {
   });
 });
 
+describe('spec 9.1 malformed ids in a path', () => {
+  it('are refused with 400 before authorisation and audit, never a 500', async () => {
+    const { call, audited } = await setup();
+    const before = (await audited()).length;
+    const res = await call('GET', '/v1/patients/not-a-uuid/episodes/also-not/review');
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ type: string }>().type).toContain('request.invalid_id');
+    expect((await audited()).length).toBe(before);
+    // A UUID of another variant (fourth group not 8, 9, a or b) is refused the same way.
+    const odd = await call(
+      'GET',
+      `/v1/patients/01900000-0000-7000-0000-0000000000a1/episodes/${EPISODE}/review`,
+    );
+    expect(odd.statusCode).toBe(400);
+  });
+});
+
 describe('REQ-005 decisions', () => {
   it('continue opens the same treatment from the review date; the note is encrypted, then shown', async () => {
     const { call, reviews, logs } = await setup();
