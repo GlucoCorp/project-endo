@@ -60,6 +60,19 @@ function checkRealm(realm) {
     if (!cond) v.push(msg);
   };
 
+  // Keycloak stores most realm strings in varchar(255) columns: a longer one makes the import
+  // fail and Keycloak refuse to start.
+  const long = [];
+  const walk = (o, path) => {
+    if (typeof o === 'string') {
+      if (o.length > 255) long.push(path);
+    } else if (Array.isArray(o)) o.forEach((x, i) => walk(x, `${path}[${i}]`));
+    else if (o && typeof o === 'object')
+      for (const [k, x] of Object.entries(o)) walk(x, `${path}.${k}`);
+  };
+  walk(realm, '');
+  expect(long.length === 0, `strings longer than 255 characters: ${long.join(', ')}`);
+
   // Realm switches.
   expect(realm.registrationAllowed === false, 'self-registration must be off (enrolment only)');
   expect(realm.resetPasswordAllowed === false, 'password reset must be off (no passwords)');
@@ -314,6 +327,10 @@ function checkRealm(realm) {
 
 // Negative tests: each weakening on its own must be caught.
 const MUTATIONS = [
+  [
+    'a description longer than 255 characters',
+    (r) => (r.authenticationFlows[0].description = 'x'.repeat(256)),
+  ],
   ['self-registration', (r) => (r.registrationAllowed = true)],
   ['identity logging', (r) => (r.eventsListeners = ['jboss-logging'])],
   ['unreviewed broker', (r) => (r.identityProviders = [{ alias: 'hospital' }])],

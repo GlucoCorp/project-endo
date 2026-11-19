@@ -4,7 +4,12 @@ import {
   WorkloadTokenVerifier,
   generateServiceKeyPair,
 } from '@endo/service-kit';
-import { HttpKeycloakAdmin, KEYCLOAK_ADMIN_SCOPE, KEYCLOAK_EMAIL_SCOPE } from './keycloak.ts';
+import {
+  HttpKeycloakAdmin,
+  KEYCLOAK_ADMIN_SCOPE,
+  KEYCLOAK_EMAIL_SCOPE,
+  KEYCLOAK_ERASE_SCOPE,
+} from './keycloak.ts';
 
 const SUBJECT = '01900000-0000-7000-8000-0000000000d1';
 const TX = '01900000-0000-7000-8000-0000000000f1';
@@ -23,7 +28,10 @@ async function admin(respond: (req: Request) => Response | Promise<Response>) {
     fetch: fake,
   });
   const verifier = new WorkloadTokenVerifier('keycloak', {
-    identity: { publicJwk: keys.publicJwk, scopes: [KEYCLOAK_ADMIN_SCOPE, KEYCLOAK_EMAIL_SCOPE] },
+    identity: {
+      publicJwk: keys.publicJwk,
+      scopes: [KEYCLOAK_ADMIN_SCOPE, KEYCLOAK_EMAIL_SCOPE, KEYCLOAK_ERASE_SCOPE],
+    },
   });
   return { a, seen, verifier };
 }
@@ -80,6 +88,24 @@ describe('REQ-001 ADR-0021 section 10 identity -> Keycloak finalise client', () 
     ]) {
       const { a: other } = await admin(r);
       expect(await other.send('a@example.test', '123456', 'sign-in')).toBe(false);
+    }
+  });
+
+  it('REQ-009 erases her account with its own scope, naming only her subject', async () => {
+    const { a, seen, verifier } = await admin(() => json(200, { erased: true }));
+    expect(await a.eraseUser(SUBJECT)).toBe(true);
+    const req = seen[0]!;
+    expect(req.url).toBe('http://keycloak.test/realms/endo/endo-enrolment/erase');
+    const caller = await verifier.verifyHeader(req.headers.get('authorization') ?? undefined);
+    expect(caller.scopes).toEqual([KEYCLOAK_ERASE_SCOPE]);
+    expect(await req.json()).toEqual({ subject: SUBJECT });
+    for (const r of [
+      () => json(409, {}),
+      () => json(200, { erased: 'yes' }),
+      () => Promise.reject(new TypeError('down')),
+    ]) {
+      const { a: other } = await admin(r);
+      expect(await other.eraseUser(SUBJECT)).toBe(false);
     }
   });
 });

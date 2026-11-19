@@ -194,6 +194,19 @@ resource "kubernetes_job_v1" "openbao_transit" {
               # Keys may never be exported or deleted (crypto-shredding is per patient, spec 11.2).
               bao write "transit/keys/$k/config" deletion_allowed=false exportable=false >/dev/null
             done
+            # Spec 11.2: one policy and token per KMS client, limited to minting and unwrapping data
+            # keys under its own Transit key (no default policy: not even token self-lookup).
+            # Custom token ids are the dev-mode delivery path (OpenBao warns they are hashed with
+            # SHA-1); server mode will use Kubernetes auth instead (spec Section 24).
+            for entry in $KMS_CLIENTS; do
+              svc="$${entry%%=*}"; key="$${entry#*=}"
+              {
+                echo 'path "transit/datakey/plaintext/'"$key"'" { capabilities = ["update"] }'
+                echo 'path "transit/decrypt/'"$key"'" { capabilities = ["update"] }'
+              } | bao policy write "endo-$svc" - >/dev/null
+              tok="$(cat "/tokens/$svc/token")"
+              bao token lookup "$tok" >/dev/null 2>&1 || bao token create -id="$tok" -policy="endo-$svc" -no-default-policy -orphan -ttl=768h -display-name="$svc" >/dev/null 2>&1
+            done
           SH
           ]
           env {
@@ -213,6 +226,10 @@ resource "kubernetes_job_v1" "openbao_transit" {
             name  = "HOME"
             value = "/tmp"
           }
+          env {
+            name  = "KMS_CLIENTS"
+            value = join(" ", [for svc, key in local.kms_keys : "${svc}=${key}"])
+          }
           resources {
             requests = { cpu = "10m", memory = "16Mi" }
             limits   = { memory = "64Mi" }
@@ -229,10 +246,27 @@ resource "kubernetes_job_v1" "openbao_transit" {
             name       = "tmp"
             mount_path = "/tmp"
           }
+          dynamic "volume_mount" {
+            for_each = local.kms_keys
+            content {
+              name       = "token-${volume_mount.key}"
+              mount_path = "/tokens/${volume_mount.key}"
+              read_only  = true
+            }
+          }
         }
         volume {
           name = "tmp"
           empty_dir {}
+        }
+        dynamic "volume" {
+          for_each = local.kms_keys
+          content {
+            name = "token-${volume.key}"
+            secret {
+              secret_name = kubernetes_secret_v1.openbao_app_token[volume.key].metadata[0].name
+            }
+          }
         }
       }
     }
