@@ -4,6 +4,7 @@ import { testDatabaseUrl } from '@endo/db';
 import { SessionTable } from '@endo/session-store';
 import { createTestSessionDb, type TestSessionDb } from '@endo/session-store/testing';
 import { PostgresPatientSessions } from './pg-sessions.ts';
+import type { ConsentSessions } from './sessions.ts';
 
 const url = testDatabaseUrl();
 const CLAIMS = {
@@ -40,6 +41,19 @@ describe.skipIf(!url)('spec 10.1, ADR-0033 durable patient sessions', () => {
     expect(await sessions.setAppLock('x'.repeat(43), true)).toBe(false);
     await sessions.revoke(token);
     expect(await sessions.resolve(token)).toBeNull();
+  });
+
+  it('RISK-S02 sign-out ends either kind of session and holds no Keycloak token (Section 24 item 46)', async () => {
+    // Through the interface, as the routes call it: the Keycloak token is offered and not kept.
+    const offered: ConsentSessions = sessions;
+    const mine = await offered.createPatient(CLAIMS, false, 'kc-refresh');
+    const pending = await offered.createConsentPending('tx-end', 'kc', 'kc-refresh');
+    const rows = await t.admin.query<{ doc: unknown }>('SELECT doc FROM browser_session');
+    expect(JSON.stringify(rows.rows)).not.toContain('kc-refresh');
+    expect(await sessions.end(mine)).toBeNull();
+    expect(await sessions.end(pending)).toBeNull();
+    expect(await sessions.resolve(mine)).toBeNull();
+    expect(await sessions.consentPending(pending)).toBeNull();
   });
 
   it('locks at once on request, only when app lock is on', async () => {

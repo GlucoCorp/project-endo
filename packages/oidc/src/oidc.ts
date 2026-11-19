@@ -198,6 +198,39 @@ export async function refreshSession(
   return { refreshToken: body.refresh_token };
 }
 
+/**
+ * Ends the Keycloak session behind a refresh token, from the server (Keycloak's logout endpoint
+ * called with the refresh token and client authentication). Used where sending the browser to
+ * Keycloak would leave a page behind on a shared phone (patient sign-out, RISK-S02). True when
+ * Keycloak confirmed; false otherwise. Never throws: the caller has already ended its own session.
+ */
+export async function endKeycloakSession(
+  config: OidcConfig,
+  refreshToken: string,
+  fetchImpl: typeof fetch,
+): Promise<boolean> {
+  try {
+    const res = await fetchImpl(config.endSessionEndpoint, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/x-www-form-urlencoded',
+        authorization: basicAuth(config),
+      },
+      body: new URLSearchParams({ refresh_token: refreshToken }).toString(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(5_000),
+    });
+    return res.status === 204 || res.status === 200;
+  } catch {
+    return false;
+  }
+}
+
+const basicAuth = (config: OidcConfig) =>
+  `Basic ${Buffer.from(
+    `${encodeURIComponent(config.clientId)}:${encodeURIComponent(config.clientSecret)}`,
+  ).toString('base64')}`;
+
 /** A token-endpoint call with client authentication (client_secret_basic). */
 function tokenRequest(
   config: OidcConfig,
@@ -208,9 +241,7 @@ function tokenRequest(
     method: 'POST',
     headers: {
       'content-type': 'application/x-www-form-urlencoded',
-      authorization: `Basic ${Buffer.from(
-        `${encodeURIComponent(config.clientId)}:${encodeURIComponent(config.clientSecret)}`,
-      ).toString('base64')}`,
+      authorization: basicAuth(config),
     },
     body: new URLSearchParams(params).toString(),
     redirect: 'error',

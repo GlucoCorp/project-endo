@@ -60,6 +60,16 @@ export class PostgresPatientSessions implements SessionResolver, ConsentSessions
     return this.#table.remove(token);
   }
 
+  /**
+   * Ends either kind of session. The durable store keeps no Keycloak refresh token: holding one
+   * needs it sealed under a KMS key this BFF does not have yet (Section 24 item 46), so sign-out
+   * here ends her app session and the Keycloak session runs out on its own.
+   */
+  async end(token: string): Promise<string | null> {
+    await this.#table.remove(token);
+    return null;
+  }
+
   async setAppLock(token: string, enabled: boolean): Promise<boolean> {
     const s = await this.resolve(token);
     if (!s || s.locked) return false;

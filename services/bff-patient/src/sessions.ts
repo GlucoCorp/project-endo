@@ -56,7 +56,7 @@ export interface SessionResolver {
 /** What enrolment needs from the session store (ADR-0021 section 12). */
 export interface ConsentSessions {
   /** A fresh token for a consent-pending session. */
-  createConsentPending(transactionId: string, subject: string): Promise<string>;
+  createConsentPending(transactionId: string, subject: string, keycloak?: string): Promise<string>;
   consentPending(token: string): Promise<ConsentPendingSession | null>;
   /**
    * Atomically ends the consent-pending session and creates a patient session with a new token.
@@ -69,13 +69,27 @@ export interface ConsentSessions {
     claims: ServiceClaims,
   ): Promise<string | null>;
   revoke(token: string): Promise<void>;
+  /**
+   * Ends the session (either kind) and hands back the Keycloak refresh token it held, so the
+   * caller can end the Keycloak session too. Null when there was none.
+   */
+  end(token: string): Promise<string | null>;
   /** A fresh token for a patient session (a returning patient's sign-in). */
-  createPatient(claims: ServiceClaims, appLock?: boolean): Promise<string>;
+  createPatient(claims: ServiceClaims, appLock?: boolean, keycloak?: string): Promise<string>;
 }
 
+/**
+ * `keycloak` is the Keycloak refresh token from her sign-in. It stays on the entry, beside the
+ * session and never in it, so no route sees it; only sign-out reads it (to end the Keycloak
+ * session, RISK-S02). A rotation carries it to the patient session.
+ */
 type Entry =
-  | { readonly kind: 'patient'; readonly session: Session }
-  | { readonly kind: 'consent-pending'; readonly session: ConsentPendingSession };
+  | { readonly kind: 'patient'; readonly session: Session; readonly keycloak?: string }
+  | {
+      readonly kind: 'consent-pending';
+      readonly session: ConsentPendingSession;
+      readonly keycloak?: string;
+    };
 
 const random = () => randomBytes(32).toString('base64url');
 
@@ -96,7 +110,12 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
   }
 
   /** Returns an opaque 256-bit token for the cookie. */
-  create(claims: ServiceClaims, appLock = false, authenticatedAt?: number): string {
+  create(
+    claims: ServiceClaims,
+    appLock = false,
+    authenticatedAt?: number,
+    keycloak?: string,
+  ): string {
     const token = random();
     const t = this.#now();
     this.#sessions.set(token, {
@@ -109,12 +128,13 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
         appLock,
         locked: false,
       },
+      ...(keycloak === undefined ? {} : { keycloak }),
     });
     return token;
   }
 
-  createPatient(claims: ServiceClaims, appLock = false): Promise<string> {
-    return Promise.resolve(this.create(claims, appLock));
+  createPatient(claims: ServiceClaims, appLock = false, keycloak?: string): Promise<string> {
+    return Promise.resolve(this.create(claims, appLock, undefined, keycloak));
   }
 
   setAppLock(token: string, enabled: boolean): Promise<boolean> {
@@ -130,12 +150,13 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
     return Promise.resolve();
   }
 
-  createConsentPending(transactionId: string, subject: string): Promise<string> {
+  createConsentPending(transactionId: string, subject: string, keycloak?: string): Promise<string> {
     const token = random();
     const t = this.#now();
     this.#sessions.set(token, {
       kind: 'consent-pending',
       session: { transactionId, subject, createdAt: t, lastSeenAt: t },
+      ...(keycloak === undefined ? {} : { keycloak }),
     });
     return Promise.resolve(token);
   }
@@ -166,12 +187,19 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
     // Synchronous between the check and the swap: no other caller can rotate it twice.
     this.#sessions.delete(token);
     // Her passkey was used when the consent-pending session was made, not now.
-    return Promise.resolve(this.create(claims, false, e.session.createdAt));
+    return Promise.resolve(this.create(claims, false, e.session.createdAt, e.keycloak));
   }
 
   revoke(token: string): Promise<void> {
     this.#sessions.delete(token);
     return Promise.resolve();
+  }
+
+  end(token: string): Promise<string | null> {
+    // Expired or not, the Keycloak session behind it should end too.
+    const e = this.#sessions.get(token);
+    this.#sessions.delete(token);
+    return Promise.resolve(e?.keycloak ?? null);
   }
 
   /** The entry if it has not expired; an expired one is removed. Touches it on use. */
