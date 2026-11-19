@@ -82,6 +82,9 @@ export function HomePage() {
           <p>
             <a href="/history">{t('home.history')}</a>
           </p>
+          <p>
+            <a href="/my-data">{t('home.data')}</a>
+          </p>
           <p className={styles['muted']}>
             {t(state.appLock ? 'home.app-lock-on' : 'home.app-lock-off')}
           </p>

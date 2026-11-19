@@ -155,7 +155,7 @@ class FakeEpisodes implements EpisodeStore {
   }
 }
 
-async function setup(opts: { deployed?: boolean } = {}) {
+async function setup(opts: { deployed?: boolean; orgDefault?: number } = {}) {
   const clinicKeys = await generateServiceKeyPair();
   const patientKeys = await generateServiceKeyPair();
   const audit = new InMemoryAuditStore();
@@ -197,6 +197,9 @@ async function setup(opts: { deployed?: boolean } = {}) {
       content,
       cipherFor: () => new FieldCipher(kms, keys),
       deployed: opts.deployed ?? false,
+      ...(opts.orgDefault
+        ? { defaultIntervalWeeks: () => Promise.resolve(opts.orgDefault ?? null) }
+        : {}),
     },
   });
   const clinic = new ServiceTokenSigner(clinicKeys.privateJwk, 'bff-clinic');
@@ -268,6 +271,11 @@ describe('REQ-002 the clinician drafts, she confirms with her goal', () => {
     // Patients cannot use either.
     expect((await call('GET', '/v1/patients', 'patient')).statusCode).toBe(403);
     expect((await call('GET', '/v1/catalogue', 'patient')).statusCode).toBe(403);
+  });
+
+  it('REQ-010 uses the organisation review interval default when the draft names none', async () => {
+    const { draft } = await setup({ orgDefault: 8 });
+    expect((await draft(today())).json()).toMatchObject({ review_interval_weeks: 8 });
   });
 
   it('drafts once per Idempotency-Key, for a consented patient only', async () => {

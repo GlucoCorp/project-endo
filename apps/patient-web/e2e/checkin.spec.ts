@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
@@ -82,6 +83,15 @@ const episode = () => ({
   check_ins: api.done.map((w) => ({ week_index: w, is_late: false })),
   open_weeks: api.openWeeks.filter((w) => !api.done.includes(w)),
 });
+const rights = { deletion: 'none' as 'none' | 'scheduled' | 'cancelled' };
+const deletion = () =>
+  rights.deletion === 'none'
+    ? { status: 'none' }
+    : {
+        status: rights.deletion,
+        requested_at: '2026-11-15T10:00:00Z',
+        due_at: '2026-11-29T10:00:00Z',
+      };
 function fakeApi(url: URL, init: RequestInit): Response {
   const reply = (status: number, b: unknown) =>
     new Response(JSON.stringify(b), { status, headers: { 'content-type': 'application/json' } });
@@ -143,6 +153,21 @@ function fakeApi(url: URL, init: RequestInit): Response {
     return body['token_hash'] === shared.hash
       ? reply(200, { expires_at: '2026-11-22T00:00:00Z', treatments: [card] })
       : reply(404, {});
+  // M5 (REQ-009): deletion and export.
+  if (url.pathname === '/v1/me/deletion' && init.method === 'POST') {
+    rights.deletion = 'scheduled';
+    return reply(202, deletion());
+  }
+  if (url.pathname === '/v1/me/deletion') return reply(200, deletion());
+  if (url.pathname === '/v1/me/deletion/cancel') {
+    rights.deletion = 'cancelled';
+    return reply(200, deletion());
+  }
+  if (url.pathname === '/v1/me/export')
+    return new Response(JSON.stringify({ resourceType: 'Bundle', type: 'collection', entry: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/fhir+json' },
+    });
   if (url.pathname === '/v1/me/checkin-content') return reply(200, content);
   if (url.pathname.endsWith('/confirm')) {
     api.status = 'active';
@@ -358,5 +383,35 @@ test('REQ-008 her history, a share link the receiver opens, stopping it, and her
 
   await page.getByRole('button', { name: 'Stop sharing' }).click();
   await expect(page.getByText('A link works until 2026-11-22.')).toHaveCount(0);
+  expect(violations).toEqual([]);
+});
+
+test('REQ-009 she downloads her record, asks for deletion and changes her mind', async ({
+  context,
+  page,
+}) => {
+  await signIn(context, page);
+  await page.goto(origin);
+  await page.getByRole('link', { name: 'Your data: download or delete' }).click();
+  await expect(page.getByRole('heading', { name: 'Your data' })).toBeVisible();
+
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download my record' }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe('my-endo-record.json');
+  const path = await file.path();
+  expect(JSON.parse(readFileSync(path, 'utf8'))).toMatchObject({ resourceType: 'Bundle' });
+  await expect(page.getByText('Your record has downloaded.', { exact: false })).toBeVisible();
+
+  const remove = page.getByRole('button', { name: 'Delete my account' });
+  await expect(remove).toBeDisabled();
+  await page.getByLabel('I understand my record will be deleted and cannot be recovered.').check();
+  await remove.click();
+  await expect(
+    page.getByText('Your account will be deleted on 2026-11-29.', { exact: false }),
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Keep my account' }).click();
+  await expect(page.getByText('Your account is kept.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Delete my account' })).toBeDisabled();
   expect(violations).toEqual([]);
 });

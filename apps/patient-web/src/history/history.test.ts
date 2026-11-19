@@ -43,6 +43,7 @@ describe('REQ-008 history and sharing logic', () => {
     const { f, calls } = fake([
       json(201, { token: TOKEN, expires_at: '2026-11-22T00:00:00Z' }),
       json(409),
+      json(401, { type: 'https://errors.endo/authn.reauth_required' }),
       json(500),
       json(201, {}),
       new TypeError('x'),
@@ -54,6 +55,7 @@ describe('REQ-008 history and sharing logic', () => {
     expect(new Headers(calls[0]?.init?.headers).get('idempotency-key')).toBe('k');
     expect(JSON.parse(calls[0]?.init?.body as string)).toEqual({ days: 7 });
     expect(await createShareLink(f, 7, 'k', 'x')).toBe('already');
+    expect(await createShareLink(f, 7, 'k', 'x')).toBe('reauth');
     expect(await createShareLink(f, 7, 'k', 'x')).toBe('error');
     expect(await createShareLink(f, 7, 'k', 'x')).toBe('error');
     expect(await createShareLink(f, 7, 'k', 'x')).toBe('error');

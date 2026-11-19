@@ -17,6 +17,13 @@
 \ir login.sql
 GRANT CONNECT ON DATABASE clinical TO clinical_api;
 
+-- The jobs process (ADR-0029), through endo_clinical_app with its own login.
+\set role clinical_jobs
+\set group endo_clinical_app
+\getenv pw CLINICAL_JOBS_PASSWORD
+\ir login.sql
+GRANT CONNECT ON DATABASE clinical TO clinical_jobs;
+
 -- The audit outbox relay, through endo_clinical_relay.
 \set role clinical_relay
 \set group endo_clinical_relay
