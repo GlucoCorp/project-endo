@@ -23,20 +23,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  keycloak-extension:
-    # ADR-0025: the Java extension, built and tested in its digest-pinned Maven container, baked
-    # into the pinned Keycloak base. Strict checksums; Maven Central only.
-    name: keycloak extension (build, test, image)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build, test and bake the extension
-        run: docker build -t endo-keycloak:ci services/keycloak-extension
   checks:
     name: typecheck, lint, tests, coverage, licences
     runs-on: ubuntu-24.04

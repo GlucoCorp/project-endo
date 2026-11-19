@@ -16,6 +16,9 @@ Needs Docker Desktop, plus `k3d`, `kubectl` and OpenTofu (`tofu`).
 
 ```sh
 k3d cluster create --config infra/k3d/endo-local.yaml
+# Keycloak with the Endo extension (ADR-0025); the realm needs its providers:
+docker build -t endo-keycloak:dev services/keycloak-extension
+k3d image import -c endo-local endo-keycloak:dev
 tofu -chdir=infra/envs/local init
 tofu -chdir=infra/envs/local apply           # first Keycloak start takes 3–7 minutes
 

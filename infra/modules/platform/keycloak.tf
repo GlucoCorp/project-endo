@@ -8,6 +8,17 @@ locals {
   keycloak_public_url = var.profile == "local" ? "http://localhost:18080" : "https://${var.keycloak_hostname}"
 }
 
+# The realm needs the Endo extension's providers, so only the endo-keycloak image works; outside the
+# local profile it must be pinned by digest (ADR-0014, ADR-0025).
+resource "terraform_data" "keycloak_image_guard" {
+  lifecycle {
+    precondition {
+      condition     = var.profile == "local" || can(regex("endo-keycloak@sha256:[a-f0-9]{64}$", var.images.keycloak))
+      error_message = "Outside the local profile, images.keycloak must be the endo-keycloak image pinned by digest."
+    }
+  }
+}
+
 resource "random_password" "keycloak_admin" {
   length  = 32
   special = false

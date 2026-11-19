@@ -25,3 +25,7 @@ REQ-009 asks for account deletion with a 14-day grace period, then hard deletion
 - The identity step shreds her identity key and clears her sign-in subject, then purges her identity rows (identity migration 0009: person, patient links, email codes, enrolment records; the key tombstone stays). Her Keycloak user and passkey are removed by an operator (runbook) until the jobs process has a scoped Keycloak credential (Section 24 item 38).
 - Backups keep her rows until they expire; the shredded key makes her goal text and notes unreadable there. A restore must replay `patient_key_shredded` and erased requests before serving (M6 runbook).
 - A second deletion after a cancel is a new request with a new 14 days.
+
+## Update 2026-11-16
+
+Her Keycloak account is now removed automatically: before clearing her sign-in subject, the identity service calls the extension's `erase` route (its own scope `keycloak.user.erase`; patient or enrolment accounts only, never staff), which removes the user with her passkeys and sessions. Erasure answers 503 until Keycloak confirms, and the jobs process retries. The operator step in the runbook is gone. Deployed identity services refuse to start without the Keycloak realm URL.
