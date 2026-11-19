@@ -3,8 +3,9 @@ import type { WorkloadTokenSigner } from '@endo/service-kit';
 
 /**
  * The identity service's erasure, then purge: her identity key is shredded and her sign-in
- * subject cleared, then her identity rows are removed (ADR-0029). Her Keycloak user is removed
- * by the operations runbook until the jobs process can do it (Section 24 item 38).
+ * subject cleared, then her identity rows are removed (ADR-0029). Before clearing the subject
+ * the identity service removes her Keycloak account (passkeys, sessions) and answers 503 until
+ * that succeeds, so a later run retries (Section 24 item 38).
  */
 export interface IdentityErasure {
   /** True once her identity record is erased (or was already gone). */

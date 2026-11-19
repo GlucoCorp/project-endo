@@ -35,7 +35,7 @@ import { EnrolmentCodes } from './enrolment/code.ts';
 import type { PatientRouteDeps } from './enrolment/routes.ts';
 import { PostgresEnrolmentStore } from './enrolment/store.ts';
 import { Activator } from './enrolment/activation.ts';
-import { HttpKeycloakAdmin } from './enrolment/keycloak.ts';
+import { HttpKeycloakAdmin, type AccountEraser } from './enrolment/keycloak.ts';
 import { Cleaner } from './enrolment/cleanup.ts';
 import { EmailCodeStore } from './email/store.ts';
 import type { EmailRouteDeps } from './email/routes.ts';
@@ -131,6 +131,7 @@ async function main(): Promise<void> {
   let enrolment: PatientRouteDeps | undefined;
   let onConsented: ((transactionId: string) => void) | undefined;
   let email: EmailRouteDeps | undefined;
+  let accounts: AccountEraser | undefined;
   let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
@@ -198,6 +199,7 @@ async function main(): Promise<void> {
         : null;
       // ADR-0026: confirmation codes go out through Keycloak's sender too.
       if (keycloak) email = { store: new EmailCodeStore(db, kms), sender: keycloak };
+      if (keycloak) accounts = keycloak;
       const activator = new Activator({
         store: enrolment.store,
         clinical: enrolment.clinical,
@@ -277,6 +279,11 @@ async function main(): Promise<void> {
     };
   }
 
+  // REQ-009: erasure must remove her Keycloak account too (fail closed when deployed).
+  if (deployed && !accounts) {
+    throw new Error('IDENTITY_KEYCLOAK_REALM_URL is required in staging and production.');
+  }
+
   const app = await buildIdentity({
     logLevel: config.ENDO_LOG_LEVEL,
     verifier: new WorkloadTokenVerifier('identity', trusted),
@@ -286,6 +293,7 @@ async function main(): Promise<void> {
     ...(enrolment ? { enrolment } : {}),
     ...(onConsented ? { onConsented } : {}),
     ...(email ? { email } : {}),
+    ...(accounts ? { accounts } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
