@@ -439,6 +439,7 @@ const MUTATIONS = [
   ['full scope', (r) => (bff(r, 'bff-patient').fullScopeAllowed = true)],
   ['password grant', (r) => (bff(r, 'bff-patient').directAccessGrantsEnabled = true)],
   ['no PKCE', (r) => delete bff(r, 'bff-patient').attributes['pkce.code.challenge.method']],
+  ['over-long string', (r) => (r.authenticationFlows[0].description = 'x'.repeat(256))],
   ['wildcard redirect', (r) => (bff(r, 'bff-patient').redirectUris = ['http://localhost:3001/*'])],
   ['literal secret', (r) => (bff(r, 'bff-patient').secret = 'hunter2')],
   [
@@ -464,6 +465,35 @@ for (const f of files) {
       failures.push(`${f}: negative test "${name}" was not caught; the checker is broken`);
   }
 }
+// The extension's pages: every message key it uses is defined, so Keycloak never shows a raw
+// key (found by the real-Keycloak tests). Authenticator choices need <id>-display-name/-help-text.
+const EXT = join(ROOT, 'services', 'keycloak-extension', 'src', 'main');
+const messageFile = join(EXT, 'resources', 'theme-resources', 'messages', 'messages_en.properties');
+const messages = new Set(
+  (await readFile(messageFile, 'utf8'))
+    .split('\n')
+    .filter((l) => l.includes('=') && !l.startsWith('#'))
+    .map((l) => l.slice(0, l.indexOf('=')).trim()),
+);
+const sources = [];
+const collect = async (dir) => {
+  for (const e of await readdir(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) await collect(p);
+    else if (/\.(java|ftl)$/.test(e.name)) sources.push(await readFile(p, 'utf8'));
+  }
+};
+await collect(EXT);
+const all = sources.join('\n');
+const used = new Set([...all.matchAll(/"(endo[A-Z][A-Za-z]+)"/g)].map((m) => m[1]));
+// Authenticators shown in "Select login method" (those with a display type).
+for (const m of all.matchAll(/getId\(\)\s*\{\s*return "(endo-email-code)"/g)) {
+  used.add(`${m[1]}-display-name`);
+  used.add(`${m[1]}-help-text`);
+}
+for (const key of used)
+  if (!messages.has(key)) failures.push(`keycloak-extension: message "${key}" is not defined`);
+
 if (failures.length > 0) {
   console.error(failures.join('\n'));
   process.exit(1);
