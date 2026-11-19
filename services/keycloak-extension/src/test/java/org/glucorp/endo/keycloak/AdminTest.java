@@ -70,4 +70,13 @@ class AdminTest {
     assertEquals(EnrolmentAdminResource.Outcome.REFUSED, EnrolmentAdminResource.decideDelete(null, TX));
     assertEquals(EnrolmentAdminResource.Outcome.REFUSED, EnrolmentAdminResource.decideDelete("other", TX));
   }
+
+  @Test
+  void erasesOnlyPatientsAndUsersInEnrolmentNeverStaff() {
+    assertEquals(EnrolmentAdminResource.Outcome.DONE, EnrolmentAdminResource.decideErase(true, null, false));
+    assertEquals(EnrolmentAdminResource.Outcome.DONE, EnrolmentAdminResource.decideErase(false, TX, false));
+    assertEquals(EnrolmentAdminResource.Outcome.REFUSED, EnrolmentAdminResource.decideErase(false, null, false));
+    assertEquals(EnrolmentAdminResource.Outcome.REFUSED, EnrolmentAdminResource.decideErase(true, null, true));
+    assertEquals(EnrolmentAdminResource.Outcome.REFUSED, EnrolmentAdminResource.decideErase(false, TX, true));
+  }
 }

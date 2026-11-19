@@ -16,6 +16,9 @@ Needs Docker Desktop, plus `k3d`, `kubectl` and OpenTofu (`tofu`).
 
 ```sh
 k3d cluster create --config infra/k3d/endo-local.yaml
+# Keycloak with the Endo extension (ADR-0025); the realm needs its providers:
+docker build -t endo-keycloak:dev services/keycloak-extension
+k3d image import -c endo-local endo-keycloak:dev
 tofu -chdir=infra/envs/local init
 tofu -chdir=infra/envs/local apply           # first Keycloak start takes 3–7 minutes
 
@@ -40,6 +43,30 @@ What the local profile enforces (verified):
 - Each database is owned by its own role and closed to PUBLIC. `clinical_owner` cannot connect to `audit`.
 - The API connects as `audit_api` (SELECT and INSERT only). It cannot delete audit rows, and fails closed (500) if the audit database is unreachable.
 - Containers run non-root with all capabilities dropped. Kubernetes Secrets are encrypted at rest.
+
+## Application services (ADR-0034)
+
+Off by default. To run the six services in the cluster (`api`, `jobs`, `identity`, `bff-patient`, `bff-clinic`, `integration`):
+
+```sh
+# 1. Images (one Dockerfile; the BFF images include their web app):
+docker build --build-arg SERVICE=api -t endo-api:dev .
+docker build --build-arg SERVICE=identity -t endo-identity:dev .
+docker build --build-arg SERVICE=bff-patient --build-arg WEB_APP=patient-web -t endo-bff-patient:dev .
+docker build --build-arg SERVICE=bff-clinic --build-arg WEB_APP=clinic-web -t endo-bff-clinic:dev .
+docker build --build-arg SERVICE=integration -t endo-integration:dev .
+k3d image import -c endo-local endo-api:dev endo-identity:dev endo-bff-patient:dev endo-bff-clinic:dev endo-integration:dev
+
+# 2. Keys, straight into the cluster (never into OpenTofu state or a file):
+node tools/app-keys.mjs --namespace endo-platform | kubectl --context k3d-endo-local apply -f -
+
+# 3. Set apps = { enabled = true, images = { api = "endo-api:dev", ... } } on the platform module, then:
+tofu -chdir=infra/envs/local apply
+```
+
+`apply` runs each database's migrations as its owner (a new Job per image), then rolls out the services. Every service gets only the credentials it uses: its own database login, its own private key and the public keys of its callers, and, for the three KMS clients (`api`, `identity`, `bff-clinic`), its own OpenBao token limited to its Transit key. Network policies allow only the calls the services make: callers of `api`, `identity` and Keycloak carry a client label; the three public services take traffic from the ingress controller only. Outside the local profile, images must be pinned by digest.
+
+Rotating keys: run step 2 again, then `kubectl -n endo-platform rollout restart deployment -l endo.glucorp.health/app`.
 
 ## Keycloak dev realm
 

@@ -48,11 +48,25 @@ export interface NewSession {
 
 const random = () => randomBytes(32).toString('base64url');
 
+/** What the BFF needs from a session store (ADR-0019 section 5). */
+export interface ClinicSessionStore {
+  create(s: NewSession): Promise<string>;
+  activate(
+    token: string,
+    membership: Membership,
+    opts?: { touch: boolean },
+  ): Promise<string | null>;
+  resolve(token: string, opts?: { touch: boolean }): Promise<ClinicSession | null>;
+  recordRevalidation(token: string, refresh: SealedValue): Promise<void>;
+  revoke(token: string): Promise<void>;
+  revokeMatching(issuer: string, match: { sid?: string; sub?: string }): Promise<number>;
+}
+
 /**
- * Dev and test session store. Refuses staging and production: the durable store with atomic
- * expiry across replicas is part of the infrastructure slice (ADR-0019 section 5).
+ * Dev and test session store. Refuses staging and production, which use the durable store
+ * (`PostgresClinicSessions`, ADR-0033).
  */
-export class InMemoryClinicSessions {
+export class InMemoryClinicSessions implements ClinicSessionStore {
   readonly #sessions = new Map<string, ClinicSession>();
   readonly #now: () => number;
 

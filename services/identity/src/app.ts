@@ -14,6 +14,7 @@ import {
   type WorkloadCaller,
   type WorkloadTokenVerifier,
 } from '@endo/service-kit';
+import type { AccountEraser } from './enrolment/keycloak.ts';
 import type { PersonStore } from './persons.ts';
 import {
   registerClinicEnrolmentRoutes,
@@ -78,6 +79,11 @@ export interface IdentityDeps {
   readonly onConsented?: (transactionId: string) => void;
   /** Email one-time codes (ADR-0026). Without them the email routes do not exist. */
   readonly email?: EmailRouteDeps;
+  /**
+   * REQ-009, ADR-0029: removes her identity-provider account before erasure clears her subject.
+   * Required in staging and production (main.ts); erasure waits (503) until it succeeds.
+   */
+  readonly accounts?: AccountEraser;
   readonly logStream?: { write(msg: string): void };
   readonly rateLimitPerMinute?: number;
 }
@@ -239,6 +245,12 @@ export async function buildIdentity(deps: IdentityDeps): Promise<FastifyInstance
     },
     async (request, reply) => {
       const { id } = request.params as { id: string };
+      // Her account first: once erasure clears the subject it could no longer be found. The jobs
+      // process retries a 503 on its next run.
+      const subject = await deps.persons.subjectOf(id);
+      if (subject && deps.accounts && !(await deps.accounts.eraseUser(subject))) {
+        throw new ProblemError(503, 'identity.account_erase_pending', 'Try again later.');
+      }
       if (!(await deps.persons.erase(id))) {
         throw new ProblemError(404, 'identity.person_not_found', 'Not found.');
       }
