@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { TrialStrip, stripModel } from '@endo/ui/trial-strip';
 import { t } from '../i18n.ts';
 import { Portal } from '../portal/portal.ts';
 import { Drafting, type Catalogue } from '../portal/drafting.ts';
+import { LaunchPanel } from './LaunchPanel.tsx';
 import styles from './desk.module.css';
 import {
   DECISIONS,
@@ -35,6 +36,11 @@ export function DeskPage() {
   const [index, setIndex] = useState(0);
   const [open, setOpen] = useState<QueueRow | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  // Opened from a record system: the queue filtered to the linked patient (M7).
+  const csrf = useCallback(() => portal.csrfToken(), [portal]);
+  const showPatient = useCallback((patientId: string) => {
+    setSearch(patientId.slice(-6));
+  }, []);
 
   useEffect(() => {
     void portal.session().then((s) => {
@@ -93,6 +99,7 @@ export function DeskPage() {
       <h1 className={styles['title']}>{t('desk.queue-title')}</h1>
       <p className={styles['muted']}>{t('desk.shadow')}</p>
       {truncated && <p role="status">{t('desk.truncated')}</p>}
+      <LaunchPanel csrf={csrf} onPatient={showPatient} />
       <div className={styles['filters']} role="group" aria-label={t('desk.filters')}>
         {(['all', 'this_week', 'overdue'] as const).map((f) => (
           <button

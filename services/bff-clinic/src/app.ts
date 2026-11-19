@@ -1,3 +1,4 @@
+import { registerSmartRoutes, type SmartIssuer } from './smart.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
@@ -37,7 +38,7 @@ import {
   SESSION_COOKIE,
   readCookie,
   type ClinicSession,
-  type InMemoryClinicSessions,
+  type ClinicSessionStore,
 } from './sessions.ts';
 import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
@@ -89,7 +90,7 @@ export class PendingJoins {
 export type ClinicAuth =
   | {
       readonly kind: 'public';
-      readonly reason: 'liveness' | 'app-shell' | 'join' | 'security-txt';
+      readonly reason: 'liveness' | 'app-shell' | 'join' | 'security-txt' | 'smart-launch';
     }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
@@ -119,7 +120,8 @@ export function isClinicAuth(value: unknown): value is ClinicAuth {
       v.reason === 'liveness' ||
       v.reason === 'app-shell' ||
       v.reason === 'join' ||
-      v.reason === 'security-txt'
+      v.reason === 'security-txt' ||
+      v.reason === 'smart-launch'
     );
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
@@ -136,7 +138,7 @@ export interface ClinicBffDeps {
   readonly transactions: TransactionStore;
   /** Logout-token ids already used (replay protection). */
   readonly logoutTokens: SeenTokenIds;
-  readonly sessions: InMemoryClinicSessions;
+  readonly sessions: ClinicSessionStore;
   readonly resolver: Resolver;
   /** Seals the Keycloak refresh token held in each session. */
   readonly sealer: EnvelopeSealer;
@@ -152,6 +154,10 @@ export interface ClinicBffDeps {
   readonly enrolment?: ClinicEnrolmentDeps;
   /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
   readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
+  /** SMART App Launch (M7, spec 16.2): allowlisted record systems. No launch routes without. */
+  readonly smartIssuers?: readonly SmartIssuer[];
+  /** Launch attempts held at once (tests lower it). */
+  readonly smartMaxPending?: number;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -575,6 +581,16 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   if (deps.enrolment) registerClinicEnrolmentRoutes(app, deps.enrolment);
   // REQ-002: drafting treatment episodes (same API and signer as enrolment).
   if (deps.enrolment) registerClinicEpisodeRoutes(app, deps.enrolment);
+  if (deps.enrolment && deps.smartIssuers && deps.smartIssuers.length > 0)
+    registerSmartRoutes(app, {
+      issuers: deps.smartIssuers,
+      portalOrigin: deps.portalOrigin,
+      apiBaseUrl: deps.enrolment.apiBaseUrl,
+      signer: deps.enrolment.signer,
+      fetch: deps.enrolment.fetch,
+      now: () => deps.now().getTime(),
+      ...(deps.smartMaxPending ? { maxPending: deps.smartMaxPending } : {}),
+    });
   if (deps.appShell)
     registerAppShell(app, deps.appShell, {
       paths: PORTAL_PATHS,

@@ -301,3 +301,20 @@ describe('REQ-010 invitations pending per sign-in attempt', () => {
     expect(joins.take('s0')).toBe('d'.repeat(64));
   });
 });
+
+describe('M7 SMART launch state', () => {
+  it('keeps entries for 10 minutes, once each, within a bound', async () => {
+    const { Expiring } = await import('./smart.ts');
+    let t = 0;
+    const e = new Expiring<string>(() => t, 2);
+    expect(e.add('a', '1')).toBe(true);
+    expect(e.add('b', '2')).toBe(true);
+    expect(e.add('c', '3')).toBe(false); // over the bound
+    expect(e.get('a')).toBe('1');
+    expect(e.take('a')).toBe('1');
+    expect(e.take('a')).toBeNull();
+    t = 10 * 60_000 + 1;
+    expect(e.get('b')).toBeNull(); // expired
+    expect(e.add('d', '4')).toBe(true); // the expired one was pruned
+  });
+});

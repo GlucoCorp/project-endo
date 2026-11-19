@@ -333,6 +333,19 @@ Row-level security; public keys only; no patient data. Switched on and off by th
 | `integration_client.created_by` | Admin who registered it (opaque clinician id)        | as above                                                            | as above                                                                  | S1          |
 | `integration_client.created_at` | When registered                                      | as above                                                            | as above                                                                  | S0          |
 
+### SMART launch patient links — `packages/clinical-store/migrations/0018` (M7)
+
+Row-level security; one link per record-system patient per organisation; erased with her record.
+
+| Column                        | Purpose                                                              | Legal basis                                                                               | Retention                                     | Sensitivity |
+| ----------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- | ----------- |
+| `ehr_patient_link.id`         | Link identifier                                                      | Provision of care by the clinic (spec 16.2); made by a clinician for a consenting patient | With her record (removed by erasure, REQ-009) | S0          |
+| `ehr_patient_link.org_id`     | Organisation (row-level security)                                    | as above                                                                                  | as above                                      | S0          |
+| `ehr_patient_link.link_hash`  | SHA-256 of record-system issuer and patient id; never the identifier | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.patient_id` | Her pseudonymous record                                              | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_by` | Clinician who linked it (opaque id)                                  | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_at` | When linked                                                          | as above                                                                                  | as above                                      | S0          |
+
 ### Integration assertion ids — `packages/clinical-store/migrations/0019` (M7)
 
 No patient data; reachable only through `integration_assertion_reserve()`; expired rows are removed as new ones arrive.
@@ -464,6 +477,23 @@ The clinical store's reservation of an invitation, acknowledged for a transactio
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
+
+## Sessions (`sessions` database) — `packages/session-store/migrations` (ADR-0033)
+
+Reached only by the BFFs (`endo_sessions_app`). Rows end with the session: at most 12 hours, and expired rows are swept every 10 minutes.
+
+| Column                         | Purpose                                                                                                                                                                    | Legal basis                                          | Retention                                 | Sensitivity |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------- | ----------- |
+| `browser_session.token_hash`   | SHA-256 of the session cookie; the token itself is never stored                                                                                                            | Security of processing: keeping her signed in safely | Until the session ends (at most 12 hours) | S1          |
+| `browser_session.kind`         | patient, consent-pending or clinic                                                                                                                                         | as above                                             | as above                                  | S0          |
+| `browser_session.doc`          | What the BFF keeps: opaque person and patient ids, role, organisation, the sealed Keycloak refresh token and ID token (clinic), CSRF token, app-lock state; no health data | as above                                             | as above                                  | S2          |
+| `browser_session.issuer`       | Keycloak issuer, for back-channel logout                                                                                                                                   | as above                                             | as above                                  | S0          |
+| `browser_session.sid`          | Keycloak session id, for back-channel logout                                                                                                                               | as above                                             | as above                                  | S1          |
+| `browser_session.subject`      | Keycloak subject, for back-channel logout                                                                                                                                  | as above                                             | as above                                  | S1          |
+| `browser_session.idle_ms`      | Idle limit (15 or 30 minutes)                                                                                                                                              | as above                                             | as above                                  | S0          |
+| `browser_session.absolute_ms`  | Absolute limit (1 or 12 hours)                                                                                                                                             | as above                                             | as above                                  | S0          |
+| `browser_session.created_at`   | When the session started (database clock)                                                                                                                                  | as above                                             | as above                                  | S0          |
+| `browser_session.last_seen_at` | Last activity (database clock)                                                                                                                                             | as above                                             | as above                                  | S0          |
 
 ## Other stores
 
