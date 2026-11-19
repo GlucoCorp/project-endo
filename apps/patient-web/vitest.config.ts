@@ -8,7 +8,14 @@ export default defineConfig({
       provider: 'v8',
       // Components are covered by the browser tests (e2e); the logic they use is covered here.
       include: ['src/**/*.ts'],
-      exclude: ['src/**/*.test.ts', 'src/vite-env.d.ts', 'src/i18n.ts'],
+      // idb.ts and push-browser.ts need browser APIs: covered by the browser tests, like the components.
+      exclude: [
+        'src/**/*.test.ts',
+        'src/vite-env.d.ts',
+        'src/i18n.ts',
+        'src/checkin/idb.ts',
+        'src/home/push-browser.ts',
+      ],
       thresholds: { lines: 90, branches: 90, functions: 90, statements: 90 },
     },
   },

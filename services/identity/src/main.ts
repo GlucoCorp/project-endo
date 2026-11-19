@@ -8,7 +8,12 @@ import {
   type AuditStore,
 } from '@endo/audit';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
-import { DevKeyManager, FieldCipher, InMemoryPatientKeyStore } from '@endo/crypto';
+import {
+  DevKeyManager,
+  OpenBaoKeyManager,
+  FieldCipher,
+  InMemoryPatientKeyStore,
+} from '@endo/crypto';
 import {
   PermanentPublishError,
   createDb,
@@ -30,7 +35,7 @@ import { EnrolmentCodes } from './enrolment/code.ts';
 import type { PatientRouteDeps } from './enrolment/routes.ts';
 import { PostgresEnrolmentStore } from './enrolment/store.ts';
 import { Activator } from './enrolment/activation.ts';
-import { HttpKeycloakAdmin } from './enrolment/keycloak.ts';
+import { HttpKeycloakAdmin, type AccountEraser } from './enrolment/keycloak.ts';
 import { Cleaner } from './enrolment/cleanup.ts';
 import { EmailCodeStore } from './email/store.ts';
 import type { EmailRouteDeps } from './email/routes.ts';
@@ -60,6 +65,14 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 });
 
 const Config = z.object({
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   IDENTITY_PORT: z.coerce.number().int().min(1).max(65535),
@@ -106,11 +119,19 @@ async function main(): Promise<void> {
 
   // DevKeyManager refuses staging and production: deployed environments need the OpenBao
   // KeyManager (infra slice) before this service can start. Fail closed.
-  const kms = new DevKeyManager(config.ENDO_ENV);
+  const kms =
+    config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+      ? new OpenBaoKeyManager({
+          address: config.ENDO_KMS_OPENBAO_ADDR,
+          token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+          ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+        })
+      : new DevKeyManager(config.ENDO_ENV);
   let persons: PersonStore;
   let enrolment: PatientRouteDeps | undefined;
   let onConsented: ((transactionId: string) => void) | undefined;
   let email: EmailRouteDeps | undefined;
+  let accounts: AccountEraser | undefined;
   let relayTimer: NodeJS.Timeout | undefined;
   let closeVault = (): Promise<void> => Promise.resolve();
   if (config.IDENTITY_DATABASE_URL) {
@@ -178,6 +199,7 @@ async function main(): Promise<void> {
         : null;
       // ADR-0026: confirmation codes go out through Keycloak's sender too.
       if (keycloak) email = { store: new EmailCodeStore(db, kms), sender: keycloak };
+      if (keycloak) accounts = keycloak;
       const activator = new Activator({
         store: enrolment.store,
         clinical: enrolment.clinical,
@@ -257,6 +279,11 @@ async function main(): Promise<void> {
     };
   }
 
+  // REQ-009: erasure must remove her Keycloak account too (fail closed when deployed).
+  if (deployed && !accounts) {
+    throw new Error('IDENTITY_KEYCLOAK_REALM_URL is required in staging and production.');
+  }
+
   const app = await buildIdentity({
     logLevel: config.ENDO_LOG_LEVEL,
     verifier: new WorkloadTokenVerifier('identity', trusted),
@@ -266,6 +293,7 @@ async function main(): Promise<void> {
     ...(enrolment ? { enrolment } : {}),
     ...(onConsented ? { onConsented } : {}),
     ...(email ? { email } : {}),
+    ...(accounts ? { accounts } : {}),
   });
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {

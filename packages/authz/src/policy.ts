@@ -29,6 +29,7 @@ export const ACTIONS = [
   'review_decision.record', // Record review decision
   'surgery_check.read', // View pre-surgery check
   'org.clinicians.manage', // Manage clinicians in org
+  'org.settings.manage', // REQ-010: org admin sets the interval default, languages, emergency number
   'org.dashboard.read', // View aggregate org dashboard (de-identified)
   'own_data.export', // Export own data
   'own_data.delete', // Delete own data
@@ -38,6 +39,14 @@ export const ACTIONS = [
   'enrolment.confirm', // REQ-001, ADR-0021: clinician confirms the patient in front of them by code
   'consent.read_own', // Spec 13.1: she sees her consent decisions
   'consent.update_own', // Spec 13.1: she grants or withdraws a purpose, effective immediately
+  'episode.confirm_own', // REQ-002: she sets her goal and confirms her own draft episode
+  'patient.list', // REQ-002: clinician lists own-organisation patients who share with the care team
+  'catalogue.read', // REQ-002: clinician reads the treatment catalogue to draft an episode
+  'share_link.manage_own', // REQ-008: she makes, lists and stops her share links
+  'access_log.read_own', // Spec 13.3: she sees who accessed her record
+  'review.queue', // REQ-005: clinician's review queue (the store lists consented patients only)
+  'reminders.manage_own', // Spec 15: she turns her weekly reminder on or off on a device
+  'verdict.generate', // REQ-004: clinician asks for a (shadow) verdict on a consented patient's episode
   'system.hello', // M0 walking skeleton: authenticated, no health data
 ] as const;
 export type Action = (typeof ACTIONS)[number];
@@ -160,12 +169,17 @@ export function can(
     case 'episode.read_own':
     case 'consent.read_own':
     case 'consent.update_own':
+    case 'episode.confirm_own':
+    case 'reminders.manage_own':
+    case 'share_link.manage_own':
+    case 'access_log.read_own':
     case 'checkin.submit':
     case 'own_data.export':
     case 'own_data.delete':
       return ownPatientData(subject, resource);
 
     case 'episode.create':
+    case 'verdict.generate':
     case 'patient_data.read':
     case 'review_decision.record':
       return clinicianWithCareTeamConsent(subject, resource, context);
@@ -176,6 +190,7 @@ export function can(
         : clinicianWithCareTeamConsent(subject, resource, context);
 
     case 'org.clinicians.manage':
+    case 'org.settings.manage':
       if (subject.role !== 'org_admin') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 
@@ -191,6 +206,11 @@ export function can(
     case 'enrolment.create':
     case 'enrolment.read':
     case 'enrolment.confirm':
+    // REQ-002: organisation-level reads; the patient list itself is filtered to patients who
+    // share with the care team, and each patient's data is still checked per patient.
+    case 'patient.list':
+    case 'catalogue.read':
+    case 'review.queue':
       if (subject.role !== 'clinician') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 

@@ -316,7 +316,7 @@ test('home: signed out she can sign in; signed in she can sign out', async ({ pa
     },
   ]);
   await page.reload();
-  await expect(page.getByText('You are signed in.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Turn on app lock' })).toBeVisible();
 
   // Spec 10.1 app lock: on, then she leaves the app; back, only "Unlock" is offered.
   await page.getByRole('button', { name: 'Turn on app lock' }).click();
@@ -331,7 +331,7 @@ test('home: signed out she can sign in; signed in she can sign out', async ({ pa
     'href',
     '/auth/sign-in',
   );
-  await expect(page.getByText('You are signed in.')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Sign out' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Quick exit' }).isVisible();
 
   // Signed in again (as unlocking does), she can sign out. Reloading counts as leaving the app,

@@ -24,6 +24,25 @@ export interface AuditStore {
   readRange(fromSequence: number, limit: number): Promise<readonly AuditEvent[]>;
 }
 
+/** A resource an access log asks about (spec 13.3): its type and opaque id. */
+export interface ResourceRef {
+  readonly type: string;
+  readonly id: string;
+}
+
+/**
+ * Reads the events about given resources, newest first (spec 13.3 access log). Separate from
+ * AuditStore: only the access-log route needs it.
+ */
+export interface AuditReader {
+  /** At most `limit` (1 to 500); `beforeSequence` pages back through older events. */
+  forResources(
+    refs: readonly ResourceRef[],
+    limit: number,
+    beforeSequence?: number,
+  ): Promise<readonly AuditEvent[]>;
+}
+
 /**
  * Thrown by a store when another writer appended the same sequence first. The writer re-reads
  * the head and retries; it never overwrites.
