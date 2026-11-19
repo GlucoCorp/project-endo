@@ -100,7 +100,71 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  'episode.confirm_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'patient.list': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'share_link.manage_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'access_log.read_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'review.queue': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'reminders.manage_own': {
+    patient: 'A',
+    clinician: '-',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'verdict.generate': {
+    patient: '-',
+    clinician: 'C',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  'catalogue.read': {
+    patient: '-',
+    clinician: 'A',
+    org_admin: '-',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'org.clinicians.manage': {
+    patient: '-',
+    clinician: '-',
+    org_admin: 'A',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
+  // REQ-010 (not a spec 3.2 row): organisation settings, like managing clinicians.
+  'org.settings.manage': {
     patient: '-',
     clinician: '-',
     org_admin: 'A',
@@ -386,6 +450,13 @@ describe('properties', () => {
             'enrolment.create',
             'enrolment.read',
             'enrolment.confirm',
+            // REQ-002: the catalogue holds no patient data, and the patient list is filtered by
+            // the store to patients whose current share_with_care_team is granted, so a patient
+            // who withdraws disappears from it (services/api episodes routes test this).
+            'catalogue.read',
+            'patient.list',
+            // REQ-005: the queue is filtered by the store to consented patients.
+            'review.queue',
           ]).toContain(action);
       }),
     );

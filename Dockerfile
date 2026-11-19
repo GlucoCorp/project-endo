@@ -25,6 +25,25 @@ RUN mkdir -p /out \
  && cp -a node_modules package.json /out/ \
  && test -f "/out/services/${SERVICE}/src/main.ts"
 
+# The web app a BFF serves (patient-web for bff-patient, clinic-web for bff-clinic), built with its
+# dev dependencies in this throwaway stage; only the static files reach the runtime image.
+#   docker build --build-arg SERVICE=bff-patient --build-arg WEB_APP=patient-web -t endo-bff-patient .
+FROM node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d AS web
+ENV CI=true COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /repo
+RUN corepack enable && mkdir -p /web
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
+COPY packages/ packages/
+COPY services/ services/
+COPY apps/ apps/
+ARG WEB_APP=""
+RUN if [ -n "$WEB_APP" ]; then \
+      grep -q "\"name\": \"@endo/${WEB_APP}\"" "apps/${WEB_APP}/package.json" \
+      && pnpm install --frozen-lockfile --filter "@endo/${WEB_APP}..." \
+      && pnpm --filter "@endo/${WEB_APP}" exec vite build \
+      && cp -a "apps/${WEB_APP}/dist/." /web/; \
+    fi
+
 # Debian security updates not yet in the pinned distroless base (ADR-0016). apt verifies Debian's
 # archive signature and each package's checksum; each entry enforces a minimum version. Remove an
 # entry once Renovate moves the base to a rebuild that contains the fix (Trivy fails otherwise).
@@ -57,9 +76,14 @@ USER 0:0
 COPY --from=os-patches /patch/ /
 WORKDIR /app
 COPY --from=build /out/ ./
-# The API reads the clinical rule set at startup (spec 7.3); staging and production refuse
-# TODO_CLINICAL values. Later milestones mount a signed rule set instead.
+# The API reads the clinical content at startup (spec 6, 7.3; ADR-0027): rule set, instrument,
+# treatment catalogue and goals. Staging and production refuse TODO_CLINICAL values.
 COPY clinical/rulesets clinical/rulesets
+COPY clinical/instrument clinical/instrument
+COPY clinical/treatments clinical/treatments
+COPY clinical/goals clinical/goals
+# The BFF's web app, if this image has one (empty otherwise): set BFF_*_APP_DIR=/app/web.
+COPY --from=web /web/ /app/web/
 WORKDIR /app/services/${SERVICE}
 USER 65532:65532
 # The image's entrypoint is node; services run TypeScript via native type stripping.

@@ -1,5 +1,7 @@
 import { useEffect } from 'react';
 import { t } from './i18n.ts';
+import { offlineQueue } from './checkin/TrialHome.tsx';
+import { signOutNow } from './home/session.ts';
 import styles from './quick-exit.module.css';
 
 /**
@@ -11,6 +13,10 @@ import styles from './quick-exit.module.css';
 export function quickExit(): void {
   try {
     window.sessionStorage.clear();
+    // Spec 13.2: the session ends and the offline queue (and its key) is destroyed. Neither is
+    // awaited: the screen goes first.
+    signOutNow(window.fetch.bind(window));
+    void offlineQueue.clear().catch(() => undefined);
   } finally {
     window.location.replace('about:blank');
   }

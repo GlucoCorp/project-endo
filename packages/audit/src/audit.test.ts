@@ -193,3 +193,49 @@ describe('spec 2.6 events relayed from an outbox keep their original time', () =
     );
   });
 });
+
+describe('spec 13.3 access log reads events about given resources', () => {
+  it('returns the matching events newest first, up to the limit', async () => {
+    const { InMemoryAuditStore: Store, AuditWriter: Writer } = await import('./index.ts');
+    const store = new Store();
+    const writer = new Writer(store);
+    const base = {
+      actor: { id: null, role: 'clinician' as const },
+      action: 'patient_data.read',
+      org_id: null,
+      purpose_of_use: 'treatment' as const,
+      outcome: 'success' as const,
+      reason: null,
+      request_id: '0190a000-0000-4000-8000-000000000001',
+    };
+    const a = '0190a000-0000-4000-8000-0000000000a1';
+    const b = '0190a000-0000-4000-8000-0000000000b1';
+    await writer.write({ ...base, resource: { type: 'patient_record', id: a } });
+    await writer.write({ ...base, resource: { type: 'patient_record', id: b } });
+    await writer.write({
+      ...base,
+      action: 'share_link.viewed',
+      resource: { type: 'share_link', id: b },
+    });
+    await writer.write({ ...base, resource: { type: 'patient_record', id: null } });
+    const mine = await store.forResources(
+      [
+        { type: 'patient_record', id: a },
+        { type: 'share_link', id: b },
+      ],
+      10,
+    );
+    expect(mine.map((e) => e.action)).toEqual(['share_link.viewed', 'patient_data.read']);
+    // Paging back: older than the newest.
+    const older = await store.forResources(
+      [
+        { type: 'patient_record', id: a },
+        { type: 'share_link', id: b },
+      ],
+      10,
+      mine[0]?.sequence,
+    );
+    expect(older.map((e) => e.action)).toEqual(['patient_data.read']);
+    expect(await store.forResources([{ type: 'patient_record', id: a }], 0)).toEqual([]);
+  });
+});

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
 import { t } from '../i18n.ts';
+import { DraftEpisode } from './DraftEpisode.tsx';
 import {
   Portal,
   type AcceptedInvitation,
@@ -60,7 +61,21 @@ export function PortalPage() {
           </ul>
         </>
       ) : (
-        <Enrolments portal={portal} />
+        <>
+          <p>
+            <a href="/reviews">{t('desk.queue-title')}</a>
+          </p>
+          <p>
+            <a href="/dashboard">{t('dashboard.title')}</a>
+          </p>
+          {session.role === 'org_admin' && (
+            <p>
+              <a href="/admin">{t('admin.title')}</a>
+            </p>
+          )}
+          <Enrolments portal={portal} />
+          <DraftEpisode portal={portal} />
+        </>
       )}
     </main>
   );
