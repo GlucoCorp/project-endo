@@ -16,7 +16,13 @@ import { InMemoryPersonStore } from './persons.ts';
 
 const SYNTHETIC_PHI_MARKER = 'SYNTHETIC_PHI_MARKER-identity-svc-5d1e';
 
-async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: boolean } = {}) {
+async function setup(
+  opts: {
+    rateLimitPerMinute?: number;
+    failErrorAudits?: boolean;
+    accounts?: { eraseUser(subject: string): Promise<boolean> };
+  } = {},
+) {
   const api = await generateServiceKeyPair();
   const jobs = await generateServiceKeyPair();
   const clinic = await generateServiceKeyPair();
@@ -53,6 +59,7 @@ async function setup(opts: { rateLimitPerMinute?: number; failErrorAudits?: bool
     audit: new AuditWriter(store),
     persons,
     ...(opts.rateLimitPerMinute ? { rateLimitPerMinute: opts.rateLimitPerMinute } : {}),
+    ...(opts.accounts ? { accounts: opts.accounts } : {}),
     idpIssuer: 'https://kc.test/realms/endo-dev',
     logStream: { write: (l) => logs.push(l) },
   });
@@ -142,6 +149,82 @@ describe('spec 5.2 identity service: create and erase people (ADR-0018)', () => 
         recordId: id,
       }),
     ).rejects.toBeInstanceOf(KeyDestroyedError);
+    // Then purged for good; only after erasure.
+    const purge = async (who: string) =>
+      app.inject({
+        method: 'POST',
+        url: `/internal/v1/persons/${who}/purge`,
+        headers: await auth(jobsSigner, 'identity.person.erase'),
+      });
+    expect((await purge(id)).statusCode).toBe(204);
+    expect(persons.rows.has(id)).toBe(false);
+    expect((await purge(id)).statusCode).toBe(204);
+    const other = (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/v1/persons',
+        headers: await auth(apiSigner, 'identity.person.create'),
+        payload: { display_name: 'x' },
+      })
+    ).json<{ person_id: string }>().person_id;
+    expect((await purge(other)).statusCode).toBe(409);
+  });
+
+  it('REQ-009 removes her Keycloak account first, and waits (503) until it is gone', async () => {
+    let up = false;
+    const erased: string[] = [];
+    const accounts = {
+      eraseUser: (subject: string) => {
+        if (up) erased.push(subject);
+        return Promise.resolve(up);
+      },
+    };
+    const { app, persons, auth, apiSigner, jobsSigner } = await setup({ accounts });
+    const id = (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/v1/persons',
+        headers: await auth(apiSigner, 'identity.person.create'),
+        payload: { display_name: 'x' },
+      })
+    ).json<{ person_id: string }>().person_id;
+    const subject = '01900000-0000-7000-8000-0000000000c1';
+    persons.subjects.set(subject, id);
+    const erase = async () =>
+      app.inject({
+        method: 'POST',
+        url: `/internal/v1/persons/${id}/erasure`,
+        headers: await auth(jobsSigner, 'identity.person.erase'),
+      });
+    const pending = await erase();
+    expect(pending.statusCode).toBe(503);
+    expect(pending.body).not.toContain(subject);
+    expect(persons.rows.get(id)?.erased).toBe(false); // nothing erased while her account remains
+    up = true;
+    expect((await erase()).statusCode).toBe(204);
+    expect(erased).toEqual([subject]);
+    // A repeat finds no subject and does not call Keycloak again.
+    expect((await erase()).statusCode).toBe(204);
+    expect(erased).toEqual([subject]);
+  });
+
+  it('erases without an account client in dev (deployed services refuse to start without one)', async () => {
+    const { app, persons, auth, apiSigner, jobsSigner } = await setup();
+    const id = (
+      await app.inject({
+        method: 'POST',
+        url: '/internal/v1/persons',
+        headers: await auth(apiSigner, 'identity.person.create'),
+        payload: { display_name: 'x' },
+      })
+    ).json<{ person_id: string }>().person_id;
+    persons.subjects.set('01900000-0000-7000-8000-0000000000c2', id);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/internal/v1/persons/${id}/erasure`,
+      headers: await auth(jobsSigner, 'identity.person.erase'),
+    });
+    expect(res.statusCode).toBe(204);
   });
 
   it('answers 404 for an unknown person and 400 for a malformed id', async () => {

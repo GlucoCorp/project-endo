@@ -8,6 +8,11 @@ export const SESSION_COOKIE = '__Host-endo_session';
 export interface Session {
   readonly claims: ServiceClaims;
   readonly createdAt: number;
+  /**
+   * When she last proved it was her with her passkey (spec 10.1 recent sign-in). A sign-in sets
+   * it now; activation keeps the time of her first passkey, not the time of the rotation.
+   */
+  readonly authenticatedAt: number;
   lastSeenAt: number;
   /** Spec 10.1 app lock: she chose to lock the app when she leaves it. */
   appLock: boolean;
@@ -91,12 +96,19 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
   }
 
   /** Returns an opaque 256-bit token for the cookie. */
-  create(claims: ServiceClaims, appLock = false): string {
+  create(claims: ServiceClaims, appLock = false, authenticatedAt?: number): string {
     const token = random();
     const t = this.#now();
     this.#sessions.set(token, {
       kind: 'patient',
-      session: { claims, createdAt: t, lastSeenAt: t, appLock, locked: false },
+      session: {
+        claims,
+        createdAt: t,
+        lastSeenAt: t,
+        authenticatedAt: authenticatedAt ?? t,
+        appLock,
+        locked: false,
+      },
     });
     return token;
   }
@@ -153,7 +165,8 @@ export class DevSessionStore implements SessionResolver, ConsentSessions {
       return Promise.resolve(null);
     // Synchronous between the check and the swap: no other caller can rotate it twice.
     this.#sessions.delete(token);
-    return Promise.resolve(this.create(claims));
+    // Her passkey was used when the consent-pending session was made, not now.
+    return Promise.resolve(this.create(claims, false, e.session.createdAt));
   }
 
   revoke(token: string): Promise<void> {

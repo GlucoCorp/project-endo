@@ -3,6 +3,7 @@ import { EnrolPage } from './enrol/EnrolPage.tsx';
 import { HomePage } from './home/HomePage.tsx';
 import { HistoryPage } from './history/HistoryPage.tsx';
 import { SharedPage } from './history/SharedPage.tsx';
+import { DataPage } from './data/DataPage.tsx';
 import { QuickExit } from './QuickExit.tsx';
 
 const root = createRootRoute({
@@ -23,9 +24,10 @@ const historyRoute = createRoute({
   component: HistoryPage,
 });
 const shared = createRoute({ getParentRoute: () => root, path: '/shared', component: SharedPage });
+const data = createRoute({ getParentRoute: () => root, path: '/my-data', component: DataPage });
 
 export const router = createRouter({
-  routeTree: root.addChildren([home, enrol, historyRoute, shared]),
+  routeTree: root.addChildren([home, enrol, historyRoute, shared, data]),
 });
 
 declare module '@tanstack/react-router' {

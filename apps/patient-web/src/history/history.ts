@@ -1,3 +1,5 @@
+import { isReauth } from '../data/data.ts';
+
 /**
  * Her treatment history, sharing and access log (REQ-008; spec 13.3, 21.7 screens 7 and 8), and
  * a receiver's view of a share link. Over a fetch seam so it is tested without a DOM.
@@ -60,7 +62,7 @@ export async function createShareLink(
   days: number,
   key: string,
   origin: string,
-): Promise<{ readonly url: string; readonly expiresAt: string } | 'already' | 'error'> {
+): Promise<{ readonly url: string; readonly expiresAt: string } | 'already' | 'reauth' | 'error'> {
   try {
     const res = await f('/v1/me/share-links', {
       method: 'POST',
@@ -69,6 +71,8 @@ export async function createShareLink(
       body: JSON.stringify({ days }),
     });
     if (res.status === 409) return 'already';
+    // Spec 10.1: making a link needs a recent sign-in.
+    if (await isReauth(res)) return 'reauth';
     if (!res.ok) return 'error';
     const b = (await res.json()) as { token?: unknown; expires_at?: unknown };
     if (typeof b.token !== 'string' || typeof b.expires_at !== 'string') return 'error';

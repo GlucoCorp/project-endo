@@ -56,6 +56,7 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
         'The service is not available right now.',
       );
     }
+    if (res.status === 204) return reply.code(204).send();
     const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     if (res.ok && body) return reply.code(res.status).send(body);
     if (res.status === 401 || res.status === 403)
@@ -128,4 +129,50 @@ export function registerClinicEpisodeRoutes(app: FastifyInstance, deps: ClinicEp
       (request, reply) =>
         pass(request, reply, 'POST', `/v1/patients/${patient(request)}/surgery-checks${suffix}`),
     );
+
+  // M5 organisation admin (REQ-010): settings and members. The API allows org_admin only.
+  app.get('/v1/org/settings', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/org/settings'),
+  );
+  app.post(
+    '/v1/org/settings',
+    { config: session, bodyLimit: 2048, schema: { body: { type: 'object' } } },
+    (request, reply) => pass(request, reply, 'POST', '/v1/org/settings'),
+  );
+  app.get('/v1/org/clinicians', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/org/clinicians'),
+  );
+  app.post(
+    '/v1/org/clinicians/:id',
+    { config: session, bodyLimit: 256, schema: { body: { type: 'object' } } },
+    (request, reply) => {
+      const id = (request.params as { id?: string }).id ?? '';
+      if (!UUID.test(id)) throw new ProblemError(404, 'clinician.not_found', 'Not found.');
+      return pass(request, reply, 'POST', `/v1/org/clinicians/${id}`);
+    },
+  );
+
+  // REQ-010 staff invitations: made, listed and stopped by the org admin.
+  app.get('/v1/org/staff-invitations', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/org/staff-invitations'),
+  );
+  app.post(
+    '/v1/org/staff-invitations',
+    { config: session, bodyLimit: 256, schema: { body: { type: 'object' } } },
+    (request, reply) => pass(request, reply, 'POST', '/v1/org/staff-invitations'),
+  );
+  app.post(
+    '/v1/org/staff-invitations/:id/revoke',
+    { config: session, bodyLimit: 64, schema: { body: { type: 'object' } } },
+    (request, reply) => {
+      const id = (request.params as { id?: string }).id ?? '';
+      if (!UUID.test(id)) throw new ProblemError(404, 'staff_invitation.not_open', 'Not found.');
+      return pass(request, reply, 'POST', `/v1/org/staff-invitations/${id}/revoke`);
+    },
+  );
+
+  // REQ-011: the aggregate dashboard of the session's organisation (never one the browser names).
+  app.get('/v1/dashboard', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', `/v1/orgs/${request.session?.active?.orgId ?? 'none'}/dashboard`),
+  );
 }

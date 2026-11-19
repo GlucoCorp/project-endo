@@ -267,35 +267,51 @@ export function registerHistoryRoutes(app: FastifyInstance, deps: HistoryRouteDe
     { config: { policy: policy('access_log.read_own', 'audit_event') } },
     async (request) => {
       const { orgId, patientId } = own(request);
-      // Everything of hers an event can name: her record, treatments, decisions, checks, links.
-      const [episodes, decisions, checks, links] = await Promise.all([
-        deps.episodes.listForPatient(orgId, patientId),
-        deps.reviews.decisions(orgId, patientId),
-        deps.reviews.surgeryChecks(orgId, patientId),
-        deps.links.ids(orgId, patientId),
-      ]);
-      const events = await deps.audit.forResources(
-        [
-          { type: 'patient_record', id: patientId },
-          ...episodes.map((e) => ({ type: 'treatment_episode', id: e.id })),
-          ...decisions.map((d) => ({ type: 'review_decision', id: d.id })),
-          ...checks.map((c) => ({ type: 'surgery_check', id: c.id })),
-          ...links.map((id) => ({ type: 'share_link', id })),
-        ],
-        200,
-      );
-      return {
-        events: events
-          // A change is shown once it is made (its own event), not when it was allowed to start.
-          .filter((e) => !(e.outcome === 'success' && CHANGE_GATES.has(e.action)))
-          .map((e) => ({
-            at: e.occurred_at,
-            role: e.actor.role,
-            action: e.action,
-            purpose: e.purpose_of_use,
-            outcome: e.outcome,
-          })),
-      };
+      return { events: await accessLog(deps, orgId, patientId) };
     },
   );
+}
+
+/**
+ * Spec 13.3: events naming anything of hers (her record, treatments, decisions, checks, every
+ * link), newest first. A change is shown once it is made (its own event), not when it was allowed
+ * to start; a refused attempt is shown.
+ */
+export async function accessLog(
+  deps: Pick<HistoryRouteDeps, 'episodes' | 'reviews' | 'links' | 'audit'>,
+  orgId: string,
+  patientId: string,
+  limit: number | 'all' = 200,
+) {
+  const [episodes, decisions, checks, links] = await Promise.all([
+    deps.episodes.listForPatient(orgId, patientId, null),
+    deps.reviews.decisions(orgId, patientId),
+    deps.reviews.surgeryChecks(orgId, patientId),
+    deps.links.ids(orgId, patientId),
+  ]);
+  const refs = [
+    { type: 'patient_record', id: patientId },
+    ...episodes.map((e) => ({ type: 'treatment_episode', id: e.id })),
+    ...decisions.map((d) => ({ type: 'review_decision', id: d.id })),
+    ...checks.map((c) => ({ type: 'surgery_check', id: c.id })),
+    ...links.map((id) => ({ type: 'share_link', id })),
+  ];
+  // 'all' (her export): page back 500 at a time until the oldest.
+  const events = [];
+  let before: number | undefined;
+  for (;;) {
+    const page = await deps.audit.forResources(refs, limit === 'all' ? 500 : limit, before);
+    events.push(...page);
+    if (limit !== 'all' || page.length < 500) break;
+    before = page.at(-1)?.sequence;
+  }
+  return events
+    .filter((e) => !(e.outcome === 'success' && CHANGE_GATES.has(e.action)))
+    .map((e) => ({
+      at: e.occurred_at,
+      role: e.actor.role,
+      action: e.action,
+      purpose: e.purpose_of_use,
+      outcome: e.outcome,
+    }));
 }

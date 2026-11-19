@@ -82,6 +82,8 @@ export interface ClinicalDatabase {
     purpose: ConsentPurpose;
     status: ConsentStatus;
     version: number;
+    /** Assigned by the database; the latest per patient and purpose is the current decision. */
+    seq: Generated<string>;
     decided_at: Generated<Date>;
     /** Migration 0007: when she chose, at enrolment only; shortly before `decided_at`. */
     chosen_at: Date | null;
@@ -204,6 +206,49 @@ export interface ClinicalDatabase {
     idempotency_key: string;
     request_hash: string;
     decided_at: Generated<Date>;
+  };
+  /** Migration 0018: SMART launch patient links (M7). */
+  ehr_patient_link: {
+    id: string;
+    org_id: string;
+    link_hash: string;
+    patient_id: string;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
+  /** Migration 0017: record-system integration clients (M7). */
+  integration_client: {
+    id: string;
+    org_id: string;
+    client_id: string;
+    name: string;
+    jwks: unknown;
+    scopes: string[];
+    active: Generated<boolean>;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
+  /** Migration 0016: staff invitations (REQ-010). */
+  staff_invitation: {
+    id: string;
+    org_id: string;
+    role: 'clinician' | 'org_admin';
+    token_hash: string;
+    created_by: string;
+    created_at: Generated<Date>;
+    expires_at: Date;
+    claimed_at: Generated<Date | null>;
+    claimed_clinician_id: Generated<string | null>;
+    revoked_at: Date | null;
+  };
+  /** Migration 0015: organisation settings (REQ-010). */
+  org_settings: {
+    org_id: string;
+    default_review_interval_weeks: number | null;
+    languages: Generated<string[]>;
+    emergency_number: string | null;
+    updated_at: Generated<Date>;
+    updated_by: string;
   };
   /** Migration 0014: account deletion requests (REQ-009). */
   deletion_request: {

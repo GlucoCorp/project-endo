@@ -16,7 +16,15 @@ export const KEYCLOAK_ADMIN_SCOPE = 'keycloak.enrolment.admin';
 /** Keycloak's mail sender, through the extension (ADR-0026); its own scope. */
 export const KEYCLOAK_EMAIL_SCOPE = 'keycloak.email.send';
 
-export class HttpKeycloakAdmin implements KeycloakFinaliser, EmailSender {
+/** REQ-009: removing an erased patient's account; its own scope. */
+export const KEYCLOAK_ERASE_SCOPE = 'keycloak.user.erase';
+
+/** Removes her identity-provider account at erasure (ADR-0029). True once it is gone. */
+export interface AccountEraser {
+  eraseUser(subject: string): Promise<boolean>;
+}
+
+export class HttpKeycloakAdmin implements KeycloakFinaliser, EmailSender, AccountEraser {
   readonly #base: string;
   readonly #signer: WorkloadTokenSigner;
   readonly #fetch: typeof fetch;
@@ -45,6 +53,28 @@ export class HttpKeycloakAdmin implements KeycloakFinaliser, EmailSender {
       if (res.status !== 200) return false;
       const body = (await res.json().catch(() => null)) as { sent?: unknown } | null;
       return body?.sent === true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * REQ-009: removes her account, passkeys and sessions. True once gone (an unknown subject
+   * counts); a staff account is refused (409) and anything else is "not yet".
+   */
+  async eraseUser(subject: string): Promise<boolean> {
+    const token = await this.#signer.sign([KEYCLOAK_ERASE_SCOPE], 'keycloak');
+    try {
+      const res = await this.#fetch(`${this.#base}/erase`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ subject }),
+        redirect: 'error',
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (res.status !== 200) return false;
+      const body = (await res.json().catch(() => null)) as { erased?: unknown } | null;
+      return body?.erased === true;
     } catch {
       return false;
     }

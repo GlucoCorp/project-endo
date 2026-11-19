@@ -1,0 +1,16 @@
+# Project Endo Implementation Guide (spec 5.3, 9.3, 16.5; ADR-0031, proposed).
+# Built with SUSHI and the HL7 IG Publisher once ADR-0031 is approved; until then this is source only.
+id: glucorp.endo
+canonical: https://fhir.glucorp.health
+name: ProjectEndo
+title: Project Endo Implementation Guide
+status: draft
+version: 0.1.0
+fhirVersion: 4.0.1
+copyrightYear: 2026+
+releaseLabel: ci-build
+publisher:
+  name: GluCorp
+pages:
+  index.md:
+    title: Home
