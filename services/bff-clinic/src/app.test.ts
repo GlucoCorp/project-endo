@@ -37,6 +37,7 @@ async function setup(
     /** Status the stand-in Keycloak answers refresh grants with (default 200). */
     refreshStatus?: () => number;
     claimStaff?: Resolver['claimStaff'];
+    securityContact?: { contact: string; policy?: string | null };
   } = {},
 ) {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
@@ -100,6 +101,7 @@ async function setup(
     fetch: fetchStub,
     now: () => new Date(clock),
     portalOrigin: 'https://clinic.test',
+    ...(opts.securityContact ? { securityContact: opts.securityContact } : {}),
   });
 
   /** Starts a login; returns the transaction cookie and the parameters sent to Keycloak. */
@@ -747,5 +749,21 @@ describe('REQ-010 a staff invitation claimed at sign-in', () => {
     const res = await ctx.callback(`code=c1&state=${state}`, cookie);
     expect(res.statusCode).toBe(200); // an existing member signs in as usual
     expect(claimed).toEqual([]);
+  });
+});
+
+describe('spec 12.7 security.txt (clinic portal)', () => {
+  it('is absent without a contact', async () => {
+    const ctx = await setup();
+    expect((await ctx.app.inject({ url: '/.well-known/security.txt' })).statusCode).toBe(404);
+    const withContact = await setup({
+      securityContact: {
+        contact: 'https://example.test/report',
+        policy: 'https://example.test/disclosure',
+      },
+    });
+    const res = await withContact.app.inject({ url: '/.well-known/security.txt' });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('Policy: https://example.test/disclosure');
   });
 });

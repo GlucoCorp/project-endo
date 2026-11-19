@@ -117,51 +117,9 @@ export function registerDataRightsRoutes(app: FastifyInstance, deps: DataRightsR
     { config: { policy: policy('own_data.export') } },
     async (request, reply: FastifyReply) => {
       const { orgId, patientId } = own(request);
-      const cipher = deps.cipherFor(orgId);
-      const [episodes, decisions, surgeryChecks, consents, log] = await Promise.all([
-        // Everything, never a first page (REQ-009: a complete export).
-        deps.episodes.listForPatient(orgId, patientId, null),
-        deps.reviews.decisions(orgId, patientId),
-        deps.reviews.surgeryChecks(orgId, patientId),
-        deps.consents.current(orgId, patientId),
-        accessLog(deps, orgId, patientId, 'all'),
-      ]);
-      const bundle = fhirExport({
-        patientId,
-        generatedAt: deps.now(),
-        episodes: await Promise.all(
-          episodes.map(async (e) => ({
-            episode: e,
-            treatmentDisplay:
-              deps.content.treatments.find(
-                (t) => t.system === e.treatmentSystem && t.code === e.treatmentCode,
-              )?.display ?? null,
-            goalText: e.goal?.textEncrypted
-              ? await cipher.decrypt(e.goal.textEncrypted, {
-                  patientId,
-                  field: 'goal.text',
-                  recordId: e.goal.id,
-                })
-              : (deps.content.goals.find((g) => g.code === e.goal?.templateCode)?.text ?? null),
-            checkIns: await deps.episodes.listCheckIns(orgId, e.id),
-            redFlags: await deps.episodes.listRedFlags(orgId, e.id),
-          })),
-        ),
-        decisions: await Promise.all(
-          decisions.map(async (d) => ({
-            ...d,
-            note: d.noteEncrypted
-              ? await cipher.decrypt(d.noteEncrypted, {
-                  patientId,
-                  field: 'review_decision.note',
-                  recordId: d.id,
-                })
-              : null,
-          })),
-        ),
-        surgeryChecks,
-        consents,
-        accessLog: log,
+      const bundle = await patientBundle(deps, orgId, patientId, {
+        notes: true,
+        accessLog: true,
       });
       return reply
         .header('content-type', 'application/fhir+json; charset=utf-8')
@@ -170,4 +128,64 @@ export function registerDataRightsRoutes(app: FastifyInstance, deps: DataRightsR
         .send(JSON.stringify(bundle));
     },
   );
+}
+
+/**
+ * Her record as a FHIR R4 Bundle (spec 5.3), from every treatment, decision, check, consent and,
+ * optionally, the clinicians' notes and her access log. Her export includes both; a record system
+ * (M7) gets neither.
+ */
+export async function patientBundle(
+  deps: Omit<DataRightsRouteDeps, 'deletions' | 'onCommitted'>,
+  orgId: string,
+  patientId: string,
+  opts: { readonly notes: boolean; readonly accessLog: boolean },
+): Promise<Record<string, unknown>> {
+  const cipher = deps.cipherFor(orgId);
+  const [episodes, decisions, surgeryChecks, consents, log] = await Promise.all([
+    // Everything, never a first page (REQ-009: a complete export).
+    deps.episodes.listForPatient(orgId, patientId, null),
+    deps.reviews.decisions(orgId, patientId),
+    deps.reviews.surgeryChecks(orgId, patientId),
+    deps.consents.current(orgId, patientId),
+    opts.accessLog ? accessLog(deps, orgId, patientId, 'all') : Promise.resolve([]),
+  ]);
+  return fhirExport({
+    patientId,
+    generatedAt: deps.now(),
+    episodes: await Promise.all(
+      episodes.map(async (e) => ({
+        episode: e,
+        treatmentDisplay:
+          deps.content.treatments.find(
+            (t) => t.system === e.treatmentSystem && t.code === e.treatmentCode,
+          )?.display ?? null,
+        goalText: e.goal?.textEncrypted
+          ? await cipher.decrypt(e.goal.textEncrypted, {
+              patientId,
+              field: 'goal.text',
+              recordId: e.goal.id,
+            })
+          : (deps.content.goals.find((g) => g.code === e.goal?.templateCode)?.text ?? null),
+        checkIns: await deps.episodes.listCheckIns(orgId, e.id),
+        redFlags: await deps.episodes.listRedFlags(orgId, e.id),
+      })),
+    ),
+    decisions: await Promise.all(
+      decisions.map(async (d) => ({
+        ...d,
+        note:
+          opts.notes && d.noteEncrypted
+            ? await cipher.decrypt(d.noteEncrypted, {
+                patientId,
+                field: 'review_decision.note',
+                recordId: d.id,
+              })
+            : null,
+      })),
+    ),
+    surgeryChecks,
+    consents,
+    accessLog: log,
+  });
 }
