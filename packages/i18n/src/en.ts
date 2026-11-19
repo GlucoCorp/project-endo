@@ -207,6 +207,27 @@ export const en = {
   'admin.invite-link': 'Invitation link',
   'admin.invite-row': '{role} invitation until {date}: {status}',
   'admin.invite-stop': 'Stop',
+  'launch.title': 'Opened from your record system',
+  'launch.linked': 'Showing the patient linked to this record ({ref}).',
+  'launch.unlinked':
+    'This record is not linked to a patient here yet. Choose the patient you confirmed in the clinic; you do this once.',
+  'launch.choose': 'Patient',
+  'launch.patient': 'Patient {ref}, enrolled {since}',
+  'launch.link': 'Link this record',
+  'launch.exists':
+    'Someone else linked this record in the meantime. Open it again from the record system.',
+  'launch.expired': 'This launch has expired. Open the patient again from your record system.',
+  'dashboard.title': 'Organisation dashboard',
+  'dashboard.lead':
+    'Counts for the last 12 months, from patients who agreed to aggregate reporting. Numbers under {min} are hidden, with any figure that would reveal them.',
+  'dashboard.month': 'Month',
+  'dashboard.started': 'Treatments started',
+  'dashboard.due': 'Reviews due',
+  'dashboard.on-time': 'Reviewed within {days} days',
+  'dashboard.total': 'Last 12 months',
+  'dashboard.hidden': 'fewer than {min}',
+  'dashboard.shadow':
+    'Verdict figures appear once verdicts are cleared for use in care; they are being checked against clinicians’ judgement now.',
   'join.title': 'Join your clinic team',
   'join.lead': 'Sign in with your staff passkey to accept the invitation.',
   'join.invalid': 'This invitation link cannot be used. Ask your clinic admin for a new one.',

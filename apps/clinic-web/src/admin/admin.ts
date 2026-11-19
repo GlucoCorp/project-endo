@@ -45,6 +45,32 @@ export async function startJoin(f: typeof fetch, token: string): Promise<boolean
   }
 }
 
+export interface Dashboard {
+  readonly min_cell: number;
+  readonly on_time_grace_days: number;
+  readonly months: readonly {
+    readonly month: string;
+    readonly episodes_started: number | null;
+    readonly reviews_due: number | null;
+    readonly reviews_on_time: number | null;
+  }[];
+  readonly totals: {
+    readonly episodes_started: number | null;
+    readonly reviews_due: number | null;
+    readonly reviews_on_time: number | null;
+  };
+}
+
+/** The organisation's aggregate dashboard (REQ-011), or null. */
+export async function dashboard(f: typeof fetch): Promise<Dashboard | null> {
+  try {
+    const res = await f('/v1/dashboard', { credentials: 'same-origin' });
+    return res.ok ? ((await res.json()) as Dashboard) : null;
+  } catch {
+    return null;
+  }
+}
+
 export type Result<T> =
   | { readonly kind: 'ok'; readonly value: T }
   | { readonly kind: 'refused'; readonly code: string }

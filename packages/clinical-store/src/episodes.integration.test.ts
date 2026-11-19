@@ -14,6 +14,10 @@ import {
   PostgresDeletionStore,
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
+  PostgresReportingStore,
+  PostgresIntegrationStore,
+  PostgresEhrLinkStore,
+  monthsBack,
   PostgresShareLinkStore,
   PostgresReviewStore,
   PostgresReminderStore,
@@ -918,22 +922,21 @@ describe.skipIf(!url)(
         expect((await links.list(ORG_A, PAT_A)).map((l) => l.id)).toContain(link.id);
         expect(await links.list(ORG_B, PAT_A)).toEqual([]);
         // 100 newer stopped links never hide a live one, from her list or her access log.
-        for (let i = 0; i < 101; i += 1) {
-          const id = randomUUID();
-          await links.create({
-            id,
-            orgId: ORG_A,
-            patientId: PAT_A,
-            tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
-            days: 1,
-            creationKey: randomUUID(),
-            auditEvent: audit('x'),
-          });
-          await links.revoke(ORG_A, PAT_A, id, audit('x'));
-        }
+        // (Setup in one statement: 101 newer links, already stopped.)
+        await admin.query(
+          `INSERT INTO share_link (id, org_id, patient_id, token_hash, created_at, expires_at,
+                                   revoked_at, creation_key)
+           SELECT gen_random_uuid(), $1, $2, encode(sha256(gen_random_uuid()::text::bytea), 'hex'),
+                  now() + make_interval(secs => g), now() + interval '1 day', now(), gen_random_uuid()
+           FROM generate_series(1, 101) AS g`,
+          [ORG_A, PAT_A],
+        );
         const listed = await links.list(ORG_A, PAT_A);
         expect(listed.map((l) => l.id)).toContain(link.id);
-        expect(listed.length).toBeLessThanOrEqual(101);
+        // Every live link, and at most 100 others.
+        expect(
+          listed.filter((l) => l.revokedAt !== null || l.expiresAt.getTime() <= Date.now()).length,
+        ).toBeLessThanOrEqual(100);
         expect(await links.ids(ORG_A, PAT_A)).toContain(link.id);
         expect((await links.ids(ORG_A, PAT_A)).length).toBeGreaterThan(101);
         expect(await links.ids(ORG_B, PAT_A)).toEqual([]);
@@ -1017,6 +1020,14 @@ describe.skipIf(!url)(
         } finally {
           setup.release();
         }
+        await new PostgresEhrLinkStore(apiDb).link({
+          id: randomUUID(),
+          orgId: ORG_A,
+          linkHash: createHash('sha256').update(`ehr|${pat}`).digest('hex'),
+          patientId: pat,
+          clinicianId: CLIN_A,
+          auditEvent: audit('x'),
+        });
         const e = await mk({ patientId: pat, startDate: day(-6) });
         const keys = new PostgresPatientKeyStore(apiDb, ORG_A);
         const cipher = new FieldCipher(new DevKeyManager('test'), keys);
@@ -1135,6 +1146,7 @@ describe.skipIf(!url)(
           'SELECT 1 FROM red_flag_event WHERE patient_id = $1',
           'SELECT 1 FROM check_in WHERE patient_id = $1',
           'SELECT 1 FROM consent WHERE patient_id = $1',
+          'SELECT 1 FROM ehr_patient_link WHERE patient_id = $1',
         ])
           expect((await admin.query(q, [pat])).rowCount).toBe(0);
         expect(
@@ -1385,6 +1397,158 @@ describe.skipIf(!url)(
         ).rejects.toThrow(/permission denied/);
         await expect(
           asApi((c) => c.query('SELECT token_hash FROM staff_invitation')),
+        ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('REQ-011 aggregate counts (consented patients only)', () => {
+      it('counts treatments started and reviews on time, only with org_aggregate_reporting', async () => {
+        const reporting = new PostgresReportingStore(apiDb);
+        // Completed months only: seen from next month, this month is the last one.
+        const nextMonth = monthsBack(day(0), -1);
+        const before = await reporting.monthly(ORG_A, nextMonth, 12, 7);
+        expect(before).toHaveLength(12);
+        expect(before.at(-1)?.month).toBe(`${day(0).slice(0, 7)}-01`);
+        expect((await reporting.monthly(ORG_A, day(0), 12, 7)).at(-1)?.month).not.toBe(
+          `${day(0).slice(0, 7)}-01`,
+        );
+        // A consenting patient with a confirmed treatment this month, and one who did not consent.
+        const yes = randomUUID();
+        const no = randomUUID();
+        for (const [p, status] of [
+          [yes, 'granted'],
+          [no, 'revoked'],
+        ] as const) {
+          await admin.query(
+            'INSERT INTO patient_record (id, org_id, identity_ref) VALUES ($1, $2, $3)',
+            [p, ORG_A, randomUUID()],
+          );
+          await admin.query(
+            `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+             VALUES ($1, $2, $3, 'org_aggregate_reporting', $4, 1)`,
+            [randomUUID(), p, ORG_A, status],
+          );
+          await admin.query(
+            `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+             VALUES ($1, $2, $3, 'share_with_care_team', 'granted', 1)`,
+            [randomUUID(), p, ORG_A],
+          );
+          const e = await mk({ patientId: p, startDate: day(0) });
+          await store.confirm({
+            orgId: ORG_A,
+            patientId: p,
+            episodeId: e.id,
+            confirmKey: randomUUID(),
+            goalId: randomUUID(),
+            goal: { templateCode: 'synthetic_goal_a' },
+            timeZone: 'UTC',
+            auditEvent: audit('x'),
+          });
+        }
+        const after = await reporting.monthly(ORG_A, nextMonth, 12, 7);
+        expect((after.at(-1)?.episodesStarted ?? 0) - (before.at(-1)?.episodesStarted ?? 0)).toBe(
+          1,
+        );
+        // She withdraws later: the month already counted does not change (no differencing).
+        await admin.query(
+          `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+           VALUES ($1, $2, $3, 'org_aggregate_reporting', 'revoked', 1)`,
+          [randomUUID(), yes, ORG_A],
+        );
+        expect((await reporting.monthly(ORG_A, nextMonth, 12, 7)).at(-1)?.episodesStarted).toBe(
+          after.at(-1)?.episodesStarted,
+        );
+        expect(await reporting.monthly(ORG_B, nextMonth, 12, 7)).toEqual(
+          before.map((b) => ({ ...b, episodesStarted: 0, reviewsDue: 0, reviewsOnTime: 0 })),
+        );
+        await expect(reporting.monthly(ORG_A, 'today', 12, 7)).rejects.toThrow(TypeError);
+        expect(monthsBack('2026-01-15', 1)).toBe('2025-12-01');
+        expect(monthsBack('2026-11-15', 11)).toBe('2025-12-01');
+      });
+    });
+
+    describe('M7 record-system integration clients (migration 0017)', () => {
+      it('keeps public keys per organisation, resolves by client id, and has a kill switch', async () => {
+        const integrations = new PostgresIntegrationStore(apiDb);
+        const adminId = randomUUID();
+        await admin.query(
+          `INSERT INTO clinician (id, org_id, identity_ref, role) VALUES ($1, $2, $3, 'org_admin')`,
+          [adminId, ORG_A, randomUUID()],
+        );
+        const clientId = randomBytes(18).toString('base64url');
+        const jwks = {
+          keys: [{ kty: 'EC', crv: 'P-384', x: 'x', y: 'y', alg: 'ES384', kid: 'k1' }],
+        };
+        const base = {
+          id: randomUUID(),
+          orgId: ORG_A,
+          clientId,
+          name: 'Synthetic record system',
+          jwks,
+          scopes: ['system/Patient.rs'],
+          auditEvent: audit('integration.created'),
+        };
+        expect(await integrations.create({ ...base, createdBy: CLIN_A })).toBe('not_admin');
+        const made = await integrations.create({ ...base, createdBy: adminId });
+        expect(made).toMatchObject({ clientId, active: true, scopes: ['system/Patient.rs'] });
+        expect((await integrations.list(ORG_A)).map((c) => c.clientId)).toContain(clientId);
+        expect(await integrations.list(ORG_B)).toEqual([]);
+        expect(await integrations.resolve(clientId)).toMatchObject({
+          orgId: ORG_A,
+          jwks,
+          active: true,
+        });
+        expect(await integrations.resolve('nobody-nobody-nobody-00')).toBeNull();
+        // Each assertion id once, across instances (stored in the database).
+        const exp = new Date(Date.now() + 120_000);
+        expect(await integrations.reserveAssertion(clientId, 'jti-1', exp)).toBe(true);
+        expect(await integrations.reserveAssertion(clientId, 'jti-1', exp)).toBe(false);
+        expect(
+          await new PostgresIntegrationStore(apiDb).reserveAssertion(clientId, 'jti-1', exp),
+        ).toBe(false);
+        expect(await integrations.reserveAssertion(clientId, 'jti-2', exp)).toBe(true);
+        // Expired ids may be used again (the record is replaced).
+        const past = new Date(Date.now() - 1000);
+        expect(await integrations.reserveAssertion(clientId, 'jti-old', past)).toBe(true);
+        expect(await integrations.reserveAssertion(clientId, 'jti-old', exp)).toBe(true);
+        await expect(asApi((c) => c.query('SELECT * FROM integration_assertion'))).rejects.toThrow(
+          /permission denied/,
+        );
+        const id = made === 'not_admin' ? '' : made.id;
+        const toggle = (active: boolean, actorId = adminId, orgId = ORG_A) =>
+          integrations.setActive({ orgId, id, active, actorId, auditEvent: audit('x') });
+        expect(await toggle(false, CLIN_A)).toBe(false);
+        expect(await toggle(false, adminId, ORG_B)).toBe(false);
+        expect(await toggle(false)).toBe(true);
+        expect((await integrations.resolve(clientId))?.active).toBe(false);
+        await expect(
+          asApi((c) =>
+            c.query('UPDATE integration_client SET jwks = $1 WHERE id = $2', ['{}', id]),
+          ),
+        ).rejects.toThrow(/permission denied/);
+      });
+    });
+
+    describe('M7 SMART launch patient links (migration 0018)', () => {
+      it('links a record-system patient once, by hash only, per organisation', async () => {
+        const links = new PostgresEhrLinkStore(apiDb);
+        const hash = createHash('sha256').update(`https://ehr.test|${randomUUID()}`).digest('hex');
+        expect(await links.resolve(ORG_A, hash)).toBeNull();
+        const link = (patientId: string) =>
+          links.link({
+            id: randomUUID(),
+            orgId: ORG_A,
+            linkHash: hash,
+            patientId,
+            clinicianId: CLIN_A,
+            auditEvent: audit('ehr_link.created'),
+          });
+        expect(await link(PAT_A)).toBe('linked');
+        expect(await link(PAT_A2)).toBe('exists');
+        expect(await links.resolve(ORG_A, hash)).toBe(PAT_A);
+        expect(await links.resolve(ORG_B, hash)).toBeNull();
+        await expect(
+          asApi((c) => c.query('DELETE FROM ehr_patient_link WHERE link_hash = $1', [hash])),
         ).rejects.toThrow(/permission denied/);
       });
     });

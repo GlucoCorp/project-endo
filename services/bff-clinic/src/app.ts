@@ -1,3 +1,4 @@
+import { registerSmartRoutes, type SmartIssuer } from './smart.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
@@ -11,6 +12,7 @@ import {
   registerAppShell,
   type AppShell,
   registerProblemHandlers,
+  securityTxt,
   requestIdFrom,
 } from '@endo/service-kit';
 import {
@@ -36,13 +38,20 @@ import {
   SESSION_COOKIE,
   readCookie,
   type ClinicSession,
-  type InMemoryClinicSessions,
+  type ClinicSessionStore,
 } from './sessions.ts';
 import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
-export const PORTAL_PATHS = ['/', '/enrolments', '/reviews', '/admin', '/join'] as const;
+export const PORTAL_PATHS = [
+  '/',
+  '/enrolments',
+  '/reviews',
+  '/admin',
+  '/join',
+  '/dashboard',
+] as const;
 
 /**
  * REQ-010 staff invitation in progress: the SHA-256 of the link token, for 10 minutes, until the
@@ -79,7 +88,10 @@ export class PendingJoins {
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
-  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' | 'join' }
+  | {
+      readonly kind: 'public';
+      readonly reason: 'liveness' | 'app-shell' | 'join' | 'security-txt' | 'smart-launch';
+    }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
   | { readonly kind: 'backchannel' }
@@ -104,7 +116,13 @@ export function isClinicAuth(value: unknown): value is ClinicAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
   if (v.kind === 'public')
-    return v.reason === 'liveness' || v.reason === 'app-shell' || v.reason === 'join';
+    return (
+      v.reason === 'liveness' ||
+      v.reason === 'app-shell' ||
+      v.reason === 'join' ||
+      v.reason === 'security-txt' ||
+      v.reason === 'smart-launch'
+    );
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
@@ -120,7 +138,7 @@ export interface ClinicBffDeps {
   readonly transactions: TransactionStore;
   /** Logout-token ids already used (replay protection). */
   readonly logoutTokens: SeenTokenIds;
-  readonly sessions: InMemoryClinicSessions;
+  readonly sessions: ClinicSessionStore;
   readonly resolver: Resolver;
   /** Seals the Keycloak refresh token held in each session. */
   readonly sealer: EnvelopeSealer;
@@ -134,6 +152,12 @@ export interface ClinicBffDeps {
   readonly appShell?: AppShell;
   /** Clinic enrolment (ADR-0021 slice 3). Without it those routes do not exist. */
   readonly enrolment?: ClinicEnrolmentDeps;
+  /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
+  readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
+  /** SMART App Launch (M7, spec 16.2): allowlisted record systems. No launch routes without. */
+  readonly smartIssuers?: readonly SmartIssuer[];
+  /** Launch attempts held at once (tests lower it). */
+  readonly smartMaxPending?: number;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -308,6 +332,18 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         .header('cache-control', 'no-store')
         .code(204)
         .send();
+    },
+  );
+
+  app.get(
+    '/.well-known/security.txt',
+    { config: { auth: { kind: 'public', reason: 'security-txt' } } },
+    (_request, reply) => {
+      const c = deps.securityContact;
+      if (!c) throw new ProblemError(404, 'not_found', 'Not found.');
+      return reply
+        .type('text/plain; charset=utf-8')
+        .send(securityTxt({ contact: c.contact, policy: c.policy ?? null, now: deps.now() }));
     },
   );
 
@@ -545,6 +581,16 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   if (deps.enrolment) registerClinicEnrolmentRoutes(app, deps.enrolment);
   // REQ-002: drafting treatment episodes (same API and signer as enrolment).
   if (deps.enrolment) registerClinicEpisodeRoutes(app, deps.enrolment);
+  if (deps.enrolment && deps.smartIssuers && deps.smartIssuers.length > 0)
+    registerSmartRoutes(app, {
+      issuers: deps.smartIssuers,
+      portalOrigin: deps.portalOrigin,
+      apiBaseUrl: deps.enrolment.apiBaseUrl,
+      signer: deps.enrolment.signer,
+      fetch: deps.enrolment.fetch,
+      now: () => deps.now().getTime(),
+      ...(deps.smartMaxPending ? { maxPending: deps.smartMaxPending } : {}),
+    });
   if (deps.appShell)
     registerAppShell(app, deps.appShell, {
       paths: PORTAL_PATHS,
