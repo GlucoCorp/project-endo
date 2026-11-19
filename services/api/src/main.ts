@@ -46,10 +46,12 @@ import {
   PostgresOrgAdminStore,
   PostgresStaffInvitationStore,
   PostgresReportingStore,
+  PostgresIntegrationStore,
+  PostgresEhrLinkStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
-import { DevKeyManager, EnvelopeSealer, FieldCipher } from '@endo/crypto';
+import { DevKeyManager, OpenBaoKeyManager, EnvelopeSealer, FieldCipher } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
 import {
   ServiceTokenVerifier,
@@ -86,6 +88,14 @@ const PublicJwk = z.string().transform((s, ctx) => {
 });
 
 const Config = z.object({
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   ENDO_CLINICAL_RULESET_PATH: z.string().min(1),
@@ -106,6 +116,8 @@ const Config = z.object({
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
   API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The integration service's workload key (M7): client resolution and FHIR reads only. */
+  API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The patient BFF's workload key: a receiver's view of a share link (REQ-008), nothing else. */
   API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
@@ -203,7 +215,14 @@ async function main(): Promise<void> {
   });
   // DevKeyManager refuses staging and production: deployed environments need the OpenBao
   // KeyManager (infra slice) before the API can start. Fail closed.
-  const kms = new DevKeyManager(config.ENDO_ENV);
+  const kms =
+    config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+      ? new OpenBaoKeyManager({
+          address: config.ENDO_KMS_OPENBAO_ADDR,
+          token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+          ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+        })
+      : new DevKeyManager(config.ENDO_ENV);
 
   // Spec 2.6: deployed environments must use the durable Postgres audit store. Fail closed.
   let auditStore: AuditStore & AuditReader;
@@ -230,6 +249,8 @@ async function main(): Promise<void> {
   let orgAdmin: PostgresOrgAdminStore | undefined;
   let staffInvitations: PostgresStaffInvitationStore | undefined;
   let reporting: PostgresReportingStore | undefined;
+  let integrations: PostgresIntegrationStore | undefined;
+  let ehrLinks: PostgresEhrLinkStore | undefined;
   let reviews:
     | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
     | undefined;
@@ -262,6 +283,8 @@ async function main(): Promise<void> {
     orgAdmin = new PostgresOrgAdminStore(db);
     staffInvitations = new PostgresStaffInvitationStore(db);
     reporting = new PostgresReportingStore(db);
+    integrations = new PostgresIntegrationStore(db);
+    ehrLinks = new PostgresEhrLinkStore(db);
     reviews = {
       reviews: new PostgresReviewStore(db),
       episodes: new PostgresEpisodeStore(db),
@@ -346,6 +369,14 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      ...(config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            integration: {
+              publicJwk: config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.integration.resolve', 'api.fhir.read'],
+            },
+          }
+        : {}),
       ...(config.API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK
         ? {
             identity: {
@@ -406,6 +437,20 @@ async function main(): Promise<void> {
       : {}),
     ...(orgAdmin && staffInvitations ? { orgAdmin: { orgAdmin, staffInvitations } } : {}),
     ...(reporting ? { dashboard: { reporting } } : {}),
+    ...(ehrLinks ? { ehrLinks: { ehrLinks } } : {}),
+    ...(integrations && reviews && links
+      ? {
+          integrations: {
+            integrations,
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
     ...(reviews && links && deletions
       ? {
           dataRights: {

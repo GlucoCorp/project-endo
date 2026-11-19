@@ -98,3 +98,7 @@ export type {
 } from './staff-invitations.ts';
 export { PostgresReportingStore, bucketCounts, monthsBack } from './reporting.ts';
 export type { MonthlyCounts, ReportingStore } from './reporting.ts';
+export { PostgresIntegrationStore } from './integrations.ts';
+export type { IntegrationClient, IntegrationStore, ResolvedClient } from './integrations.ts';
+export { PostgresEhrLinkStore } from './ehr-links.ts';
+export type { EhrLinkStore } from './ehr-links.ts';

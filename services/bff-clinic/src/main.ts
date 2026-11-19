@@ -1,7 +1,7 @@
 import { createRemoteJWKSet } from 'jose';
 import { z } from 'zod';
 import { Environment, isDeployedEnvironment, loadConfig } from '@endo/config';
-import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
+import { DevKeyManager, OpenBaoKeyManager, EnvelopeSealer } from '@endo/crypto';
 import {
   ServiceTokenSigner,
   WorkloadTokenSigner,
@@ -11,7 +11,10 @@ import {
 import { buildClinicBff } from './app.ts';
 import { SeenTokenIds, TransactionStore } from './oidc.ts';
 import { HttpResolver } from './resolve.ts';
-import { InMemoryClinicSessions } from './sessions.ts';
+import { InMemoryClinicSessions, type ClinicSessionStore } from './sessions.ts';
+import { PostgresClinicSessions } from './pg-sessions.ts';
+import { SessionTable, type SessionDatabase } from '@endo/session-store';
+import { createDb, createPool } from '@endo/db';
 
 const PrivateJwk = z.string().transform((s, ctx) => {
   try {
@@ -26,6 +29,38 @@ const PrivateJwk = z.string().transform((s, ctx) => {
 const HttpUrl = z.url({ protocol: /^https?$/ });
 
 const Config = z.object({
+  // ADR-0033: durable sessions (a member of endo_sessions_app). Without it the in-memory store is
+  // used, which refuses staging and production.
+  BFF_CLINIC_SESSION_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }).optional(),
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
+  // M7, spec 16.2: record systems allowed to launch the portal, as [{"iss": ..., "client_id": ...}].
+  BFF_CLINIC_SMART_ISSUERS: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        return z
+          .array(
+            z.object({
+              iss: z.url({ protocol: /^https?$/ }),
+              client_id: z.string().min(1).max(256),
+            }),
+          )
+          .max(20)
+          .parse(JSON.parse(s))
+          .map((i) => ({ iss: i.iss, clientId: i.client_id }));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   // Spec 12.7: where vulnerability reports go (mailto: or https:), and the disclosure policy.
   ENDO_SECURITY_CONTACT: z
     .string()
@@ -67,6 +102,25 @@ async function main(): Promise<void> {
     throw new Error('bff-clinic has no durable session store yet; refusing to start.');
   }
 
+  let sessionTable: SessionTable | null = null;
+  if (config.BFF_CLINIC_SESSION_DATABASE_URL) {
+    sessionTable = new SessionTable(
+      createDb<SessionDatabase>(
+        createPool(config.BFF_CLINIC_SESSION_DATABASE_URL, {
+          applicationName: 'endo-bff-clinic-sessions',
+        }),
+      ),
+    );
+    const table = sessionTable;
+    // Expired rows are removed every 10 minutes (reads already refuse them).
+    setInterval(() => {
+      table.sweep().catch(() => process.stderr.write('session sweep failed\n'));
+    }, 600_000).unref();
+  }
+  const sessions: ClinicSessionStore = sessionTable
+    ? new PostgresClinicSessions(sessionTable)
+    : new InMemoryClinicSessions(config.ENDO_ENV);
+
   const app = await buildClinicBff({
     logLevel: config.ENDO_LOG_LEVEL,
     oidc: {
@@ -88,8 +142,17 @@ async function main(): Promise<void> {
     transactions: new TransactionStore(),
     logoutTokens: new SeenTokenIds(),
     // DevKeyManager refuses deployed environments; main already refuses them too (no durable store).
-    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/identity'),
-    sessions: new InMemoryClinicSessions(config.ENDO_ENV),
+    sealer: new EnvelopeSealer(
+      config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+        ? new OpenBaoKeyManager({
+            address: config.ENDO_KMS_OPENBAO_ADDR,
+            token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+            ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+          })
+        : new DevKeyManager(config.ENDO_ENV),
+      'kms/identity',
+    ),
+    sessions,
     resolver: new HttpResolver({
       identityBaseUrl: config.BFF_CLINIC_IDENTITY_BASE_URL,
       apiBaseUrl: config.BFF_CLINIC_API_BASE_URL,
@@ -99,6 +162,7 @@ async function main(): Promise<void> {
     fetch,
     now: () => new Date(),
     portalOrigin: config.BFF_CLINIC_PORTAL_ORIGIN,
+    ...(config.BFF_CLINIC_SMART_ISSUERS ? { smartIssuers: config.BFF_CLINIC_SMART_ISSUERS } : {}),
     securityContact: config.ENDO_SECURITY_CONTACT
       ? { contact: config.ENDO_SECURITY_CONTACT, policy: config.ENDO_SECURITY_POLICY_URL ?? null }
       : null,
