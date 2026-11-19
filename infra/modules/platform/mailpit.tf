@@ -42,7 +42,7 @@ resource "kubernetes_deployment_v1" "mailpit" {
           }
           resources {
             requests = { cpu = "10m", memory = "16Mi" }
-            limits   = { memory = "64Mi" }
+            limits   = { memory = "96Mi" }
           }
           security_context {
             allow_privilege_escalation = local.hardened.allow_privilege_escalation
@@ -51,6 +51,19 @@ resource "kubernetes_deployment_v1" "mailpit" {
             capabilities {
               drop = local.hardened.capabilities_drop
             }
+          }
+          # Mailpit keeps its message store in a temporary file even with `--database ""`; the
+          # root filesystem is read-only, so /tmp is a small memory-backed scratch volume.
+          volume_mount {
+            name       = "tmp"
+            mount_path = "/tmp"
+          }
+        }
+        volume {
+          name = "tmp"
+          empty_dir {
+            medium     = "Memory"
+            size_limit = "32Mi"
           }
         }
       }
