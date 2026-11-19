@@ -15,6 +15,7 @@
     "test:e2e:keycloak": "vite build && playwright test -c e2e-keycloak/playwright.config.ts"
   },
   "dependencies": {
+    "@endo/domain": "workspace:*",
     "@endo/i18n": "workspace:*",
     "@endo/ui": "workspace:*",
     "@tanstack/react-router": "1.170.46",
@@ -25,7 +26,6 @@
     "@endo/bff-patient": "workspace:*",
     "@endo/clinical-store": "workspace:*",
     "@endo/db": "workspace:*",
-    "@endo/domain": "workspace:*",
     "@endo/identity-store": "workspace:*",
     "@endo/oidc": "workspace:*",
     "@endo/service-kit": "workspace:*",

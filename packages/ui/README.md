@@ -6,13 +6,14 @@
 
 ## Public API
 
-| Export                                                        | What it does                                                                                                                                                                              |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@endo/ui/tokens.css`                                         | CSS custom properties for colour, type, space, shape, motion, focus and target size, with dark mode, `prefers-contrast: more` and `prefers-reduced-motion`. Generated; never edit by hand |
-| `LIGHT`, `DARK`, `MORE_CONTRAST`                              | The palettes of spec 21.4, plus `on-action`, `control-border` and `focus-ring` (documented in `tokens.ts`)                                                                                |
-| `COLOUR_PAIRS`, `DECORATIVE`                                  | Every allowed foreground/background pairing and its use (text, AAA text, non-text). Colours in `DECORATIVE` (`rule`) are never text or a control's only boundary                          |
-| `TYPE`, `SPACE`, `RADIUS`, `MOTION`, `FOCUS`, `TARGET_MIN_PX` | Spec 21.3 and 21.5 scales                                                                                                                                                                 |
-| `contrastRatio`, `relativeLuminance`, `MINIMUM_CONTRAST`      | WCAG 2.2 contrast, as the specification defines it                                                                                                                                        |
+| Export                                                             | What it does                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@endo/ui/tokens.css`                                              | CSS custom properties for colour, type, space, shape, motion, focus and target size, with dark mode, `prefers-contrast: more` and `prefers-reduced-motion`. Generated; never edit by hand                                              |
+| `LIGHT`, `DARK`, `MORE_CONTRAST`                                   | The palettes of spec 21.4, plus `on-action`, `control-border` and `focus-ring` (documented in `tokens.ts`)                                                                                                                             |
+| `COLOUR_PAIRS`, `DECORATIVE`                                       | Every allowed foreground/background pairing and its use (text, AAA text, non-text). Colours in `DECORATIVE` (`rule`) are never text or a control's only boundary                                                                       |
+| `TYPE`, `SPACE`, `RADIUS`, `MOTION`, `FOCUS`, `TARGET_MIN_PX`      | Spec 21.3 and 21.5 scales                                                                                                                                                                                                              |
+| `contrastRatio`, `relativeLuminance`, `MINIMUM_CONTRAST`           | WCAG 2.2 contrast, as the specification defines it                                                                                                                                                                                     |
+| `@endo/ui/trial-strip`: `stripModel`, `describeWeek`, `TrialStrip` | Spec 21.6: the weeks of a trial as four lanes (benefit against the first week, side effects, days taken, barriers); missing weeks are "No entry", never zero. `TrialStrip` draws it as SVG with an equivalent table for screen readers |
 
 ## Rules the tests enforce
 

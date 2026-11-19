@@ -36,6 +36,8 @@ async function setup(
     tokenStatus?: number;
     /** Status the stand-in Keycloak answers refresh grants with (default 200). */
     refreshStatus?: () => number;
+    claimStaff?: Resolver['claimStaff'];
+    securityContact?: { contact: string; policy?: string | null };
   } = {},
 ) {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
@@ -84,6 +86,7 @@ async function setup(
       Promise.resolve(
         opts.membershipReads?.shift() ?? opts.memberships ?? [{ orgId: ORG_A, role: 'clinician' }],
       ),
+    ...(opts.claimStaff ? { claimStaff: opts.claimStaff } : {}),
   };
   const sessions = new InMemoryClinicSessions('test', () => clock);
   const app = await buildClinicBff({
@@ -98,6 +101,7 @@ async function setup(
     fetch: fetchStub,
     now: () => new Date(clock),
     portalOrigin: 'https://clinic.test',
+    ...(opts.securityContact ? { securityContact: opts.securityContact } : {}),
   });
 
   /** Starts a login; returns the transaction cookie and the parameters sent to Keycloak. */
@@ -676,5 +680,90 @@ describe('Codex review, slice 6: logout token strictness', () => {
     const res = await post(new URLSearchParams({ logout_token: token, extension: 'x' }).toString());
     expect(res.statusCode).toBe(200);
     expect(await alive()).toBe(false);
+  });
+});
+
+describe('REQ-010 a staff invitation claimed at sign-in', () => {
+  const TOKEN = 'J'.repeat(43);
+  const HASH = createHash('sha256').update(TOKEN).digest('hex');
+
+  it('keeps only the hash of the link token, then claims it for the person who signed in', async () => {
+    const claimed: [string, string][] = [];
+    const ctx = await setup({
+      claimStaff: (hash, person) => {
+        claimed.push([hash, person]);
+        return Promise.resolve('claimed');
+      },
+    });
+    const join = await ctx.app.inject({
+      method: 'POST',
+      url: '/v1/join',
+      headers: { origin: 'https://clinic.test', 'content-type': 'application/json' },
+      payload: { token: TOKEN },
+    });
+    expect(join.statusCode).toBe(204);
+    const joinCookie = String(join.headers['set-cookie']);
+    expect(joinCookie).toContain(`__Host-endo_join=${HASH}`);
+    expect(joinCookie).toContain('Max-Age=600');
+    expect(joinCookie).not.toContain(TOKEN);
+    // The invitation belongs to the sign-in started with it: the cookie moves into its state.
+    const first = await ctx.start(`__Host-endo_join=${HASH}`);
+    expect(String(first.res.headers['set-cookie'])).toContain('__Host-endo_join=; Path=/');
+    // Another attempt in the same browser (another tab) does not get it.
+    const other = await ctx.start();
+    expect((await ctx.callback(`code=c2&state=${other.state}`, other.cookie)).statusCode).toBe(200);
+    expect(claimed).toEqual([]);
+    ctx.answer(first.nonce);
+    const res = await ctx.callback(`code=c1&state=${first.state}`, first.cookie);
+    expect(res.statusCode).toBe(200);
+    expect(claimed).toEqual([[HASH, PERSON]]);
+  });
+
+  it('refuses a cross-site or malformed join, and ignores a malformed cookie', async () => {
+    const claimed: string[] = [];
+    const ctx = await setup({
+      claimStaff: (hash) => {
+        claimed.push(hash);
+        return Promise.resolve('unavailable');
+      },
+    });
+    const post = (headers: Record<string, string>, payload: object) =>
+      ctx.app.inject({ method: 'POST', url: '/v1/join', headers, payload });
+    expect(
+      (
+        await post(
+          { origin: 'https://evil.test', 'content-type': 'application/json' },
+          { token: TOKEN },
+        )
+      ).statusCode,
+    ).toBe(403);
+    expect(
+      (
+        await post(
+          { origin: 'https://clinic.test', 'content-type': 'application/json' },
+          { token: 'short' },
+        )
+      ).statusCode,
+    ).toBe(400);
+    const { cookie, state } = await ctx.start('__Host-endo_join=nope');
+    const res = await ctx.callback(`code=c1&state=${state}`, cookie);
+    expect(res.statusCode).toBe(200); // an existing member signs in as usual
+    expect(claimed).toEqual([]);
+  });
+});
+
+describe('spec 12.7 security.txt (clinic portal)', () => {
+  it('is absent without a contact', async () => {
+    const ctx = await setup();
+    expect((await ctx.app.inject({ url: '/.well-known/security.txt' })).statusCode).toBe(404);
+    const withContact = await setup({
+      securityContact: {
+        contact: 'https://example.test/report',
+        policy: 'https://example.test/disclosure',
+      },
+    });
+    const res = await withContact.app.inject({ url: '/.well-known/security.txt' });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('Policy: https://example.test/disclosure');
   });
 });

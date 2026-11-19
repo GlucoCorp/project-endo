@@ -1,6 +1,11 @@
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AuditEvent } from './schema.ts';
-import { AuditSequenceConflictError, type AuditStore } from './writer.ts';
+import {
+  AuditSequenceConflictError,
+  type AuditReader,
+  type AuditStore,
+  type ResourceRef,
+} from './writer.ts';
 
 /** Table shape for Kysely. Matches migrations/0001_audit_event.sql. */
 export interface AuditDatabase {
@@ -51,7 +56,7 @@ const PG_UNIQUE_VIOLATION = '23505';
  * Durable audit store on PostgreSQL (spec 11.1 audit store; ADR-0008, ADR-0013). The database
  * enforces append-only, the event shape and chain linkage; this class maps rows and errors.
  */
-export class PostgresAuditStore implements AuditStore {
+export class PostgresAuditStore implements AuditStore, AuditReader {
   readonly #db: Kysely<AuditDatabase>;
 
   constructor(db: Kysely<AuditDatabase>) {
@@ -88,6 +93,34 @@ export class PostgresAuditStore implements AuditStore {
       .where('sequence', '>=', String(fromSequence))
       .orderBy('sequence', 'asc')
       .limit(limit)
+      .execute();
+    return rows.map(toEvent);
+  }
+
+  async forResources(
+    refs: readonly ResourceRef[],
+    limit: number,
+    beforeSequence?: number,
+  ): Promise<readonly AuditEvent[]> {
+    if (refs.length === 0) return [];
+    // One `type = … AND id IN (…)` per resource type, however many resources she has.
+    const byType = new Map<string, string[]>();
+    for (const r of refs) byType.set(r.type, [...(byType.get(r.type) ?? []), r.id]);
+    const rows = await this.#db
+      .selectFrom('audit_event')
+      .selectAll()
+      .where((eb) =>
+        eb.or(
+          [...byType].map(([type, ids]) =>
+            eb.and([eb('resource_type', '=', type), eb('resource_id', 'in', ids)]),
+          ),
+        ),
+      )
+      .$if(beforeSequence !== undefined, (q) =>
+        q.where('sequence', '<', String(beforeSequence ?? 0)),
+      )
+      .orderBy('sequence', 'desc')
+      .limit(Math.min(Math.max(limit, 1), 500))
       .execute();
     return rows.map(toEvent);
   }

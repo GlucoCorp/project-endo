@@ -38,6 +38,11 @@ export class Portal {
   readonly #fetch: typeof fetch;
   #csrf = '';
 
+  /** This session's CSRF token, for other state-changing calls on the same session. */
+  csrfToken(): string {
+    return this.#csrf;
+  }
+
   constructor(f: typeof fetch) {
     this.#fetch = f;
   }

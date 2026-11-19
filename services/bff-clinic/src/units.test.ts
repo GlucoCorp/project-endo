@@ -31,7 +31,10 @@ describe('HttpResolver (ADR-0019 section 4)', () => {
         'bff-clinic': { publicJwk: keys.publicJwk, scopes: ['identity.subject.resolve'] },
       }),
       api: new WorkloadTokenVerifier('api', {
-        'bff-clinic': { publicJwk: keys.publicJwk, scopes: ['api.membership.resolve'] },
+        'bff-clinic': {
+          publicJwk: keys.publicJwk,
+          scopes: ['api.membership.resolve', 'api.staff.join'],
+        },
       }),
     };
     const fetchStub = (async (url: string, init?: RequestInit) => {
@@ -49,6 +52,22 @@ describe('HttpResolver (ADR-0019 section 4)', () => {
     });
     return { resolver, seen };
   };
+
+  it('REQ-010 claims a staff invitation with the api.staff.join scope', async () => {
+    const statuses = [200, 404, 409, 500];
+    const { resolver, seen } = await make(
+      () => new Response('{}', { status: statuses.shift() ?? 500 }),
+    );
+    const hash = 'a'.repeat(64);
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('claimed');
+    expect(seen[0]).toEqual({
+      url: 'https://api.test/internal/v1/staff-invitations/claim',
+      scopes: ['api.staff.join'],
+    });
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('unavailable');
+    expect(await resolver.claimStaff(hash, PERSON)).toBe('unavailable');
+    await expect(resolver.claimStaff(hash, PERSON)).rejects.toBeInstanceOf(ResolverError);
+  });
 
   it('resolves a person and memberships, each call with its own audience and single scope', async () => {
     const { resolver, seen } = await make((url) =>
@@ -256,5 +275,46 @@ describe('activation respects expiry and background requests (Codex review, slic
     expect(next).not.toBeNull();
     t = CLINIC_IDLE_MS + 1;
     expect(await s.resolve(next ?? '', { touch: false })).toBeNull();
+  });
+});
+
+describe('REQ-010 invitations pending per sign-in attempt', () => {
+  it('gives each attempt its own, once, and forgets them when the attempt would expire', async () => {
+    const { PendingJoins } = await import('./app.ts');
+    let t = 0;
+    const joins = new PendingJoins(() => t, 3);
+    joins.add('s1', 'a'.repeat(64));
+    joins.add('s1b', 'b'.repeat(64)); // within the same second: no pruning pass
+    expect(joins.take('s1b')).toBe('b'.repeat(64));
+    expect(joins.take('s2')).toBeNull();
+    expect(joins.take('s1')).toBe('a'.repeat(64));
+    expect(joins.take('s1')).toBeNull();
+    joins.add('s3', 'b'.repeat(64));
+    t += TRANSACTION_TTL_MS + 1;
+    expect(joins.take('s3')).toBeNull();
+    // Old entries are pruned when new ones arrive; the map stays bounded.
+    joins.add('old', 'c'.repeat(64));
+    t += TRANSACTION_TTL_MS + 1;
+    for (let i = 0; i < 4; i += 1) joins.add(`s${String(i)}`, 'd'.repeat(64));
+    expect(joins.take('old')).toBeNull();
+    expect(joins.take('s3')).toBeNull(); // over the bound: not kept
+    expect(joins.take('s0')).toBe('d'.repeat(64));
+  });
+});
+
+describe('M7 SMART launch state', () => {
+  it('keeps entries for 10 minutes, once each, within a bound', async () => {
+    const { Expiring } = await import('./smart.ts');
+    let t = 0;
+    const e = new Expiring<string>(() => t, 2);
+    expect(e.add('a', '1')).toBe(true);
+    expect(e.add('b', '2')).toBe(true);
+    expect(e.add('c', '3')).toBe(false); // over the bound
+    expect(e.get('a')).toBe('1');
+    expect(e.take('a')).toBe('1');
+    expect(e.take('a')).toBeNull();
+    t = 10 * 60_000 + 1;
+    expect(e.get('b')).toBeNull(); // expired
+    expect(e.add('d', '4')).toBe(true); // the expired one was pruned
   });
 });

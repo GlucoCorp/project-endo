@@ -1,0 +1,127 @@
+/* Check-in, red flag, goal and Trial Card (spec 21.4, 21.5, 21.7). Tokens from global.css. */
+.card {
+  border: 1px solid var(--rule, #c9c4bb);
+  border-radius: 6px;
+  padding: 16px;
+  margin: 16px 0;
+}
+.cardTitle {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+.goal {
+  font-style: italic;
+  margin: 8px 0;
+}
+.meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-variant-numeric: tabular-nums;
+}
+.draft {
+  border-left: 4px solid var(--warning, #a15c00);
+  padding: 8px 12px;
+  margin: 12px 0;
+}
+.progress {
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 8px;
+}
+.question {
+  font-size: 1.25rem;
+  margin: 8px 0 16px;
+}
+.options {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 16px;
+  padding: 0;
+  border: 0;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--rule, #c9c4bb);
+  border-radius: 6px;
+}
+.scale {
+  display: grid;
+  grid-template-columns: repeat(11, minmax(0, 1fr));
+  gap: 2px;
+  margin: 8px 0;
+}
+.segment {
+  min-height: 44px;
+  min-width: 0;
+  border: 1px solid var(--rule, #c9c4bb);
+  background: transparent;
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+.segment[aria-pressed='true'] {
+  background: var(--ink, #1d1b18);
+  color: var(--paper, #fbf9f5);
+}
+.anchors {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.875rem;
+}
+.value {
+  font-size: 2.5rem;
+  font-variant-numeric: tabular-nums;
+  margin: 8px 0;
+}
+.nav {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+.urgent {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--paper, #fbf9f5);
+  border-top: 8px solid var(--critical, #b3261e);
+  padding: 32px 16px;
+  overflow-y: auto;
+}
+.urgentTitle {
+  font-size: 2.5rem;
+  line-height: 1.1;
+  margin: 0 0 24px;
+}
+.urgentText {
+  font-size: 1.25rem;
+}
+.call,
+.ack {
+  display: block;
+  width: 100%;
+  min-height: 56px;
+  margin: 16px 0;
+  font-size: 1.25rem;
+  text-align: center;
+  border-radius: 6px;
+}
+.call {
+  background: var(--critical, #b3261e);
+  color: #fff;
+  line-height: 56px;
+  text-decoration: none;
+}
+.ack {
+  border: 2px solid var(--ink, #1d1b18);
+  background: transparent;
+  color: inherit;
+}
+.call:focus-visible,
+.ack:focus-visible,
+.segment:focus-visible {
+  outline: 3px solid var(--focus, #1a5fb4);
+  outline-offset: 2px;
+}
