@@ -123,6 +123,7 @@ async function main(): Promise<void> {
     config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
       ? new OpenBaoKeyManager({
           address: config.ENDO_KMS_OPENBAO_ADDR,
+          environment: config.ENDO_ENV,
           token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
           ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
         })

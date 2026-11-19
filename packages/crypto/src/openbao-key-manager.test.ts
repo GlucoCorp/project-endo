@@ -82,6 +82,19 @@ describe('spec 11.2 OpenBao Transit key manager', () => {
     expect(calls.map((c) => c.token)).toEqual(['first', 'second']);
   });
 
+  it('spec 11.2 allows plain http to an in-cluster OpenBao only in dev and test', () => {
+    for (const environment of ['dev', 'test'] as const)
+      expect(
+        () =>
+          new OpenBaoKeyManager({ address: 'http://openbao:8200', environment, token: () => 't' }),
+      ).not.toThrow();
+    for (const environment of ['staging', 'production'] as const)
+      expect(
+        () =>
+          new OpenBaoKeyManager({ address: 'http://openbao:8200', environment, token: () => 't' }),
+      ).toThrow(KeyManagerError);
+  });
+
   it('refuses plain http off loopback and a bad mount', () => {
     expect(() => new OpenBaoKeyManager({ address: 'http://bao.test', token: () => 't' })).toThrow(
       KeyManagerError,
