@@ -1,0 +1,7 @@
+{
+  "_about": "Treatment catalogue (spec 4 REQ-002, 5.3). OWNED BY THE CLINICAL LEAD. The treatments a clinician can choose when drafting an episode: code system, code, display name, and which adherence question applies (spec 6.1 Q7). Empty until the clinical lead fills it; development uses obviously synthetic placeholders instead (packages/config/src/synthetic.ts), which staging and production refuse.",
+  "catalogue_version": "1.0.0",
+  "approved_by": "TODO_CLINICAL",
+  "approved_on": "TODO_CLINICAL",
+  "entries": "TODO_CLINICAL"
+}

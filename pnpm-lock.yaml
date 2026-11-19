@@ -251,6 +251,9 @@ importers:
 
   apps/patient-web:
     dependencies:
+      '@endo/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@endo/i18n':
         specifier: workspace:*
         version: link:../../packages/i18n
@@ -270,9 +273,6 @@ importers:
       '@endo/bff-patient':
         specifier: workspace:*
         version: link:../../services/bff-patient
-      '@endo/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
       '@endo/oidc':
         specifier: workspace:*
         version: link:../../packages/oidc
@@ -318,6 +318,9 @@ importers:
 
   packages/clinical-store:
     dependencies:
+      '@endo/crypto':
+        specifier: workspace:*
+        version: link:../crypto
       '@endo/db':
         specifier: workspace:*
         version: link:../db
@@ -401,7 +404,32 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
-  packages/ui: {}
+  packages/session-store:
+    dependencies:
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../db
+      kysely:
+        specifier: 0.28.18
+        version: 0.28.18
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+
+  packages/ui:
+    devDependencies:
+      '@types/react':
+        specifier: 19.3.0
+        version: 19.3.0
+      react:
+        specifier: 19.3.1
+        version: 19.3.1
+
+  packages/verdict: {}
 
   services/api:
     dependencies:
@@ -429,12 +457,18 @@ importers:
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/verdict':
+        specifier: workspace:*
+        version: link:../../packages/verdict
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1
       fastify:
         specifier: 5.12.7
         version: 5.12.7
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -447,12 +481,18 @@ importers:
       '@endo/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@endo/oidc':
         specifier: workspace:*
         version: link:../../packages/oidc
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/session-store':
+        specifier: workspace:*
+        version: link:../../packages/session-store
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1
@@ -478,6 +518,9 @@ importers:
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@endo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -487,6 +530,9 @@ importers:
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/session-store':
+        specifier: workspace:*
+        version: link:../../packages/session-store
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1
@@ -558,6 +604,27 @@ importers:
       pg:
         specifier: 8.23.1
         version: 8.23.1
+
+  services/integration:
+    dependencies:
+      '@endo/config':
+        specifier: workspace:*
+        version: link:../../packages/config
+      '@endo/service-kit':
+        specifier: workspace:*
+        version: link:../../packages/service-kit
+      '@fastify/rate-limit':
+        specifier: 11.2.1
+        version: 11.2.1
+      fastify:
+        specifier: 5.12.7
+        version: 5.12.7
+      jose:
+        specifier: 6.2.14
+        version: 6.2.14
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
 packages:
 

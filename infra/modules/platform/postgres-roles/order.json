@@ -19,6 +19,10 @@
     "identity": [
       "packages/identity-store/bootstrap/roles.sql",
       "infra/modules/platform/postgres-roles/identity.sql"
+    ],
+    "sessions": [
+      "packages/session-store/bootstrap/roles.sql",
+      "infra/modules/platform/postgres-roles/sessions.sql"
     ]
   }
 }

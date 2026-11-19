@@ -4,9 +4,9 @@ import { ROLES } from '@endo/domain';
 /** First `prev_hash` in a chain. */
 export const GENESIS_HASH = '0'.repeat(64);
 
-const uuid = z
-  .string()
-  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+/** The ids an audit event accepts (RFC 9562 variant); services check path ids with it too. */
+export const AUDIT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const uuid = z.string().regex(AUDIT_UUID);
 const SEGMENT = /^[a-z][a-z0-9_]*$/;
 /** Dotted lower-case codes only, e.g. `episode.read`. No spaces, so no room for free text. */
 const code = z

@@ -1,0 +1,7 @@
+{
+  "_about": "Suggested goals (spec 4 REQ-002, 21.7 screen 3). OWNED BY THE CLINICAL LEAD. Codes and patient-facing wording of the goals offered before 'Write my own'. Empty until the clinical lead fills it; development uses obviously synthetic placeholders instead (packages/config/src/synthetic.ts), which staging and production refuse.",
+  "templates_version": "1.0.0",
+  "approved_by": "TODO_CLINICAL",
+  "approved_on": "TODO_CLINICAL",
+  "templates": "TODO_CLINICAL"
+}

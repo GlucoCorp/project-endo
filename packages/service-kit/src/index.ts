@@ -21,3 +21,5 @@ export { enforceRouteDeclarations, RouteDeclarationError } from './route-guard.t
 export { requestIdFrom } from './request-id.ts';
 export { loadAppShell, registerAppShell } from './app-shell.ts';
 export type { AppShell } from './app-shell.ts';
+export { isSecurityContact, securityTxt } from './security-txt.ts';
+export type { SecurityTxtOptions } from './security-txt.ts';

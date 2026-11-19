@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     "./tokens": "./src/tokens/index.ts",
-    "./tokens.css": "./src/tokens/tokens.css"
+    "./tokens.css": "./src/tokens/tokens.css",
+    "./trial-strip": "./src/trial-strip/index.ts"
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
@@ -13,5 +14,12 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "tokens:css": "node scripts/write-tokens-css.ts"
+  },
+  "peerDependencies": {
+    "react": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "19.3.0",
+    "react": "19.3.1"
   }
 }

@@ -59,5 +59,10 @@ export function lockNow(fetchFn: typeof fetch): void {
   void post(fetchFn, '/v1/session/lock', {}, true).catch(() => undefined);
 }
 
+/** Quick exit (spec 13.2): ends the session without waiting; the request outlives the page. */
+export function signOutNow(fetchFn: typeof fetch): void {
+  void post(fetchFn, '/v1/session/sign-out', {}, true).catch(() => undefined);
+}
+
 /** A full navigation: the BFF sends her to Keycloak and back. */
 export const SIGN_IN_PATH = '/auth/sign-in';

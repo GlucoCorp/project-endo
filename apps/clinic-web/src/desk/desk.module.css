@@ -1,0 +1,118 @@
+/* Clinician desk (spec 21.5, 21.8). Tokens from @endo/ui. */
+.page,
+.review {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 16px;
+}
+.review {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(0, 2.4fr) minmax(220px, 1.2fr);
+  grid-template-areas: 'nav nav nav' 'left centre right';
+  gap: 24px;
+}
+.review > nav {
+  grid-area: nav;
+  display: flex;
+  gap: 12px;
+}
+.left {
+  grid-area: left;
+}
+.centre {
+  grid-area: centre;
+}
+.right {
+  grid-area: right;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+@media (max-width: 900px) {
+  .review {
+    grid-template-columns: 1fr;
+    grid-template-areas: 'nav' 'centre' 'right' 'left';
+  }
+}
+.title {
+  font-size: 1.5rem;
+  margin: 0 0 8px;
+}
+.goal {
+  font-style: italic;
+}
+.muted {
+  color: var(--ink-muted, #555);
+}
+.critical {
+  color: var(--critical, #a0102c);
+}
+.filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 12px 0;
+}
+.queue {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.row {
+  border-bottom: 1px solid var(--rule, #ddd);
+}
+.row[aria-current='true'] {
+  outline: 2px solid var(--focus-ring, #1a5fb4);
+}
+.flagged {
+  border-left: 4px solid var(--critical, #a0102c);
+}
+.rowButton {
+  display: grid;
+  grid-template-columns: 1fr 2fr 1fr 1.5fr auto;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  text-align: left;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  padding: 8px;
+}
+.option {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+}
+.primary {
+  min-height: 44px;
+  font-weight: 600;
+}
+.checklist {
+  padding-left: 18px;
+}
+.printonly {
+  display: none;
+}
+@media print {
+  .noprint {
+    display: none !important;
+  }
+  .printonly {
+    display: block;
+    margin-top: 48px;
+  }
+  .review {
+    display: block;
+  }
+}
+
+/* Organisation admin form fields (REQ-010). */
+.field {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  max-width: 480px;
+}

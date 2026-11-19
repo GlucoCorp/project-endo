@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import {
   AuditEventInput,
@@ -6,12 +7,14 @@ import {
   InMemoryAuditStore,
   PostgresAuditStore,
   type AuditDatabase,
+  type AuditReader,
   type AuditStore,
 } from '@endo/audit';
 import {
   Environment,
   assertClinicalReleaseReady,
   isDeployedEnvironment,
+  loadClinicalContent,
   loadConfig,
 } from '@endo/config';
 import {
@@ -19,9 +22,15 @@ import {
   InMemoryIdempotentInvitationStore,
   InMemoryMembershipStore,
   PostgresConsentStore,
+  PostgresEpisodeStore,
   PostgresIdempotentInvitationStore,
   PostgresInvitationReservationStore,
   PostgresMembershipStore,
+  PostgresPatientKeyStore,
+  PostgresVerdictStore,
+  PostgresReminderStore,
+  PostgresReviewStore,
+  PostgresShareLinkStore,
   PermanentPublishError,
   findLiveInvitation,
   outboxAlert,
@@ -29,17 +38,30 @@ import {
   relayAuditOutbox,
   type ClinicalDatabase,
   type ConsentStore,
+  type EpisodeStore,
+  type ReminderStore,
+  type ReviewStore,
+  type ShareLinkStore,
+  PostgresDeletionStore,
+  PostgresOrgAdminStore,
+  PostgresStaffInvitationStore,
+  PostgresReportingStore,
+  PostgresIntegrationStore,
+  PostgresEhrLinkStore,
   type IdempotentInvitationStore,
   type MembershipStore,
 } from '@endo/clinical-store';
-import { DevKeyManager, EnvelopeSealer } from '@endo/crypto';
+import { DevKeyManager, OpenBaoKeyManager, EnvelopeSealer, FieldCipher } from '@endo/crypto';
 import { createDb, createPool } from '@endo/db';
 import {
   ServiceTokenVerifier,
   WorkloadTokenSigner,
   WorkloadTokenVerifier,
 } from '@endo/service-kit';
+import { uuidv7 } from '@endo/domain';
 import { HttpIdentityEnrolment } from './identity-client.ts';
+import { VerdictService, loadRuleset } from './verdicts.ts';
+import { ReminderService } from './reminders.ts';
 import { buildApi } from './app.ts';
 import type { EnrolmentCoordination } from './routes/coordinator.ts';
 
@@ -66,6 +88,14 @@ const PublicJwk = z.string().transform((s, ctx) => {
 });
 
 const Config = z.object({
+  // Spec 11.2: OpenBao Transit as the KMS. Without it the development stand-in is used, which
+  // refuses staging and production (fail closed).
+  ENDO_KMS_OPENBAO_ADDR: z.url({ protocol: /^https?$/ }).optional(),
+  ENDO_KMS_OPENBAO_TOKEN_FILE: z.string().min(1).optional(),
+  ENDO_KMS_OPENBAO_MOUNT: z
+    .string()
+    .regex(/^[a-z0-9_-]{1,64}$/)
+    .optional(),
   ENDO_ENV: Environment,
   ENDO_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug']).default('info'),
   ENDO_CLINICAL_RULESET_PATH: z.string().min(1),
@@ -86,9 +116,58 @@ const Config = z.object({
   API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The identity service's workload key: enrolment coordinator routes (ADR-0021 section 13). */
   API_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The integration service's workload key (M7): client resolution and FHIR reads only. */
+  API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
+  /** The patient BFF's workload key: a receiver's view of a share link (REQ-008), nothing else. */
+  API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK: PublicJwk.optional(),
   /** The API's own workload key and the identity service's URL: clinic confirm (ADR-0021). */
   API_WORKLOAD_PRIVATE_KEY_JWK: PrivateJwk.optional(),
   API_IDENTITY_BASE_URL: z.url({ protocol: /^https?$/ }).optional(),
+  // Spec 15: Web Push reminders. A P-256 private JWK for VAPID, and the operator contact sent to
+  // push services (an https URL or mailto of the organisation, never a person). Without both, no
+  // reminder is sent.
+  API_VAPID_PRIVATE_KEY_JWK: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        return z
+          .object({
+            kty: z.literal('EC'),
+            crv: z.literal('P-256'),
+            x: z.string(),
+            y: z.string(),
+            d: z.string(),
+          })
+          .parse(JSON.parse(s));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
+  API_VAPID_SUBJECT: z
+    .string()
+    .regex(/^(https:\/\/|mailto:)[^\s]{3,200}$/)
+    .optional(),
+  // Spec 18.5: public keys that may sign the rule set, as {"key-id": <Ed25519 public JWK>}.
+  // Required in staging and production (the rule set must verify before the API starts).
+  ENDO_RULESET_PUBLIC_KEYS: z
+    .string()
+    .transform((s, ctx) => {
+      try {
+        const parsed = z
+          .record(
+            z.string().regex(/^[a-z0-9-]{1,64}$/),
+            z.object({ kty: z.literal('OKP'), crv: z.literal('Ed25519'), x: z.string() }),
+          )
+          .parse(JSON.parse(s));
+        return new Map(Object.entries(parsed));
+      } catch {
+        ctx.addIssue({ code: 'custom', message: 'invalid' });
+        return z.NEVER;
+      }
+    })
+    .optional(),
   API_SERVICE_TOKEN_PUBLIC_KEY_JWK: z.string().transform((s, ctx) => {
     try {
       return z
@@ -109,9 +188,44 @@ async function main(): Promise<void> {
   // eslint-disable-next-line security/detect-non-literal-fs-filename
   const rulesetText = await readFile(config.ENDO_CLINICAL_RULESET_PATH, 'utf8');
   assertClinicalReleaseReady(config.ENDO_ENV, rulesetText);
+  // Spec 18.5: the signature beside it (`<rule set>.sig.json`) must verify with a pinned key;
+  // deployed environments refuse to start without one.
+  // Same operator-controlled path as the rule set, never from a request.
+  // eslint-disable-next-line security/detect-non-literal-fs-filename
+  const signatureText = await readFile(
+    `${config.ENDO_CLINICAL_RULESET_PATH}.sig.json`,
+    'utf8',
+  ).catch(() => null);
+  const ruleset = loadRuleset(
+    rulesetText,
+    signatureText,
+    config.ENDO_RULESET_PUBLIC_KEYS ?? new Map(),
+    isDeployedEnvironment(config.ENDO_ENV),
+  );
+  // The instrument, catalogue and goals sit beside the rule set in clinical/ (ADR-0027). Any
+  // TODO_CLINICAL refuses startup in staging and production; development uses placeholders.
+  const clinicalDir = join(dirname(config.ENDO_CLINICAL_RULESET_PATH), '..');
+  const readClinical = (p: string) =>
+    // eslint-disable-next-line security/detect-non-literal-fs-filename
+    readFile(join(clinicalDir, p), 'utf8');
+  const content = loadClinicalContent(config.ENDO_ENV, {
+    instrument: await readClinical('instrument/checkin.v1.json'),
+    treatments: await readClinical('treatments/catalogue.v1.json'),
+    goals: await readClinical('goals/templates.v1.json'),
+  });
+  // DevKeyManager refuses staging and production: deployed environments need the OpenBao
+  // KeyManager (infra slice) before the API can start. Fail closed.
+  const kms =
+    config.ENDO_KMS_OPENBAO_ADDR && config.ENDO_KMS_OPENBAO_TOKEN_FILE
+      ? new OpenBaoKeyManager({
+          address: config.ENDO_KMS_OPENBAO_ADDR,
+          token: config.ENDO_KMS_OPENBAO_TOKEN_FILE,
+          ...(config.ENDO_KMS_OPENBAO_MOUNT ? { mount: config.ENDO_KMS_OPENBAO_MOUNT } : {}),
+        })
+      : new DevKeyManager(config.ENDO_ENV);
 
   // Spec 2.6: deployed environments must use the durable Postgres audit store. Fail closed.
-  let auditStore: AuditStore;
+  let auditStore: AuditStore & AuditReader;
   let closeAudit = (): Promise<void> => Promise.resolve();
   if (config.API_AUDIT_DATABASE_URL) {
     const pool = createPool(config.API_AUDIT_DATABASE_URL, { applicationName: 'endo-api-audit' });
@@ -128,6 +242,19 @@ async function main(): Promise<void> {
   let invitations: IdempotentInvitationStore;
   let memberships: MembershipStore;
   let consents: ConsentStore;
+  let episodes: { store: EpisodeStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
+  let verdicts: VerdictService | undefined;
+  let links: ShareLinkStore | undefined;
+  let deletions: PostgresDeletionStore | undefined;
+  let orgAdmin: PostgresOrgAdminStore | undefined;
+  let staffInvitations: PostgresStaffInvitationStore | undefined;
+  let reporting: PostgresReportingStore | undefined;
+  let integrations: PostgresIntegrationStore | undefined;
+  let ehrLinks: PostgresEhrLinkStore | undefined;
+  let reviews:
+    | { reviews: ReviewStore; episodes: EpisodeStore; cipherFor: (orgId: string) => FieldCipher }
+    | undefined;
+  let reminders: { store: ReminderStore; cipherFor: (orgId: string) => FieldCipher } | undefined;
   let coordination: EnrolmentCoordination | undefined;
   let relayOutbox: () => Promise<void>;
   const auditWriter = new AuditWriter(auditStore);
@@ -150,6 +277,27 @@ async function main(): Promise<void> {
     invitations = new PostgresIdempotentInvitationStore(db);
     memberships = new PostgresMembershipStore(db);
     consents = new PostgresConsentStore(db);
+    verdicts = new VerdictService(new PostgresVerdictStore(db), ruleset, () => new Date());
+    links = new PostgresShareLinkStore(db);
+    deletions = new PostgresDeletionStore(db);
+    orgAdmin = new PostgresOrgAdminStore(db);
+    staffInvitations = new PostgresStaffInvitationStore(db);
+    reporting = new PostgresReportingStore(db);
+    integrations = new PostgresIntegrationStore(db);
+    ehrLinks = new PostgresEhrLinkStore(db);
+    reviews = {
+      reviews: new PostgresReviewStore(db),
+      episodes: new PostgresEpisodeStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
+    reminders = {
+      store: new PostgresReminderStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
+    episodes = {
+      store: new PostgresEpisodeStore(db),
+      cipherFor: (orgId) => new FieldCipher(kms, new PostgresPatientKeyStore(db, orgId)),
+    };
     const reservations = new PostgresInvitationReservationStore(db);
     coordination = {
       find: (tokenHash) => findLiveInvitation(db, tokenHash),
@@ -217,7 +365,15 @@ async function main(): Promise<void> {
         ? {
             'bff-clinic': {
               publicJwk: config.API_BFF_CLINIC_WORKLOAD_PUBLIC_KEY_JWK,
-              scopes: ['api.membership.resolve'],
+              scopes: ['api.membership.resolve', 'api.staff.join'],
+            },
+          }
+        : {}),
+      ...(config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            integration: {
+              publicJwk: config.API_INTEGRATION_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.integration.resolve', 'api.fhir.read'],
             },
           }
         : {}),
@@ -229,17 +385,85 @@ async function main(): Promise<void> {
             },
           }
         : {}),
+      ...(config.API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK
+        ? {
+            'bff-patient': {
+              publicJwk: config.API_BFF_PATIENT_WORKLOAD_PUBLIC_KEY_JWK,
+              scopes: ['api.share.view'],
+            },
+          }
+        : {}),
     }),
     audit: auditWriter,
     invitations,
     memberships,
-    // DevKeyManager refuses staging and production: deployed environments need the OpenBao
-    // KeyManager (infra slice) before the API can start. Fail closed.
-    sealer: new EnvelopeSealer(new DevKeyManager(config.ENDO_ENV), 'kms/clinical'),
+    sealer: new EnvelopeSealer(kms, 'kms/clinical'),
     relayOutbox,
     now: () => new Date(),
     consents,
     ...(coordination ? { coordination } : {}),
+    ...(verdicts ? { verdicts } : {}),
+    ...(reminders ? { reminders } : {}),
+    ...(reviews
+      ? { reviews: { ...reviews, content, deployed: isDeployedEnvironment(config.ENDO_ENV) } }
+      : {}),
+    ...(episodes
+      ? {
+          episodes: {
+            episodes: episodes.store,
+            content,
+            cipherFor: episodes.cipherFor,
+            deployed: isDeployedEnvironment(config.ENDO_ENV),
+            ...(orgAdmin
+              ? {
+                  defaultIntervalWeeks: async (orgId: string) =>
+                    (await orgAdmin.settings(orgId)).defaultReviewIntervalWeeks,
+                }
+              : {}),
+          },
+        }
+      : {}),
+    ...(reviews && links
+      ? {
+          history: {
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
+    ...(orgAdmin && staffInvitations ? { orgAdmin: { orgAdmin, staffInvitations } } : {}),
+    ...(reporting ? { dashboard: { reporting } } : {}),
+    ...(ehrLinks ? { ehrLinks: { ehrLinks } } : {}),
+    ...(integrations && reviews && links
+      ? {
+          integrations: {
+            integrations,
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
+    ...(reviews && links && deletions
+      ? {
+          dataRights: {
+            episodes: reviews.episodes,
+            reviews: reviews.reviews,
+            links,
+            deletions,
+            audit: auditStore,
+            content,
+            cipherFor: reviews.cipherFor,
+          },
+        }
+      : {}),
     ...(config.API_WORKLOAD_PRIVATE_KEY_JWK && config.API_IDENTITY_BASE_URL
       ? {
           identity: new HttpIdentityEnrolment({
@@ -257,6 +481,38 @@ async function main(): Promise<void> {
     relayOutbox().catch(() => process.stderr.write('audit outbox relay failed\n'));
   }, 5_000);
   relayTimer.unref();
+
+  // Spec 15: reminders, hourly at the top of her chosen hour. Counts only in the logs.
+  if (reminders && config.API_VAPID_PRIVATE_KEY_JWK && config.API_VAPID_SUBJECT) {
+    const sender = new ReminderService(
+      reminders.store,
+      reminders.cipherFor,
+      { privateJwk: config.API_VAPID_PRIVATE_KEY_JWK, subject: config.API_VAPID_SUBJECT },
+      fetch,
+      () => new Date(),
+    );
+    const reminderTimer = setInterval(() => {
+      sender
+        .run()
+        .then((r) => {
+          if (r.failed > 0) process.stderr.write(`reminders: ${String(r.failed)} not accepted\n`);
+        })
+        .catch(() => process.stderr.write('reminder run failed\n'));
+    }, 3_600_000);
+    reminderTimer.unref();
+  }
+
+  // REQ-004: the verdict schedule (shadow mode), hourly; each episode once per rule set version.
+  if (verdicts) {
+    const service = verdicts;
+    const scheduleTimer = setInterval(() => {
+      service
+        .runSchedule(() => uuidv7())
+        .then(() => relayOutbox())
+        .catch(() => process.stderr.write('verdict schedule failed\n'));
+    }, 3_600_000);
+    scheduleTimer.unref();
+  }
 
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.once(signal, () => void app.close().then(closeAudit).then(closeClinical));
