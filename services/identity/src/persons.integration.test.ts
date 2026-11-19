@@ -137,8 +137,11 @@ describe.skipIf(!url)('spec 5.2, REQ-009 PostgresPersonStore as the identity rol
     await store.create({ id, email: null, displayName: 'x' });
     await admin.query(`UPDATE person SET idp_subject = 'kc-subject-1' WHERE id = $1`, [id]);
     expect(await store.resolveSubject('kc-subject-1')).toBe(id);
+    expect(await store.subjectOf(id)).toBe('kc-subject-1');
     await store.erase(id);
     expect(await store.resolveSubject('kc-subject-1')).toBeNull();
+    expect(await store.subjectOf(id)).toBeNull();
+    expect(await store.subjectOf('01900000-0000-7000-8000-000000000999')).toBeNull();
     const row = await admin.query<{ idp_subject: string | null; shredded: boolean }>(
       `SELECT idp_subject, EXISTS (SELECT 1 FROM person_key_shredded WHERE person_id = $1) AS shredded FROM person WHERE id = $1`,
       [id],
