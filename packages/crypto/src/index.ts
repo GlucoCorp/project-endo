@@ -6,3 +6,5 @@ export { FieldCipher, KeyDestroyedError, DecryptionError } from './field-cipher.
 export type { FieldContext } from './field-cipher.ts';
 export { EnvelopeSealer } from './envelope-sealer.ts';
 export type { SealedValue } from './envelope-sealer.ts';
+export { KeyManagerError, OpenBaoKeyManager, TRANSIT_KEY } from './openbao-key-manager.ts';
+export type { OpenBaoOptions } from './openbao-key-manager.ts';

@@ -24,19 +24,25 @@ export function useEmergencyNumber(): string | null {
     }
   });
   useEffect(() => {
-    void getJson<{ emergency_number: string | null }>(
-      window.fetch.bind(window),
-      '/v1/app-config',
-    ).then((c) => {
-      if (c && c !== 'signed-out') {
-        setN(c.emergency_number);
-        try {
-          if (c.emergency_number) localStorage.setItem(EMERGENCY_KEY, c.emergency_number);
-          else localStorage.removeItem(EMERGENCY_KEY);
-        } catch {
-          // Storage unavailable: the number still shows while online.
-        }
+    const f = window.fetch.bind(window);
+    const keep = (n: string | null) => {
+      setN(n);
+      try {
+        if (n) localStorage.setItem(EMERGENCY_KEY, n);
+        else localStorage.removeItem(EMERGENCY_KEY);
+      } catch {
+        // Storage unavailable: the number still shows while online.
       }
+    };
+    // The deployment's number, then her clinic's own if it set one (REQ-010).
+    void getJson<{ emergency_number: string | null }>(f, '/v1/app-config').then(async (c) => {
+      const clinic = await getJson<{ emergency_number: string | null }>(
+        f,
+        '/v1/me/clinic-settings',
+      );
+      const own = clinic && clinic !== 'signed-out' ? clinic.emergency_number : null;
+      if (own) keep(own);
+      else if (c && c !== 'signed-out') keep(c.emergency_number);
     });
   }, []);
   return n;

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { TrialStrip, stripModel } from '@endo/ui/trial-strip';
 import { t } from '../i18n.ts';
 import page from '../enrol/enrol.module.css';
+import { SIGN_IN_PATH } from '../home/session.ts';
 import styles from '../checkin/checkin.module.css';
 import {
   accessLog,
@@ -47,7 +48,9 @@ export function HistoryPage() {
   const [links, setLinks] = useState<readonly LinkRow[]>([]);
   const [log, setLog] = useState<readonly AccessEvent[] | null>(null);
   const [days, setDays] = useState(7);
-  const [made, setMade] = useState<{ url: string; expiresAt: string } | 'error' | null>(null);
+  const [made, setMade] = useState<{ url: string; expiresAt: string } | 'reauth' | 'error' | null>(
+    null,
+  );
   const key = useRef(crypto.randomUUID());
 
   const loadLinks = () => {
@@ -125,7 +128,15 @@ export function HistoryPage() {
             {t('common.try-later')}
           </p>
         )}
-        {made && made !== 'error' && (
+        {made === 'reauth' && (
+          <p role="alert">
+            {t('common.reauth')}{' '}
+            <a className={page['primary']} href={SIGN_IN_PATH}>
+              {t('common.sign-in-again')}
+            </a>
+          </p>
+        )}
+        {made && made !== 'error' && made !== 'reauth' && (
           <div role="status">
             <p>{t('history.share-made', { date: made.expiresAt.slice(0, 10) })}</p>
             <input

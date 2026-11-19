@@ -29,6 +29,7 @@ export const ACTIONS = [
   'review_decision.record', // Record review decision
   'surgery_check.read', // View pre-surgery check
   'org.clinicians.manage', // Manage clinicians in org
+  'org.settings.manage', // REQ-010: org admin sets the interval default, languages, emergency number
   'org.dashboard.read', // View aggregate org dashboard (de-identified)
   'own_data.export', // Export own data
   'own_data.delete', // Delete own data
@@ -189,6 +190,7 @@ export function can(
         : clinicianWithCareTeamConsent(subject, resource, context);
 
     case 'org.clinicians.manage':
+    case 'org.settings.manage':
       if (subject.role !== 'org_admin') return deny('authz.role_not_permitted');
       return sameOrg(subject, resource) ? ALLOW : deny('authz.org_mismatch');
 

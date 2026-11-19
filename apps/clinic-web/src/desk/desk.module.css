@@ -108,3 +108,11 @@
     display: block;
   }
 }
+
+/* Organisation admin form fields (REQ-010). */
+.field {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
+  max-width: 480px;
+}

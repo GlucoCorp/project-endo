@@ -86,7 +86,9 @@ export function registerHistoryProxy(app: FastifyInstance, deps: HistoryProxyDep
         ...(method === 'POST'
           ? {
               'content-type': 'application/json',
-              'idempotency-key': request.headers['idempotency-key'] as string,
+              ...(typeof request.headers['idempotency-key'] === 'string'
+                ? { 'idempotency-key': request.headers['idempotency-key'] }
+                : {}),
             }
           : {}),
       },
@@ -95,18 +97,21 @@ export function registerHistoryProxy(app: FastifyInstance, deps: HistoryProxyDep
     return answer(res, reply);
   };
   const session = { auth: { kind: 'session' } } as const;
+  const recent = { auth: { kind: 'session', recentSignIn: true } } as const;
+  const empty = { body: { type: 'object', additionalProperties: false, maxProperties: 0 } };
 
   for (const path of [
     '/v1/me/history',
     '/v1/me/share-links',
     '/v1/me/access-log',
     '/v1/me/surgery-checks',
+    '/v1/me/clinic-settings',
   ] as const)
     app.get(path, { config: session }, (request, reply) => pass(request, reply, 'GET', path));
   app.post(
     '/v1/me/share-links',
     {
-      config: session,
+      config: recent,
       preValidation: (r) => guard(r, true),
       bodyLimit: 1024,
       schema: { body: { type: 'object' } },
@@ -120,6 +125,44 @@ export function registerHistoryProxy(app: FastifyInstance, deps: HistoryProxyDep
       const id = (request.params as { id: string }).id;
       if (!UUID.test(id)) throw new ProblemError(404, 'share_link.not_found', 'Not found.');
       return pass(request, reply, 'DELETE', `/v1/me/share-links/${id}`);
+    },
+  );
+
+  // REQ-009: deletion (asking needs a recent sign-in; cancelling does not) and export.
+  app.get('/v1/me/deletion', { config: session }, (request, reply) =>
+    pass(request, reply, 'GET', '/v1/me/deletion'),
+  );
+  app.post(
+    '/v1/me/deletion',
+    { config: recent, preValidation: (r) => guard(r, false), bodyLimit: 64, schema: empty },
+    (request, reply) => pass(request, reply, 'POST', '/v1/me/deletion'),
+  );
+  app.post(
+    '/v1/me/deletion/cancel',
+    { config: session, preValidation: (r) => guard(r, false), bodyLimit: 64, schema: empty },
+    (request, reply) => pass(request, reply, 'POST', '/v1/me/deletion/cancel'),
+  );
+  /** Her FHIR Bundle as a download; never cached (spec 11.4). */
+  app.post(
+    '/v1/me/export',
+    { config: recent, preValidation: (r) => guard(r, false), bodyLimit: 64, schema: empty },
+    async (request, reply) => {
+      if (!request.claims || request.claims.role !== 'patient')
+        throw new ProblemError(401, 'authn.session_required', 'Sign in to continue.');
+      const res = await call('/v1/me/export', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${await deps.signer.sign(request.claims, 'api')}`,
+          'x-request-id': request.id,
+          accept: 'application/fhir+json',
+        },
+      });
+      if (!res.ok) return answer(res, reply);
+      return reply
+        .header('content-type', 'application/fhir+json; charset=utf-8')
+        .header('content-disposition', 'attachment; filename="my-endo-record.json"')
+        .header('cache-control', 'no-store')
+        .send(await res.text());
     },
   );
 

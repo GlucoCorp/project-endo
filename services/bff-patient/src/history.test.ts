@@ -19,10 +19,11 @@ const CLAIMS = {
   patient_id: '01900000-0000-7000-8000-0000000000a1',
 };
 
-async function setup(reply: (url: URL, init: RequestInit) => Response) {
+async function setup(reply: (url: URL, init: RequestInit) => Response, signedInMsAgo = 0) {
   const service = await generateServiceKeyPair();
   const workload = await generateServiceKeyPair();
-  const sessions = new DevSessionStore('test');
+  // The session store's clock runs behind: her session was made `signedInMsAgo` ago.
+  const sessions = new DevSessionStore('test', () => Date.now() - signedInMsAgo);
   const seen: { url: URL; init: RequestInit }[] = [];
   const fetchImpl = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : input);
@@ -148,5 +149,125 @@ describe('REQ-008 the receiver view and her history through the BFF', () => {
     ).toBe(404);
     expect(seen.some((s) => s.init.method === 'DELETE')).toBe(true);
     expect((await app.inject({ url: '/v1/me/history' })).statusCode).toBe(401);
+  });
+});
+
+describe('REQ-009 export and deletion through the BFF; spec 10.1 recent sign-in', () => {
+  const post = (url: string, cookie: string) => ({
+    method: 'POST' as const,
+    url,
+    headers: { origin: ORIGIN, 'content-type': 'application/json', cookie },
+    payload: {},
+  });
+
+  it('downloads her FHIR Bundle, never cached, after a recent sign-in', async () => {
+    const { app, seen, cookie } = await setup(
+      () =>
+        new Response('{"resourceType":"Bundle"}', {
+          status: 200,
+          headers: { 'content-type': 'application/fhir+json' },
+        }),
+    );
+    const res = await app.inject(post('/v1/me/export', cookie));
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/fhir+json');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.body).toBe('{"resourceType":"Bundle"}');
+    expect(seen[0]?.url.pathname).toBe('/v1/me/export');
+    // Cross-site and non-JSON requests are refused before the API.
+    expect(
+      (await app.inject({ ...post('/v1/me/export', cookie), headers: { cookie } })).statusCode,
+    ).toBe(403);
+    expect(seen).toHaveLength(1);
+  });
+
+  it('asks her to sign in again for export, deletion and a share link when her sign-in is old', async () => {
+    const { app, seen, cookie } = await setup(
+      () => json(202, { status: 'scheduled' }),
+      11 * 60_000,
+    );
+    for (const url of ['/v1/me/export', '/v1/me/deletion']) {
+      const res = await app.inject(post(url, cookie));
+      expect(res.statusCode).toBe(401);
+      expect(res.json<{ type: string }>().type).toContain('authn.reauth_required');
+    }
+    const link = await app.inject({
+      ...post('/v1/me/share-links', cookie),
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        cookie,
+        'idempotency-key': randomUUID(),
+      },
+    });
+    expect(link.statusCode).toBe(401);
+    // Reading and cancelling need no fresh sign-in.
+    expect(
+      (await app.inject({ method: 'GET', url: '/v1/me/deletion', headers: { cookie } })).statusCode,
+    ).toBe(202);
+    expect((await app.inject(post('/v1/me/deletion/cancel', cookie))).statusCode).toBe(202);
+    expect(seen.map((x) => x.url.pathname)).toEqual(['/v1/me/deletion', '/v1/me/deletion/cancel']);
+  });
+
+  it('asks for deletion with a recent sign-in and passes the API refusal on', async () => {
+    const { app, seen, cookie } = await setup((url) =>
+      url.pathname.endsWith('/cancel')
+        ? json(409, { type: 'https://errors.endo/deletion.not_scheduled' })
+        : json(202, { status: 'scheduled' }),
+    );
+    expect((await app.inject(post('/v1/me/deletion', cookie))).json()).toEqual({
+      status: 'scheduled',
+    });
+    expect(new Headers(seen[0]?.init.headers).get('idempotency-key')).toBeNull();
+    const cancel = await app.inject(post('/v1/me/deletion/cancel', cookie));
+    expect(cancel.statusCode).toBe(409);
+    expect(cancel.json<{ type: string }>().type).toContain('deletion.not_scheduled');
+    expect(
+      (await app.inject({ ...post('/v1/me/deletion', cookie), payload: { now: true } })).statusCode,
+    ).toBe(400);
+  });
+});
+
+describe('spec 10.1 recent sign-in survives activation honestly', () => {
+  it('counts from her first passkey, not from the session rotation at activation', async () => {
+    let clock = Date.now();
+    const store = new DevSessionStore('test', () => clock);
+    const tx = randomUUID();
+    const pending = await store.createConsentPending(tx, 'kc-subject');
+    clock += 11 * 60_000; // she reads the consent screens for 11 minutes
+    const token = await store.rotate(pending, tx, 'kc-subject', CLAIMS);
+    expect(token).not.toBeNull();
+    const session = await store.resolve(token ?? '');
+    expect(session?.authenticatedAt).toBe(clock - 11 * 60_000);
+    const service = await generateServiceKeyPair();
+    const app = await createBffInstance({
+      logLevel: 'silent',
+      sessions: store,
+      signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
+      apiBaseUrl: 'http://api.internal',
+      fetch: () => Promise.resolve(json(200, {})),
+      now: () => clock,
+    });
+    registerHistoryProxy(app, {
+      signer: new ServiceTokenSigner(service.privateJwk, 'bff-patient'),
+      workload: new WorkloadTokenSigner(service.privateJwk, 'bff-patient'),
+      apiBaseUrl: 'http://api.internal',
+      patientOrigin: ORIGIN,
+      fetch: () => Promise.resolve(json(200, {})),
+    });
+    await app.ready();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/me/export',
+      headers: {
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        cookie: `${SESSION_COOKIE}=${token ?? ''}`,
+      },
+      payload: {},
+    });
+    expect(res.statusCode).toBe(401);
+    expect(res.json<{ type: string }>().type).toContain('authn.reauth_required');
   });
 });

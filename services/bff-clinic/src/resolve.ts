@@ -11,6 +11,8 @@ export interface Resolver {
   person(issuer: string, subject: string): Promise<string | null>;
   /** Person id -> active memberships (organisation and role only). */
   memberships(personId: string): Promise<Membership[]>;
+  /** REQ-010: claims a staff invitation (by its token's hash) for this person. */
+  claimStaff?(tokenHash: string, personId: string): Promise<'claimed' | 'unavailable'>;
 }
 
 export class ResolverError extends Error {
@@ -70,6 +72,19 @@ export class HttpResolver implements Resolver {
     const body = (await res.json()) as { person_id?: unknown };
     if (typeof body.person_id !== 'string') throw new ResolverError();
     return body.person_id;
+  }
+
+  async claimStaff(tokenHash: string, personId: string): Promise<'claimed' | 'unavailable'> {
+    const res = await this.#post(
+      `${this.#apiUrl}/internal/v1/staff-invitations/claim`,
+      'api.staff.join',
+      'api',
+      { token_hash: tokenHash, person_id: personId },
+    );
+    if (res.ok) return 'claimed';
+    // A link that cannot be used, or someone already in the organisation: sign-in goes on.
+    if (res.status === 404 || res.status === 409) return 'unavailable';
+    throw new ResolverError();
   }
 
   async memberships(personId: string): Promise<Membership[]> {

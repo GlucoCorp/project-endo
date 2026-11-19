@@ -271,6 +271,91 @@ Row-level security; revoked, never deleted. A receiver sees her treatments, date
 | `share_link.revoked_at`   | When she stopped sharing                                 | as above                 | as above                                                                                              | S1          |
 | `share_link.creation_key` | Her Idempotency-Key (a retry finds the same link)        | as above                 | as above                                                                                              | S0          |
 
+### Deletion requests — `packages/clinical-store/migrations/0014` (M5)
+
+Row-level security. After 14 days `patient_erase` destroys her key first, then every row of hers; this row stays, with no PHI, as the record of the erasure (REQ-009, spec 11.4).
+
+| Column                                | Purpose                                                                          | Legal basis                                                          | Retention                                                                                                        | Sensitivity |
+| ------------------------------------- | -------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ----------- |
+| `deletion_request.id`                 | Request identifier (audit events refer to her record, not to this)               | Her request (REQ-009); legal obligation to show the erasure was done | Kept after erasure as the record that it was done, as long as audit events (7 years, `TODO_LEGAL`); holds no PHI | S0          |
+| `deletion_request.org_id`             | Organisation (row-level security)                                                | as above                                                             | as above                                                                                                         | S0          |
+| `deletion_request.patient_id`         | Whose data (pseudonymous; no foreign key, so it outlives her record)             | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.identity_ref`       | Opaque pointer to her identity record, so it is erased too (its key is shredded) | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.requested_at`       | When she asked (database clock)                                                  | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.due_at`             | Fourteen days later (set by the database)                                        | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.cancelled_at`       | When she changed her mind                                                        | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.erased_at`          | When her clinical data and key were destroyed                                    | as above                                                             | as above                                                                                                         | S1          |
+| `deletion_request.identity_erased_at` | When the identity service confirmed her identity was shredded and purged         | as above                                                             | as above                                                                                                         | S1          |
+
+### Organisation settings — `packages/clinical-store/migrations/0015` (M5)
+
+Row-level security; changed by the organisation admin only, each change audited. No patient data.
+
+| Column                                       | Purpose                                           | Legal basis                                                             | Retention                               | Sensitivity |
+| -------------------------------------------- | ------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------- | ----------- |
+| `org_settings.org_id`                        | Organisation (row-level security)                 | Legitimate interest: running the service for the organisation (REQ-010) | While the organisation uses the service | S0          |
+| `org_settings.default_review_interval_weeks` | Review interval used when a draft names none      | as above                                                                | as above                                | S0          |
+| `org_settings.languages`                     | Languages the apps offer                          | as above                                                                | as above                                | S0          |
+| `org_settings.emergency_number`              | Local emergency number for her urgent-care screen | as above                                                                | as above                                | S0          |
+| `org_settings.updated_at`                    | When last changed (database clock)                | as above                                                                | as above                                | S0          |
+| `org_settings.updated_by`                    | Which admin changed them (opaque clinician id)    | as above                                                                | as above                                | S1          |
+
+### Staff invitations — `packages/clinical-store/migrations/0016` (M5)
+
+Row-level security; single use, at most 7 days, revocable. No patient data and no names (those stay in the identity vault).
+
+| Column                                  | Purpose                                                  | Legal basis                                                     | Retention                                                                  | Sensitivity |
+| --------------------------------------- | -------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------------- | ----------- |
+| `staff_invitation.id`                   | Invitation identifier                                    | Legitimate interest: managing the organisation’s team (REQ-010) | While the organisation uses the service (the audit trail keeps who joined) | S0          |
+| `staff_invitation.org_id`               | Organisation (row-level security)                        | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.role`                 | Role the colleague will have                             | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.token_hash`           | SHA-256 of the link token; the token is only in the link | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.created_by`           | Admin who made it (opaque clinician id)                  | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.created_at`           | When made (database clock)                               | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.expires_at`           | When it stops working (at most 7 days)                   | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.claimed_at`           | When accepted                                            | as above                                                        | as above                                                                   | S0          |
+| `staff_invitation.claimed_clinician_id` | The membership it created (opaque clinician id)          | as above                                                        | as above                                                                   | S1          |
+| `staff_invitation.revoked_at`           | When the admin stopped it                                | as above                                                        | as above                                                                   | S0          |
+
+### Integration clients — `packages/clinical-store/migrations/0017` (M7)
+
+Row-level security; public keys only; no patient data. Switched on and off by the organisation admin (ADR-0030).
+
+| Column                          | Purpose                                              | Legal basis                                                         | Retention                                                                 | Sensitivity |
+| ------------------------------- | ---------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------------------------------- | ----------- |
+| `integration_client.id`         | Client identifier                                    | Contract with the organisation: record-system integration (spec 16) | While the integration exists (switched off, it stays for the audit trail) | S0          |
+| `integration_client.org_id`     | Organisation (row-level security)                    | as above                                                            | as above                                                                  | S0          |
+| `integration_client.client_id`  | SMART client_id given to the record system           | as above                                                            | as above                                                                  | S1          |
+| `integration_client.name`       | Admin label for the system                           | as above                                                            | as above                                                                  | S0          |
+| `integration_client.jwks`       | The record system’s public keys (never private keys) | as above                                                            | as above                                                                  | S1          |
+| `integration_client.scopes`     | What it may read (system/*.rs)                       | as above                                                            | as above                                                                  | S0          |
+| `integration_client.active`     | Kill switch                                          | as above                                                            | as above                                                                  | S0          |
+| `integration_client.created_by` | Admin who registered it (opaque clinician id)        | as above                                                            | as above                                                                  | S1          |
+| `integration_client.created_at` | When registered                                      | as above                                                            | as above                                                                  | S0          |
+
+### SMART launch patient links — `packages/clinical-store/migrations/0018` (M7)
+
+Row-level security; one link per record-system patient per organisation; erased with her record.
+
+| Column                        | Purpose                                                              | Legal basis                                                                               | Retention                                     | Sensitivity |
+| ----------------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------- | ----------- |
+| `ehr_patient_link.id`         | Link identifier                                                      | Provision of care by the clinic (spec 16.2); made by a clinician for a consenting patient | With her record (removed by erasure, REQ-009) | S0          |
+| `ehr_patient_link.org_id`     | Organisation (row-level security)                                    | as above                                                                                  | as above                                      | S0          |
+| `ehr_patient_link.link_hash`  | SHA-256 of record-system issuer and patient id; never the identifier | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.patient_id` | Her pseudonymous record                                              | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_by` | Clinician who linked it (opaque id)                                  | as above                                                                                  | as above                                      | S1          |
+| `ehr_patient_link.created_at` | When linked                                                          | as above                                                                                  | as above                                      | S0          |
+
+### Integration assertion ids — `packages/clinical-store/migrations/0019` (M7)
+
+No patient data; reachable only through `integration_assertion_reserve()`; expired rows are removed as new ones arrive.
+
+| Column                             | Purpose                                         | Legal basis                        | Retention                               | Sensitivity |
+| ---------------------------------- | ----------------------------------------------- | ---------------------------------- | --------------------------------------- | ----------- |
+| `integration_assertion.client_id`  | Which client used the assertion                 | Security of processing (spec 16.3) | Until the assertion expires (5 minutes) | S0          |
+| `integration_assertion.jti`        | The assertion id, used once (replay protection) | as above                           | as above                                | S0          |
+| `integration_assertion.expires_at` | Until when it is kept (at most 5 minutes)       | as above                           | as above                                | S0          |
+
 ## Identity vault (`kms/identity`) — `packages/identity-store/migrations`
 
 The only store with names, emails and phone numbers, all encrypted under each person's own key. Only the identity service connects.
@@ -392,6 +477,23 @@ The clinical store's reservation of an invitation, acknowledged for a transactio
 ### Identity audit outbox — `packages/identity-store/migrations/0002`
 
 Same columns and rules as the clinical `audit_outbox` above: enrolment transitions and identity actions queue their audit event here in the same transaction (ADR-0021 section 14). Opaque ids and codes only, never identity fields, codes, tokens or secrets. The identity service can only add events; only `endo_identity_relay` reads and acknowledges them. Retention as the clinical outbox.
+
+## Sessions (`sessions` database) — `packages/session-store/migrations` (ADR-0033)
+
+Reached only by the BFFs (`endo_sessions_app`). Rows end with the session: at most 12 hours, and expired rows are swept every 10 minutes.
+
+| Column                         | Purpose                                                                                                                                                                    | Legal basis                                          | Retention                                 | Sensitivity |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ----------------------------------------- | ----------- |
+| `browser_session.token_hash`   | SHA-256 of the session cookie; the token itself is never stored                                                                                                            | Security of processing: keeping her signed in safely | Until the session ends (at most 12 hours) | S1          |
+| `browser_session.kind`         | patient, consent-pending or clinic                                                                                                                                         | as above                                             | as above                                  | S0          |
+| `browser_session.doc`          | What the BFF keeps: opaque person and patient ids, role, organisation, the sealed Keycloak refresh token and ID token (clinic), CSRF token, app-lock state; no health data | as above                                             | as above                                  | S2          |
+| `browser_session.issuer`       | Keycloak issuer, for back-channel logout                                                                                                                                   | as above                                             | as above                                  | S0          |
+| `browser_session.sid`          | Keycloak session id, for back-channel logout                                                                                                                               | as above                                             | as above                                  | S1          |
+| `browser_session.subject`      | Keycloak subject, for back-channel logout                                                                                                                                  | as above                                             | as above                                  | S1          |
+| `browser_session.idle_ms`      | Idle limit (15 or 30 minutes)                                                                                                                                              | as above                                             | as above                                  | S0          |
+| `browser_session.absolute_ms`  | Absolute limit (1 or 12 hours)                                                                                                                                             | as above                                             | as above                                  | S0          |
+| `browser_session.created_at`   | When the session started (database clock)                                                                                                                                  | as above                                             | as above                                  | S0          |
+| `browser_session.last_seen_at` | Last activity (database clock)                                                                                                                                             | as above                                             | as above                                  | S0          |
 
 ## Other stores
 
