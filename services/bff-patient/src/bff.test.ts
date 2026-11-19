@@ -213,6 +213,23 @@ describe('RISK-D01 rate limiting (spec 12.3)', () => {
   });
 });
 
+describe('spec 12.7 security.txt', () => {
+  it('serves the configured contact, or nothing at all', async () => {
+    const base = await deps(() => Promise.resolve(json(200, {})));
+    const none = await buildBff(base);
+    expect((await none.inject({ url: '/.well-known/security.txt' })).statusCode).toBe(404);
+    const app = await buildBff({
+      ...base,
+      securityContact: { contact: 'mailto:security@example.test', policy: null },
+    });
+    const res = await app.inject({ url: '/.well-known/security.txt' });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('text/plain');
+    expect(res.body).toContain('Contact: mailto:security@example.test');
+    expect(res.body).toMatch(/Expires: \d{4}-/);
+  });
+});
+
 describe('route declarations (spec 2.5)', () => {
   it.each([undefined, { kind: 'public', reason: 'x' }, { kind: 'nope' }, 'session'])(
     'rejects auth %j',

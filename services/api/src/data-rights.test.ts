@@ -417,6 +417,44 @@ describe('REQ-009 the deletion job', () => {
     expect(deletions.rows[1]?.erasedAt).toBeNull();
   });
 
+  it('erases her identity, then purges it; a refused purge is retried next run', async () => {
+    const deletions = new FakeDeletions();
+    await deletions.request({
+      id: randomUUID(),
+      orgId: ORG,
+      patientId: PATIENT,
+      identityRef: PERSON,
+      auditEvent: { id: randomUUID() },
+    });
+    const mine = deletions.rows[0];
+    if (mine) Object.assign(mine, { dueAt: new Date(Date.now() - 60_000) });
+    const paths: string[] = [];
+    let purgeStatus = 409;
+    const keys = await generateServiceKeyPair();
+    const { WorkloadTokenSigner } = await import('@endo/service-kit');
+    const identity = new HttpIdentityErasure({
+      identityBaseUrl: 'https://identity.test',
+      signer: new WorkloadTokenSigner(keys.privateJwk, 'jobs'),
+      fetch: (url) => {
+        const path = new URL(url instanceof Request ? url.url : url.toString()).pathname;
+        paths.push(path);
+        return Promise.resolve(
+          new Response(null, { status: path.endsWith('/purge') ? purgeStatus : 204 }),
+        );
+      },
+    });
+    const job = new DeletionJob(deletions, identity, () => randomUUID());
+    expect(await job.run()).toEqual({ erased: 1, identityErased: 0, failed: 1 });
+    purgeStatus = 204;
+    expect(await job.run()).toEqual({ erased: 0, identityErased: 1, failed: 0 });
+    expect(paths).toEqual([
+      `/internal/v1/persons/${PERSON}/erasure`,
+      `/internal/v1/persons/${PERSON}/purge`,
+      `/internal/v1/persons/${PERSON}/erasure`,
+      `/internal/v1/persons/${PERSON}/purge`,
+    ]);
+  });
+
   it('counts a network failure and an erase failure, and carries on', async () => {
     const deletions = new FakeDeletions();
     const failing = Object.assign(Object.create(deletions) as FakeDeletions, {

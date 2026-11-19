@@ -163,6 +163,14 @@ const MATRIX: Record<Action, Record<Role, Cell>> = {
     glucorp_support: '-',
     glucorp_platform_admin: '-',
   },
+  // REQ-010 (not a spec 3.2 row): organisation settings, like managing clinicians.
+  'org.settings.manage': {
+    patient: '-',
+    clinician: '-',
+    org_admin: 'A',
+    glucorp_support: '-',
+    glucorp_platform_admin: '-',
+  },
   'org.dashboard.read': {
     patient: '-',
     clinician: 'A',

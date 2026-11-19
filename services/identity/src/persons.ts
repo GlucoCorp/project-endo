@@ -22,10 +22,21 @@ export interface PersonStore {
    */
   erase(personId: string): Promise<boolean>;
   /**
+   * REQ-009, ADR-0029: after erase(), removes her rows for good (person, patient links, email
+   * codes, enrolment transactions); the key tombstone stays. True once she is gone (now or
+   * before); false if she was never erased or is unknown.
+   */
+  purge(personId: string): Promise<boolean>;
+  /**
    * ADR-0019: the person signed in as this identity-provider subject, or null. Erased people
    * never resolve (erasure clears the subject in the same transaction).
    */
   resolveSubject(idpSubject: string): Promise<string | null>;
+  /**
+   * REQ-009: her identity-provider subject while she has one (null once erased or never signed
+   * in), so her account can be removed before erasure clears it.
+   */
+  subjectOf(personId: string): Promise<string | null>;
   /**
    * A returning patient's sign-in: the person for this subject and her patient records (each with
    * its organisation), or null when the subject is unknown or erased.
@@ -73,6 +84,15 @@ export class PostgresPersonStore implements PersonStore {
     });
   }
 
+  async subjectOf(personId: string): Promise<string | null> {
+    const row = await this.#db
+      .selectFrom('person')
+      .select('idp_subject')
+      .where('id', '=', personId)
+      .executeTakeFirst();
+    return row?.idp_subject ?? null;
+  }
+
   async erase(personId: string): Promise<boolean> {
     return this.#db.transaction().execute(async (trx) => {
       const person = await trx
@@ -96,6 +116,13 @@ export class PostgresPersonStore implements PersonStore {
       await new PostgresPersonKeyStore(trx).destroy(personId);
       return true;
     });
+  }
+
+  async purge(personId: string): Promise<boolean> {
+    const r = await this.#db
+      .selectNoFrom((eb) => eb.fn<boolean>('person_purge', [eb.val(personId)]).as('purged'))
+      .executeTakeFirstOrThrow();
+    return r.purged;
   }
 
   async resolveSubject(idpSubject: string): Promise<string | null> {
@@ -155,6 +182,23 @@ export class InMemoryPersonStore implements PersonStore {
     row.erased = true;
     for (const [subject, id] of this.subjects) if (id === personId) this.subjects.delete(subject);
     return true;
+  }
+
+  purge(personId: string): Promise<boolean> {
+    const row = this.rows.get(personId);
+    if (!row) return Promise.resolve(this.purged.has(personId));
+    if (!row.erased) return Promise.resolve(false);
+    this.rows.delete(personId);
+    this.links.delete(personId);
+    this.purged.add(personId);
+    return Promise.resolve(true);
+  }
+
+  readonly purged = new Set<string>();
+
+  subjectOf(personId: string): Promise<string | null> {
+    for (const [subject, id] of this.subjects) if (id === personId) return Promise.resolve(subject);
+    return Promise.resolve(null);
   }
 
   resolveSubject(idpSubject: string): Promise<string | null> {

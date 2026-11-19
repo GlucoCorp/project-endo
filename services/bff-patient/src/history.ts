@@ -105,6 +105,7 @@ export function registerHistoryProxy(app: FastifyInstance, deps: HistoryProxyDep
     '/v1/me/share-links',
     '/v1/me/access-log',
     '/v1/me/surgery-checks',
+    '/v1/me/clinic-settings',
   ] as const)
     app.get(path, { config: session }, (request, reply) => pass(request, reply, 'GET', path));
   app.post(
