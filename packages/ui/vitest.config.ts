@@ -7,7 +7,8 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       include: ['src/**'],
-      exclude: ['src/**/*.test.ts', 'src/**/index.ts'],
+      // Components are covered by the apps' browser tests; their logic (model.ts) is covered here.
+      exclude: ['src/**/*.test.ts', 'src/**/index.ts', 'src/**/*.tsx'],
       thresholds: { lines: 90, branches: 90, functions: 90, statements: 90 },
     },
   },

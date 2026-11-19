@@ -9,12 +9,16 @@ import {
   rateLimitedError,
   registerProblemHandlers,
   requestIdFrom,
+  securityTxt,
   type ServiceClaims,
   type ServiceTokenSigner,
 } from '@endo/service-kit';
 import { SESSION_COOKIE, readCookie, type SessionResolver } from './sessions.ts';
 import { registerEnrolmentRoutes, type EnrolmentDeps } from './enrolment.ts';
 import { registerAppShell, type AppShell } from './app-shell.ts';
+import { registerEpisodeProxy } from './episodes.ts';
+import { registerHistoryProxy } from './history.ts';
+import { registerAppConfig, registerServiceWorker } from './service-worker.ts';
 import { registerSessionRoutes } from './session-routes.ts';
 
 /**
@@ -22,11 +26,21 @@ import { registerSessionRoutes } from './session-routes.ts';
  * account, bound to the browser by the enrolment cookie, checked by the route (ADR-0021 section 4).
  */
 export type BffAuth =
-  | { readonly kind: 'session'; readonly allowLocked?: true }
+  | {
+      readonly kind: 'session';
+      readonly allowLocked?: true;
+      /**
+       * Spec 10.1: export, deletion, share links and consent changes need a recent sign-in. Every
+       * sign-in asks for her passkey again (`prompt=login`, `max_age=0`) and makes a new session,
+       * so a session whose passkey use (`authenticatedAt`) is within RECENT_SIGN_IN_MS is a recent sign-in.
+       */
+      readonly recentSignIn?: true;
+    }
   | { readonly kind: 'enrolment' }
   | {
       readonly kind: 'public';
-      readonly reason: 'liveness' | 'app-shell' | 'sign-out' | 'sign-in';
+      readonly reason:
+        'liveness' | 'app-shell' | 'sign-out' | 'sign-in' | 'shared-view' | 'security-txt';
     };
 
 declare module 'fastify' {
@@ -53,6 +67,8 @@ export function isBffAuth(value: unknown): value is BffAuth {
       (v.reason === 'liveness' ||
         v.reason === 'app-shell' ||
         v.reason === 'sign-out' ||
+        v.reason === 'shared-view' ||
+        v.reason === 'security-txt' ||
         v.reason === 'sign-in'))
   );
 }
@@ -74,7 +90,18 @@ export interface BffDeps {
    * and stricter limits on sign-in endpoints, arrive with real sessions in M1.
    */
   readonly rateLimitPerMinute?: number;
+  /** The local emergency number for the urgent-care screen (REQ-007); per deployment. */
+  readonly emergencyNumber?: string | null;
+  /** Spec 15: the VAPID public key (base64url, uncompressed P-256) for push reminders. */
+  readonly vapidPublicKey?: string | null;
+  /** The clock for the recent-sign-in check (milliseconds); the session store's own by default. */
+  readonly now?: () => number;
+  /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
+  readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
 }
+
+/** Spec 10.1 re-authentication window (Section 24 item 37). */
+export const RECENT_SIGN_IN_MS = 10 * 60 * 1000;
 
 const HelloResponse = z.strictObject({
   message: z.string(),
@@ -139,6 +166,8 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
     // Spec 10.1 app lock: a locked session reaches only the lock screen until she signs in again.
     if (session.locked && !auth.allowLocked)
       throw new ProblemError(401, 'authn.locked', 'Unlock to continue.');
+    if (auth.recentSignIn && (deps.now ?? Date.now)() - session.authenticatedAt > RECENT_SIGN_IN_MS)
+      throw new ProblemError(401, 'authn.reauth_required', 'Sign in again to continue.');
     request.claims = session.claims;
   });
 
@@ -158,6 +187,18 @@ export async function createBffInstance(deps: BffDeps): Promise<FastifyInstance>
 export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   const app = await createBffInstance(deps);
   const timeoutMs = deps.upstreamTimeoutMs ?? 5000;
+
+  app.get(
+    '/.well-known/security.txt',
+    { config: { auth: { kind: 'public', reason: 'security-txt' } } },
+    (_request, reply) => {
+      const c = deps.securityContact;
+      if (!c) throw new ProblemError(404, 'not_found', 'Not found.');
+      return reply
+        .type('text/plain; charset=utf-8')
+        .send(securityTxt({ contact: c.contact, policy: c.policy ?? null, now: new Date() }));
+    },
+  );
 
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
     status: 'ok',
@@ -205,8 +246,27 @@ export async function buildBff(deps: BffDeps): Promise<FastifyInstance> {
   });
 
   registerSessionRoutes(app, deps.sessions);
+  registerServiceWorker(app);
+  registerAppConfig(app, deps.emergencyNumber ?? null, deps.vapidPublicKey ?? null);
   if (deps.enrolment)
     registerEnrolmentRoutes(app, { ...deps.enrolment, sessionsResolver: deps.sessions });
+  // M4: her history, sharing, access log, and a receiver's view of a share link.
+  if (deps.enrolment)
+    registerHistoryProxy(app, {
+      signer: deps.signer,
+      workload: deps.enrolment.signer,
+      apiBaseUrl: deps.apiBaseUrl,
+      patientOrigin: deps.enrolment.patientOrigin,
+      fetch: deps.fetch,
+    });
+  // M2: her episodes and check-ins (needs her app's origin for the state-change checks).
+  if (deps.enrolment)
+    registerEpisodeProxy(app, {
+      signer: deps.signer,
+      apiBaseUrl: deps.apiBaseUrl,
+      patientOrigin: deps.enrolment.patientOrigin,
+      fetch: deps.fetch,
+    });
   if (deps.appShell) registerAppShell(app, deps.appShell);
 
   await app.ready();

@@ -82,8 +82,210 @@ export interface ClinicalDatabase {
     purpose: ConsentPurpose;
     status: ConsentStatus;
     version: number;
+    /** Assigned by the database; the latest per patient and purpose is the current decision. */
+    seq: Generated<string>;
     decided_at: Generated<Date>;
     /** Migration 0007: when she chose, at enrolment only; shortly before `decided_at`. */
     chosen_at: Date | null;
   };
+  /** Migration 0008: per-patient wrapped data keys (spec 11.2) and their shredding tombstones. */
+  patient_key: { patient_id: string; org_id: string; wrapped: Buffer; created_at: Generated<Date> };
+  patient_key_shredded: { patient_id: string; org_id: string; shredded_at: Generated<Date> };
+  treatment_episode: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    prescriber_id: string;
+    line_id: string;
+    previous_episode_id: string | null;
+    treatment_system: string;
+    treatment_code: string;
+    adherence_mode: AdherenceMode;
+    dose_text: string;
+    start_date: string;
+    review_interval_weeks: number;
+    review_date: Generated<string>;
+    time_zone: string | null;
+    instrument_version: string;
+    /** Migration 0009: the clinician's Idempotency-Key for the draft. */
+    creation_key: string;
+    /** Migration 0009: her Idempotency-Key for the confirmation, set once. */
+    confirm_key: string | null;
+    status: Generated<EpisodeStatus>;
+    created_at: Generated<Date>;
+    confirmed_at: Generated<Date | null>;
+    closed_at: Generated<Date | null>;
+  };
+  goal: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    goal_template_code: string | null;
+    text_encrypted: string | null;
+    created_at: Generated<Date>;
+  };
+  check_in: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    week_index: number;
+    idempotency_key: string;
+    request_hash: string;
+    answers: unknown;
+    instrument_version: string;
+    client_created_at: Date;
+    submitted_at: Generated<Date>;
+    is_late: Generated<boolean>;
+  };
+  red_flag_event: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    idempotency_key: string;
+    flags: string[];
+    instrument_version: string;
+    shown_at: Date;
+    acknowledged_at: Date | null;
+    recorded_at: Generated<Date>;
+    team_notified_at: Generated<Date | null>;
+  };
+  /** Migration 0010: verdict generation attempts, shadow mode (REQ-004). */
+  verdict: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    outcome: 'generated' | 'not_generated';
+    reason: string | null;
+    verdict_code: string | null;
+    secondary_code: string | null;
+    modifiers: Generated<string[]>;
+    ruleset_version: string;
+    ruleset_digest: string;
+    instrument_version: string;
+    input_hash: string | null;
+    explanation: unknown;
+    generated_by: 'system' | 'on_demand';
+    requested_by: string | null;
+    shadow: Generated<boolean>;
+    generated_at: Generated<Date>;
+  };
+  /** Migration 0011: push subscriptions (endpoint encrypted per patient) and sent reminders. */
+  push_subscription: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    endpoint_encrypted: string;
+    endpoint_hash: string;
+    remind_hour: Generated<number>;
+    time_zone: string;
+    created_at: Generated<Date>;
+  };
+  reminder_sent: {
+    episode_id: string;
+    week_index: number;
+    org_id: string;
+    patient_id: string;
+    sent_at: Generated<Date>;
+  };
+  /** Migration 0012: review decisions and pre-surgery checks (M4). */
+  review_decision: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    episode_id: string;
+    verdict_id: string | null;
+    clinician_id: string;
+    decision_code: 'continue' | 'switch' | 'add' | 'refer' | 'stop';
+    note_encrypted: string | null;
+    next_episode_id: string | null;
+    added_episode_id: string | null;
+    idempotency_key: string;
+    request_hash: string;
+    decided_at: Generated<Date>;
+  };
+  /** Migration 0018: SMART launch patient links (M7). */
+  ehr_patient_link: {
+    id: string;
+    org_id: string;
+    link_hash: string;
+    patient_id: string;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
+  /** Migration 0017: record-system integration clients (M7). */
+  integration_client: {
+    id: string;
+    org_id: string;
+    client_id: string;
+    name: string;
+    jwks: unknown;
+    scopes: string[];
+    active: Generated<boolean>;
+    created_by: string;
+    created_at: Generated<Date>;
+  };
+  /** Migration 0016: staff invitations (REQ-010). */
+  staff_invitation: {
+    id: string;
+    org_id: string;
+    role: 'clinician' | 'org_admin';
+    token_hash: string;
+    created_by: string;
+    created_at: Generated<Date>;
+    expires_at: Date;
+    claimed_at: Generated<Date | null>;
+    claimed_clinician_id: Generated<string | null>;
+    revoked_at: Date | null;
+  };
+  /** Migration 0015: organisation settings (REQ-010). */
+  org_settings: {
+    org_id: string;
+    default_review_interval_weeks: number | null;
+    languages: Generated<string[]>;
+    emergency_number: string | null;
+    updated_at: Generated<Date>;
+    updated_by: string;
+  };
+  /** Migration 0014: account deletion requests (REQ-009). */
+  deletion_request: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    identity_ref: string;
+    requested_at: Generated<Date>;
+    due_at: Generated<Date>;
+    cancelled_at: Date | null;
+    erased_at: Generated<Date | null>;
+    identity_erased_at: Date | null;
+  };
+  /** Migration 0013: share links (REQ-008). */
+  share_link: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    scope: Generated<string>;
+    token_hash: string;
+    created_at: Generated<Date>;
+    expires_at: Date;
+    revoked_at: Date | null;
+    creation_key: string;
+  };
+  surgery_check: {
+    id: string;
+    org_id: string;
+    patient_id: string;
+    clinician_id: string;
+    procedure_code: string;
+    snapshot: unknown;
+    acknowledged_at: Generated<Date>;
+    idempotency_key: string;
+    request_hash: string;
+  };
 }
+
+export type EpisodeStatus = 'draft' | 'active' | 'in_review' | 'closed';
+export type AdherenceMode = 'daily' | 'device_or_injection';

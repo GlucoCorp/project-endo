@@ -4,9 +4,15 @@
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
 !.npmrc
+!tsconfig.base.json
 !packages/**
 !services/**
+!apps/**
+**/e2e
 !clinical/rulesets/**
+!clinical/instrument/**
+!clinical/treatments/**
+!clinical/goals/**
 **/node_modules
 **/coverage
 **/dist
