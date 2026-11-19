@@ -13,6 +13,7 @@ import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.RoleModel;
 import org.keycloak.models.UserModel;
+import org.keycloak.models.UserManager;
 
 /**
  * The extension's narrow admin endpoint (ADR-0021 sections 10, 11 and 13):
@@ -75,6 +76,44 @@ public class EnrolmentAdminResource {
         != Outcome.DONE) return status(Response.Status.CONFLICT);
     session.users().removeUser(realm, user);
     return Response.ok(Map.of("deleted", true)).build();
+  }
+
+  /**
+   * REQ-009, ADR-0029: her account goes when she is erased. The identity service calls this with
+   * her subject (scope {@code keycloak.user.erase}) before it clears the subject. Only a patient's
+   * account, or one still in enrolment, can be erased this way; a staff account never is (409).
+   * Her sessions, credentials (passkeys) and consents go with the user. Idempotent: an unknown
+   * subject is already erased.
+   */
+  @POST
+  @Path("erase")
+  @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
+  public Response erase(@HeaderParam("authorization") String auth, Map<String, Object> body) {
+    WorkloadTokenVerifier v = EndoConfig.identityVerifier();
+    if (v == null || !v.verify(auth, ERASE_SCOPE)) return status(Response.Status.UNAUTHORIZED);
+    if (body == null || !(body.get("subject") instanceof String subject) || !UUID_RE.matcher(subject).matches())
+      return status(Response.Status.BAD_REQUEST);
+    RealmModel realm = session.getContext().getRealm();
+    UserModel user = session.users().getUserById(realm, subject);
+    if (user == null) return Response.ok(Map.of("erased", true)).build();
+    RoleModel patient = realm.getRole("patient");
+    boolean isPatient = patient != null && user.hasRole(patient);
+    boolean isStaff = user.getRoleMappingsStream().anyMatch(r -> STAFF_ROLES.contains(r.getName()));
+    if (decideErase(isPatient, user.getFirstAttribute(EndoConfig.QUARANTINE), isStaff) != Outcome.DONE)
+      return status(Response.Status.CONFLICT);
+    new UserManager(session).removeUser(realm, user);
+    return Response.ok(Map.of("erased", true)).build();
+  }
+
+  static final String ERASE_SCOPE = "keycloak.user.erase";
+  private static final java.util.Set<String> STAFF_ROLES =
+      java.util.Set.of("clinician", "org_admin", "glucorp_platform_admin", "glucorp_support");
+
+  /** A patient (or a user still in enrolment) who holds no staff role. */
+  static Outcome decideErase(boolean isPatient, String quarantine, boolean isStaff) {
+    if (isStaff) return Outcome.REFUSED;
+    return isPatient || quarantine != null ? Outcome.DONE : Outcome.REFUSED;
   }
 
   /**

@@ -404,6 +404,22 @@ importers:
         specifier: 4.6.7
         version: 4.6.7
 
+  packages/session-store:
+    dependencies:
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../db
+      kysely:
+        specifier: 0.28.18
+        version: 0.28.18
+    devDependencies:
+      '@types/pg':
+        specifier: 8.23.1
+        version: 8.23.1
+      pg:
+        specifier: 8.23.1
+        version: 8.23.1
+
   packages/ui:
     devDependencies:
       '@types/react':
@@ -465,12 +481,18 @@ importers:
       '@endo/crypto':
         specifier: workspace:*
         version: link:../../packages/crypto
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@endo/oidc':
         specifier: workspace:*
         version: link:../../packages/oidc
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/session-store':
+        specifier: workspace:*
+        version: link:../../packages/session-store
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1
@@ -496,6 +518,9 @@ importers:
       '@endo/config':
         specifier: workspace:*
         version: link:../../packages/config
+      '@endo/db':
+        specifier: workspace:*
+        version: link:../../packages/db
       '@endo/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -505,6 +530,9 @@ importers:
       '@endo/service-kit':
         specifier: workspace:*
         version: link:../../packages/service-kit
+      '@endo/session-store':
+        specifier: workspace:*
+        version: link:../../packages/session-store
       '@fastify/rate-limit':
         specifier: 11.2.1
         version: 11.2.1
