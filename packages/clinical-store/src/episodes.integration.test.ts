@@ -922,22 +922,21 @@ describe.skipIf(!url)(
         expect((await links.list(ORG_A, PAT_A)).map((l) => l.id)).toContain(link.id);
         expect(await links.list(ORG_B, PAT_A)).toEqual([]);
         // 100 newer stopped links never hide a live one, from her list or her access log.
-        for (let i = 0; i < 101; i += 1) {
-          const id = randomUUID();
-          await links.create({
-            id,
-            orgId: ORG_A,
-            patientId: PAT_A,
-            tokenHash: createHash('sha256').update(randomUUID()).digest('hex'),
-            days: 1,
-            creationKey: randomUUID(),
-            auditEvent: audit('x'),
-          });
-          await links.revoke(ORG_A, PAT_A, id, audit('x'));
-        }
+        // (Setup in one statement: 101 newer links, already stopped.)
+        await admin.query(
+          `INSERT INTO share_link (id, org_id, patient_id, token_hash, created_at, expires_at,
+                                   revoked_at, creation_key)
+           SELECT gen_random_uuid(), $1, $2, encode(sha256(gen_random_uuid()::text::bytea), 'hex'),
+                  now() + make_interval(secs => g), now() + interval '1 day', now(), gen_random_uuid()
+           FROM generate_series(1, 101) AS g`,
+          [ORG_A, PAT_A],
+        );
         const listed = await links.list(ORG_A, PAT_A);
         expect(listed.map((l) => l.id)).toContain(link.id);
-        expect(listed.length).toBeLessThanOrEqual(101);
+        // Every live link, and at most 100 others.
+        expect(
+          listed.filter((l) => l.revokedAt !== null || l.expiresAt.getTime() <= Date.now()).length,
+        ).toBeLessThanOrEqual(100);
         expect(await links.ids(ORG_A, PAT_A)).toContain(link.id);
         expect((await links.ids(ORG_A, PAT_A)).length).toBeGreaterThan(101);
         expect(await links.ids(ORG_B, PAT_A)).toEqual([]);
