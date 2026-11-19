@@ -40,6 +40,10 @@ function api(path: string, body: Record<string, unknown> | null): Response {
               in_use: false,
             },
           ],
+      // REQ-001: once she has accepted (and here declined sharing), only that is shown.
+      accepted: confirmed
+        ? [{ id: INVITATION, accepted_at: '2026-11-11T09:00:00Z', sharing: 'declined' }]
+        : [],
     });
   if (path === `/v1/enrolments/${INVITATION}/confirm`) {
     if (body?.['code'] === CODE) {
@@ -253,6 +257,8 @@ test('the clinician chooses the organisation and confirms the patient by code', 
     page.getByText('Confirmed. She can now create her sign-in on her phone.'),
   ).toBeVisible();
   await expect(page.getByText('There are no open invitations.')).toBeVisible();
+  await expect(page.getByText('Invitation accepted')).toBeVisible();
+  await expect(page.getByText('Sharing declined.')).toBeVisible();
   expect(violations).toEqual([]);
 });
 

@@ -242,6 +242,11 @@ export const en = {
   'clinic.no-invitations': 'There are no open invitations.',
   'clinic.invitation': 'Invitation created {created}, valid until {expires}',
   'clinic.in-use': 'Code confirmed, sign-in in progress',
+  'clinic.accepted-title': 'Accepted in the last 30 days',
+  'clinic.accepted': 'Invitation accepted {day}.',
+  'clinic.sharing-shared': 'Sharing with the care team.',
+  'clinic.sharing-declined': 'Sharing declined.',
+  'clinic.sharing-pending': 'Sharing not chosen yet.',
   'clinic.draft-title': 'Start a treatment trial',
   'clinic.draft-placeholder':
     'The treatment list holds synthetic placeholders until the clinical lead approves the catalogue.',

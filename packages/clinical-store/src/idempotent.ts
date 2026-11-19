@@ -46,6 +46,21 @@ export interface OpenInvitation {
   readonly reserved: boolean;
 }
 
+/**
+ * An accepted invitation as the clinic portal lists it (REQ-001 acceptance): when, and whether
+ * she shares with the care team. Never who she is: no patient id, name or other detail, so a
+ * declined `share_with_care_team` shows only "invitation accepted, sharing declined".
+ */
+export interface AcceptedInvitation {
+  readonly id: string;
+  readonly acceptedAt: Date;
+  /** Her current `share_with_care_team` decision; `pending` until she has chosen. */
+  readonly sharing: 'shared' | 'declined' | 'pending';
+}
+
+/** How far back the portal lists accepted invitations. */
+export const ACCEPTED_LIST_DAYS = 30;
+
 /** Invitation creation that happens at most once per Idempotency-Key (spec 9.1, REQ-001). */
 export interface IdempotentInvitationStore {
   createOnce(request: CreateInvitationOnce): Promise<IdempotentOutcome>;
@@ -54,6 +69,11 @@ export interface IdempotentInvitationStore {
    * newest first, at most 100. Read inside the organisation's row-level-security scope.
    */
   listOpen(orgId: string): Promise<OpenInvitation[]>;
+  /**
+   * The organisation's invitations accepted in the last {@link ACCEPTED_LIST_DAYS} days, newest
+   * first, at most 100, each with her current sharing decision. Inside the organisation's scope.
+   */
+  listAccepted(orgId: string): Promise<AcceptedInvitation[]>;
 }
 
 export class PostgresIdempotentInvitationStore implements IdempotentInvitationStore {
@@ -80,6 +100,28 @@ export class PostgresIdempotentInvitationStore implements IdempotentInvitationSt
         createdAt: r.created_at,
         expiresAt: r.expires_at,
         reserved: r.reserved_by !== null,
+      }));
+    });
+  }
+
+  listAccepted(orgId: string): Promise<AcceptedInvitation[]> {
+    return withOrg(this.#db, orgId, async (trx) => {
+      const rows = await trx
+        .selectFrom('enrolment_invitation as i')
+        .leftJoin('consent_current as c', (j) =>
+          j.onRef('c.patient_id', '=', 'i.patient_id').on('c.purpose', '=', 'share_with_care_team'),
+        )
+        .select(['i.id', 'i.claimed_at', 'c.status'])
+        .where('i.org_id', '=', orgId)
+        .where('i.claimed_at', 'is not', null)
+        .where('i.claimed_at', '>', sql<Date>`now() - make_interval(days => ${ACCEPTED_LIST_DAYS})`)
+        .orderBy('i.claimed_at', 'desc')
+        .limit(100)
+        .execute();
+      return rows.map((r) => ({
+        id: r.id,
+        acceptedAt: r.claimed_at as Date,
+        sharing: sharingOf(r.status),
       }));
     });
   }
@@ -161,9 +203,17 @@ export class PostgresIdempotentInvitationStore implements IdempotentInvitationSt
   }
 }
 
+/** Anything but a current grant counts as not shared: declined, revoked later, or none. */
+function sharingOf(status: string | null): AcceptedInvitation['sharing'] {
+  if (status === 'granted') return 'shared';
+  return status === null ? 'pending' : 'declined';
+}
+
 /** Dev and test stand-in with the same semantics, including the 24-hour window. */
 export class InMemoryIdempotentInvitationStore implements IdempotentInvitationStore {
   readonly invitations: (NewInvitation & { expiresAt: Date })[] = [];
+  /** Tests set these directly; acceptance happens in the coordinator, not here. */
+  readonly accepted: (AcceptedInvitation & { orgId: string })[] = [];
   readonly outbox: Readonly<Record<string, unknown>>[] = [];
   readonly #records = new Map<
     string,
@@ -187,6 +237,16 @@ export class InMemoryIdempotentInvitationStore implements IdempotentInvitationSt
           reserved: false,
         }))
         .reverse(),
+    );
+  }
+
+  listAccepted(orgId: string): Promise<AcceptedInvitation[]> {
+    const since = this.#now().getTime() - ACCEPTED_LIST_DAYS * 24 * 60 * 60 * 1000;
+    return Promise.resolve(
+      this.accepted
+        .filter((a) => a.orgId === orgId && a.acceptedAt.getTime() > since)
+        .sort((a, b) => b.acceptedAt.getTime() - a.acceptedAt.getTime())
+        .map(({ id, acceptedAt, sharing }) => ({ id, acceptedAt, sharing })),
     );
   }
 

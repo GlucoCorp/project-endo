@@ -1135,6 +1135,70 @@ describe.skipIf(!url)('REQ-001, RISK-I03 clinical store (spec 5.1, 10.4, 13.1)',
       expect(await store.state(ORG_B, inv)).toEqual({ status: 'live', reservedBy: null });
     });
 
+    it('REQ-001 lists accepted invitations with only her sharing decision, never who she is', async () => {
+      const accept = async (sharing: 'granted' | 'declined' | null, org = ORG_A) => {
+        const inv = await newInvitation(org, org === ORG_A ? CLIN_A : CLIN_B);
+        const tx = randomUUID();
+        const patientId = randomUUID();
+        await store.reserve({ ...req(inv, tx), orgId: org });
+        expect(
+          await store.claim({
+            ...req(inv, tx, 'claim'),
+            orgId: org,
+            patientId,
+            identityRef: randomUUID(),
+          }),
+        ).toMatchObject({ outcome: 'done', changed: true });
+        if (sharing)
+          await admin.query(
+            `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+             VALUES ($1, $2, $3, 'share_with_care_team', $4, 1)`,
+            [randomUUID(), patientId, org, sharing],
+          );
+        return { inv, patientId };
+      };
+      const shared = await accept('granted');
+      const declined = await accept('declined');
+      const pending = await accept(null);
+      const old = await accept('granted');
+      const other = await accept('declined', ORG_B);
+      // Older than the window: moved back with triggers off (setup only).
+      const c = await admin.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query('SET LOCAL session_replication_role = replica');
+        await c.query(
+          `UPDATE enrolment_invitation SET claimed_at = now() - interval '31 days' WHERE id = $1`,
+          [old.inv],
+        );
+        await c.query('COMMIT');
+      } finally {
+        c.release();
+      }
+      const listed = await new PostgresIdempotentInvitationStore(apiDb).listAccepted(ORG_A);
+      const byId = new Map(listed.map((a) => [a.id, a]));
+      expect(byId.get(shared.inv)?.sharing).toBe('shared');
+      expect(byId.get(declined.inv)?.sharing).toBe('declined');
+      expect(byId.get(pending.inv)?.sharing).toBe('pending');
+      expect(byId.has(old.inv)).toBe(false);
+      expect(byId.has(other.inv)).toBe(false);
+      expect(Object.keys(byId.get(declined.inv) ?? {}).sort()).toEqual([
+        'acceptedAt',
+        'id',
+        'sharing',
+      ]);
+      const text = JSON.stringify(listed);
+      for (const p of [shared, declined, pending]) expect(text).not.toContain(p.patientId);
+      // A later revocation reads as not shared.
+      await admin.query(
+        `INSERT INTO consent (id, patient_id, org_id, purpose, status, version)
+         VALUES ($1, $2, $3, 'share_with_care_team', 'revoked', 1)`,
+        [randomUUID(), shared.patientId, ORG_A],
+      );
+      const after = await new PostgresIdempotentInvitationStore(apiDb).listAccepted(ORG_A);
+      expect(after.find((a) => a.id === shared.inv)?.sharing).toBe('declined');
+    });
+
     it('enforces the reservation rules in the database, whatever the caller', async () => {
       const inv = await newInvitation();
       const tx = randomUUID();

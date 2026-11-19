@@ -13,6 +13,7 @@ export interface ClinicEnrolmentDeps {
 }
 
 const UUID = '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$';
+const SHARING = new Set(['shared', 'declined', 'pending']);
 
 const unavailable = () =>
   new ProblemError(502, 'upstream_unavailable', 'The service is not available right now.');
@@ -95,8 +96,11 @@ export function registerClinicEnrolmentRoutes(
     const res = await callApi(request, session, '/v1/enrolments', { method: 'GET' });
     denied(res);
     if (!res.ok) throw unavailable();
-    const body = (await res.json().catch(() => null)) as { invitations?: unknown } | null;
-    if (!Array.isArray(body?.invitations)) throw unavailable();
+    const body = (await res.json().catch(() => null)) as {
+      invitations?: unknown;
+      accepted?: unknown;
+    } | null;
+    if (!Array.isArray(body?.invitations) || !Array.isArray(body.accepted)) throw unavailable();
     // Pass on only the fields the portal shows, each checked.
     return {
       invitations: body.invitations.map((i: unknown) => {
@@ -115,6 +119,18 @@ export function registerClinicEnrolmentRoutes(
           expires_at: v['expires_at'],
           in_use: v['in_use'],
         };
+      }),
+      // REQ-001: when, and whether she shares; nothing that says who she is.
+      accepted: body.accepted.map((a: unknown) => {
+        const v = a as Record<string, unknown>;
+        if (
+          typeof v['id'] !== 'string' ||
+          !new RegExp(UUID).test(v['id']) ||
+          typeof v['accepted_at'] !== 'string' ||
+          !SHARING.has(v['sharing'] as string)
+        )
+          throw unavailable();
+        return { id: v['id'], accepted_at: v['accepted_at'], sharing: v['sharing'] };
       }),
     };
   });
