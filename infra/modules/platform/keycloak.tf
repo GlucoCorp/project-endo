@@ -8,6 +8,17 @@ locals {
   keycloak_public_url = var.profile == "local" ? "http://localhost:18080" : "https://${var.keycloak_hostname}"
 }
 
+# The realm needs the Endo extension's providers, so only the endo-keycloak image works; outside the
+# local profile it must be pinned by digest (ADR-0014, ADR-0025).
+resource "terraform_data" "keycloak_image_guard" {
+  lifecycle {
+    precondition {
+      condition     = var.profile == "local" || can(regex("endo-keycloak@sha256:[a-f0-9]{64}$", var.images.keycloak))
+      error_message = "Outside the local profile, images.keycloak must be the endo-keycloak image pinned by digest."
+    }
+  }
+}
+
 resource "random_password" "keycloak_admin" {
   length  = 32
   special = false
@@ -83,10 +94,11 @@ resource "kubernetes_deployment_v1" "keycloak" {
     }
     template {
       metadata {
-        labels = {
+        labels = merge({
           app                                                 = "keycloak"
           "endo.glucorp.health/postgres-${local.keycloak_pg}" = "client"
-        }
+          # ADR-0034: the extension hands enrolments to the identity service.
+        }, local.apps_on ? { "endo.glucorp.health/identity" = "client" } : {})
         # Environment variables do not refresh in a running pod. A new database password changes
         # this hash and rolls Keycloak out, after the roles Job has applied it (depends_on below).
         annotations = {
@@ -148,6 +160,29 @@ resource "kubernetes_deployment_v1" "keycloak" {
           env {
             name  = "JAVA_OPTS_KC_HEAP"
             value = "-XX:MaxRAMPercentage=65 -XX:InitialRAMPercentage=20"
+          }
+          # The Endo extension's settings (services/keycloak-extension), when the apps are deployed.
+          dynamic "env" {
+            for_each = local.apps_on ? { ENDO_IDENTITY_BASE_URL = "http://identity:8080" } : {}
+            content {
+              name  = env.key
+              value = env.value
+            }
+          }
+          dynamic "env" {
+            for_each = local.apps_on ? {
+              ENDO_KEYCLOAK_WORKLOAD_PRIVATE_KEY_JWK = "keycloak.private"
+              ENDO_IDENTITY_WORKLOAD_PUBLIC_KEY_JWK  = "identity.public"
+            } : {}
+            content {
+              name = env.key
+              value_from {
+                secret_key_ref {
+                  name = "app-keys"
+                  key  = env.value
+                }
+              }
+            }
           }
           env_from {
             secret_ref {

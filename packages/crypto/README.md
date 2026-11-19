@@ -6,12 +6,13 @@
 
 ## Public API
 
-| Export                                       | What it does                                                                        |
-| -------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `KeyManager`, `KeyRef`, `DataKey`            | Cloud-neutral KMS interface (AWS KMS, Vault Transit)                                |
-| `DevKeyManager`                              | In-memory stand-in for dev and test. Throws if constructed in staging or production |
-| `PatientKeyStore`, `InMemoryPatientKeyStore` | Per-patient wrapped data keys; `destroy()` is the crypto-shred                      |
-| `FieldCipher`                                | `encrypt(text, ctx)`, `decrypt(envelope, ctx)`, `shredPatient(id)`                  |
+| Export                                                | What it does                                                                                                      |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `KeyManager`, `KeyRef`, `DataKey`                     | Cloud-neutral KMS interface (AWS KMS, Vault Transit)                                                              |
+| `DevKeyManager`                                       | In-memory stand-in for dev and test. Throws if constructed in staging or production                               |
+| `OpenBaoKeyManager`, `KeyManagerError`, `TRANSIT_KEY` | OpenBao (Vault-compatible) Transit: one Transit key per `KeyRef`; token read from a file on every call (ADR-0032) |
+| `PatientKeyStore`, `InMemoryPatientKeyStore`          | Per-patient wrapped data keys; `destroy()` is the crypto-shred                                                    |
+| `FieldCipher`                                         | `encrypt(text, ctx)`, `decrypt(envelope, ctx)`, `shredPatient(id)`                                                |
 
 ## Guarantees
 
@@ -22,6 +23,6 @@
 
 ## Not yet built
 
-- AWS KMS and Vault Transit `KeyManager` implementations (M0 infra slice).
+- An AWS KMS `KeyManager`, if a deployment ever needs one (OpenBao Transit is built: ADR-0032).
 - Postgres `PatientKeyStore` (M1).
 - Data-key caching (needs an ADR on cache lifetime versus KMS cost).

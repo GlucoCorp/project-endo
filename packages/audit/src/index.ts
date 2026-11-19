@@ -1,5 +1,5 @@
 import { fileURLToPath } from 'node:url';
-export { AuditEventInput, AuditOutcome, PurposeOfUse, GENESIS_HASH } from './schema.ts';
+export { AUDIT_UUID, AuditEventInput, AuditOutcome, PurposeOfUse, GENESIS_HASH } from './schema.ts';
 export type { AuditEvent, AuditEventInputType } from './schema.ts';
 export { AuditWriter, AuditSequenceConflictError, verifyChain, hashEvent } from './writer.ts';
 export type { AuditReader, AuditStore, ChainVerification, ResourceRef } from './writer.ts';

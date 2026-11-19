@@ -9,7 +9,7 @@ import {
   type Resource,
   type Subject,
 } from '@endo/authz';
-import type { AuditWriter } from '@endo/audit';
+import { AUDIT_UUID, type AuditWriter } from '@endo/audit';
 import type {
   ConsentStore,
   IdempotentInvitationStore,
@@ -37,6 +37,9 @@ import { registerReviewRoutes, type ReviewRouteDeps } from './routes/reviews.ts'
 import { registerHistoryRoutes, type HistoryRouteDeps } from './routes/history.ts';
 import { registerDataRightsRoutes, type DataRightsRouteDeps } from './routes/data-rights.ts';
 import { registerOrgAdminRoutes, type OrgAdminRouteDeps } from './routes/org-admin.ts';
+import { registerDashboardRoutes, type DashboardRouteDeps } from './routes/dashboard.ts';
+import { registerIntegrationRoutes, type IntegrationRouteDeps } from './routes/integrations.ts';
+import { registerEhrLinkRoutes, type EhrLinkRouteDeps } from './routes/ehr-links.ts';
 import type { ReminderStore } from '@endo/clinical-store';
 import type { FieldCipher } from '@endo/crypto';
 import type { VerdictService } from './verdicts.ts';
@@ -46,6 +49,9 @@ import { registerMembershipRoutes } from './routes/memberships.ts';
 import { registerCoordinatorRoutes, type EnrolmentCoordination } from './routes/coordinator.ts';
 import type { IdentityEnrolment } from './identity-client.ts';
 import { registerHealthRoutes } from './routes/health.ts';
+
+/** Path ids are checked with the audit trail's own validator (Codex r7). */
+const UUID_RE = AUDIT_UUID;
 
 /**
  * Every route declares exactly one of these in `config.policy` (spec 2.5, 10.4). A route without
@@ -141,6 +147,12 @@ export interface ApiDeps {
   readonly dataRights?: Omit<DataRightsRouteDeps, 'onCommitted' | 'consents' | 'now'>;
   /** Organisation admin (M5, REQ-010). Only with a clinical database (fail closed). */
   readonly orgAdmin?: Omit<OrgAdminRouteDeps, 'onCommitted'>;
+  /** The aggregate dashboard (M5, REQ-011). Only with a clinical database (fail closed). */
+  readonly dashboard?: Omit<DashboardRouteDeps, 'now'>;
+  /** SMART launch patient links (M7). Only with a clinical database (fail closed). */
+  readonly ehrLinks?: Omit<EhrLinkRouteDeps, 'onCommitted' | 'consents' | 'writer'>;
+  /** Record-system integrations (M7). Only with a clinical database (fail closed). */
+  readonly integrations?: Omit<IntegrationRouteDeps, 'onCommitted' | 'consents' | 'now' | 'writer'>;
   /** The clinician desk (M4). Only with a clinical database (fail closed). */
   readonly reviews?: Omit<ReviewRouteDeps, 'onCommitted' | 'now' | 'audit'>;
   /** Weekly reminders (spec 15): her subscriptions. Only with a clinical database. */
@@ -199,6 +211,22 @@ export async function buildApi(deps: ApiDeps): Promise<FastifyInstance> {
   if (deps.history)
     registerHistoryRoutes(app, { ...deps.history, onCommitted, writer: deps.audit });
   if (deps.orgAdmin) registerOrgAdminRoutes(app, { ...deps.orgAdmin, onCommitted });
+  if (deps.dashboard) registerDashboardRoutes(app, { ...deps.dashboard, now: deps.now });
+  if (deps.ehrLinks)
+    registerEhrLinkRoutes(app, {
+      ...deps.ehrLinks,
+      onCommitted,
+      consents: deps.consents,
+      writer: deps.audit,
+    });
+  if (deps.integrations)
+    registerIntegrationRoutes(app, {
+      ...deps.integrations,
+      onCommitted,
+      consents: deps.consents,
+      now: deps.now,
+      writer: deps.audit,
+    });
   if (deps.dataRights)
     registerDataRightsRoutes(app, {
       ...deps.dataRights,
@@ -328,6 +356,11 @@ export async function createApiInstance(deps: ApiDeps): Promise<FastifyInstance>
     }
 
     const resource = policy.resource(request, subject);
+    // The policy runs before schema validation: an id taken from the path that is not a UUID is
+    // refused here, before it can reach authorisation or the audit trail (which takes UUIDs only).
+    for (const v of [resource.id, resource.orgId, resource.patientId])
+      if (typeof v === 'string' && !UUID_RE.test(v))
+        throw new ProblemError(400, 'request.invalid_id', 'Request refused.');
     const context: AuthzContext = {
       now: deps.now(),
       // Current decisions, read on every request, so a withdrawal takes effect immediately.

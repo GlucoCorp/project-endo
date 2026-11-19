@@ -1,3 +1,4 @@
+import { registerSmartRoutes, type SmartIssuer } from './smart.ts';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import Fastify, { LogController, type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
@@ -11,6 +12,7 @@ import {
   registerAppShell,
   type AppShell,
   registerProblemHandlers,
+  securityTxt,
   requestIdFrom,
 } from '@endo/service-kit';
 import {
@@ -36,17 +38,60 @@ import {
   SESSION_COOKIE,
   readCookie,
   type ClinicSession,
-  type InMemoryClinicSessions,
+  type ClinicSessionStore,
 } from './sessions.ts';
 import { registerClinicEpisodeRoutes } from './episodes.ts';
 import { registerClinicEnrolmentRoutes, type ClinicEnrolmentDeps } from './enrolments.ts';
 
 /** The clinic portal's page paths (its router's routes). */
-export const PORTAL_PATHS = ['/', '/enrolments', '/reviews', '/admin'] as const;
+export const PORTAL_PATHS = [
+  '/',
+  '/enrolments',
+  '/reviews',
+  '/admin',
+  '/join',
+  '/dashboard',
+] as const;
+
+/**
+ * REQ-010 staff invitation in progress: the SHA-256 of the link token, for 10 minutes, until the
+ * sign-in callback claims it. Lax: Keycloak's return is a cross-site navigation.
+ */
+export const JOIN_COOKIE = '__Host-endo_join';
+
+/** Invitation hashes per sign-in attempt (its `state`), for as long as an attempt lives. */
+export class PendingJoins {
+  readonly #m = new Map<string, { hash: string; at: number }>();
+  readonly #now: () => number;
+  readonly #max: number;
+  #prunedAt = Number.NEGATIVE_INFINITY;
+  constructor(now: () => number, max = 10_000) {
+    this.#now = now;
+    this.#max = max;
+  }
+  add(state: string, hash: string): void {
+    const t = this.#now();
+    // Pruned at most once a second, so a burst of sign-ins costs no more than the bound.
+    if (t - this.#prunedAt >= 1000) {
+      for (const [k, v] of this.#m) if (t - v.at > TRANSACTION_TTL_MS) this.#m.delete(k);
+      this.#prunedAt = t;
+    }
+    if (this.#m.size >= this.#max) return; // bounded: an attempt without a join still signs in
+    this.#m.set(state, { hash, at: t });
+  }
+  take(state: string): string | null {
+    const v = this.#m.get(state);
+    this.#m.delete(state);
+    return v && this.#now() - v.at <= TRANSACTION_TTL_MS ? v.hash : null;
+  }
+}
 
 /** Every route declares how it is reached (spec 2.5); the service will not start otherwise. */
 export type ClinicAuth =
-  | { readonly kind: 'public'; readonly reason: 'liveness' | 'app-shell' }
+  | {
+      readonly kind: 'public';
+      readonly reason: 'liveness' | 'app-shell' | 'join' | 'security-txt' | 'smart-launch';
+    }
   | { readonly kind: 'oidc'; readonly step: 'start' | 'callback' }
   /** Keycloak's back-channel logout: server-to-server, authenticated by the signed logout token. */
   | { readonly kind: 'backchannel' }
@@ -70,7 +115,14 @@ declare module 'fastify' {
 export function isClinicAuth(value: unknown): value is ClinicAuth {
   if (typeof value !== 'object' || value === null) return false;
   const v = value as Partial<ClinicAuth> & { step?: unknown; reason?: unknown };
-  if (v.kind === 'public') return v.reason === 'liveness' || v.reason === 'app-shell';
+  if (v.kind === 'public')
+    return (
+      v.reason === 'liveness' ||
+      v.reason === 'app-shell' ||
+      v.reason === 'join' ||
+      v.reason === 'security-txt' ||
+      v.reason === 'smart-launch'
+    );
   if (v.kind === 'oidc') return v.step === 'start' || v.step === 'callback';
   if (v.kind === 'backchannel') return true;
   if (v.kind !== 'session') return false;
@@ -86,7 +138,7 @@ export interface ClinicBffDeps {
   readonly transactions: TransactionStore;
   /** Logout-token ids already used (replay protection). */
   readonly logoutTokens: SeenTokenIds;
-  readonly sessions: InMemoryClinicSessions;
+  readonly sessions: ClinicSessionStore;
   readonly resolver: Resolver;
   /** Seals the Keycloak refresh token held in each session. */
   readonly sealer: EnvelopeSealer;
@@ -100,6 +152,12 @@ export interface ClinicBffDeps {
   readonly appShell?: AppShell;
   /** Clinic enrolment (ADR-0021 slice 3). Without it those routes do not exist. */
   readonly enrolment?: ClinicEnrolmentDeps;
+  /** Spec 12.7: where vulnerability reports go (`mailto:` or `https:`); no route without it. */
+  readonly securityContact?: { readonly contact: string; readonly policy?: string | null } | null;
+  /** SMART App Launch (M7, spec 16.2): allowlisted record systems. No launch routes without. */
+  readonly smartIssuers?: readonly SmartIssuer[];
+  /** Launch attempts held at once (tests lower it). */
+  readonly smartMaxPending?: number;
 }
 
 const oidcCookie = (value: string, maxAgeSeconds: number) =>
@@ -135,6 +193,7 @@ function refuse(): never {
  * reach the browser; it holds only HttpOnly cookies.
  */
 export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstance> {
+  const joins = new PendingJoins(() => deps.now().getTime());
   const app = Fastify({
     logger: loggerOptions('bff-clinic', deps.logLevel, deps.logStream),
     bodyLimit: 16 * 1024,
@@ -242,6 +301,52 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
     request.sessionToken = token;
   });
 
+  /**
+   * REQ-010: the join page posts the invitation token from its link's fragment; only its hash is
+   * kept, in a short-lived cookie, and the page then starts the ordinary staff sign-in.
+   */
+  app.post(
+    '/v1/join',
+    {
+      config: { auth: { kind: 'public', reason: 'join' } },
+      bodyLimit: 256,
+      schema: {
+        body: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['token'],
+          properties: { token: { type: 'string', pattern: '^[A-Za-z0-9_-]{43}$' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      if (request.headers.origin !== deps.portalOrigin)
+        throw new ProblemError(403, 'csrf.origin_mismatch', 'Request refused.');
+      const { token } = request.body as { token: string };
+      const hash = createHash('sha256').update(token).digest('hex');
+      return reply
+        .header(
+          'set-cookie',
+          `${JOIN_COOKIE}=${hash}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
+        )
+        .header('cache-control', 'no-store')
+        .code(204)
+        .send();
+    },
+  );
+
+  app.get(
+    '/.well-known/security.txt',
+    { config: { auth: { kind: 'public', reason: 'security-txt' } } },
+    (_request, reply) => {
+      const c = deps.securityContact;
+      if (!c) throw new ProblemError(404, 'not_found', 'Not found.');
+      return reply
+        .type('text/plain; charset=utf-8')
+        .send(securityTxt({ contact: c.contact, policy: c.policy ?? null, now: deps.now() }));
+    },
+  );
+
   app.get('/healthz', { config: { auth: { kind: 'public', reason: 'liveness' } } }, () => ({
     status: 'ok',
   }));
@@ -257,9 +362,15 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
       // One binding per browser, shared by its tabs; each attempt has its own state.
       const binding = readCookie(request.headers.cookie, OIDC_COOKIE) ?? newBinding();
       const tx = deps.transactions.create(binding);
-      return reply
-        .header('set-cookie', oidcCookie(binding, TRANSACTION_TTL_MS / 1000))
-        .redirect(authorizationUrl(deps.oidc, tx), 302);
+      // REQ-010: an invitation this browser brought belongs to THIS sign-in attempt only. Moved
+      // from the cookie into server-side state keyed by the attempt, and the cookie is cleared.
+      const join = readCookie(request.headers.cookie, JOIN_COOKIE);
+      const cookies = [oidcCookie(binding, TRANSACTION_TTL_MS / 1000)];
+      if (join) {
+        if (/^[0-9a-f]{64}$/.test(join)) joins.add(tx.state, join);
+        cookies.push(`${JOIN_COOKIE}=; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=0`);
+      }
+      return reply.header('set-cookie', cookies).redirect(authorizationUrl(deps.oidc, tx), 302);
     },
   );
 
@@ -302,6 +413,10 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
         );
         const personId = await deps.resolver.person(who.issuer, who.subject);
         if (!personId) refuse();
+        // REQ-010: a staff invitation this browser brought is claimed for the person who signed
+        // in, before memberships are read. A link that cannot be used changes nothing.
+        const join = joins.take(tx.state);
+        if (join && deps.resolver.claimStaff) await deps.resolver.claimStaff(join, personId);
         const memberships = await deps.resolver.memberships(personId);
         if (memberships.length === 0) refuse();
         let token = await deps.sessions.create({
@@ -466,6 +581,16 @@ export async function buildClinicBff(deps: ClinicBffDeps): Promise<FastifyInstan
   if (deps.enrolment) registerClinicEnrolmentRoutes(app, deps.enrolment);
   // REQ-002: drafting treatment episodes (same API and signer as enrolment).
   if (deps.enrolment) registerClinicEpisodeRoutes(app, deps.enrolment);
+  if (deps.enrolment && deps.smartIssuers && deps.smartIssuers.length > 0)
+    registerSmartRoutes(app, {
+      issuers: deps.smartIssuers,
+      portalOrigin: deps.portalOrigin,
+      apiBaseUrl: deps.enrolment.apiBaseUrl,
+      signer: deps.enrolment.signer,
+      fetch: deps.enrolment.fetch,
+      now: () => deps.now().getTime(),
+      ...(deps.smartMaxPending ? { maxPending: deps.smartMaxPending } : {}),
+    });
   if (deps.appShell)
     registerAppShell(app, deps.appShell, {
       paths: PORTAL_PATHS,
