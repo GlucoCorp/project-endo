@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isDeployedEnvironment, type EnvironmentName } from '@endo/config';
 import type { DataKey, KeyManager, KeyRef } from './key-manager.ts';
 
 export class KeyManagerError extends Error {
@@ -9,8 +10,13 @@ export class KeyManagerError extends Error {
 }
 
 export interface OpenBaoOptions {
-  /** e.g. https://openbao.endo-platform.svc:8200 (http only for loopback in development). */
+  /**
+   * e.g. https://openbao.endo-platform.svc:8200. Plain http only on loopback, or anywhere when
+   * `environment` is dev or test (the local cluster runs OpenBao in dev mode, without TLS).
+   */
   readonly address: string;
+  /** The service's environment. Staging and production always require https. */
+  readonly environment?: EnvironmentName;
   /** The Transit secrets engine mount (default `transit`). */
   readonly mount?: string;
   /**
@@ -54,8 +60,11 @@ export class OpenBaoKeyManager implements KeyManager {
   constructor(o: OpenBaoOptions) {
     const url = new URL(o.address);
     const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback))
-      throw new KeyManagerError('OpenBao must be reached over https (http only on loopback)');
+    const development = o.environment !== undefined && !isDeployedEnvironment(o.environment);
+    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && (loopback || development)))
+      throw new KeyManagerError(
+        'OpenBao must be reached over https (http only on loopback or in dev and test)',
+      );
     const mount = o.mount ?? 'transit';
     if (!/^[a-z0-9_-]{1,64}$/.test(mount)) throw new KeyManagerError('invalid Transit mount');
     this.#base = `${url.origin}/v1/${mount}`;
